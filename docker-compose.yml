@@ -20,7 +20,8 @@ services:
       context: .
       dockerfile: socket-proxy/Dockerfile
       args:
-        OFFICIAL_REGISTRY: ${OFFICIAL_REGISTRY:-docker.io}
+        GO_IMAGE: ${GO_IMAGE:-golang:1.25-alpine}
+        ALPINE_IMAGE: ${ALPINE_IMAGE:-alpine:3.22}
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -34,7 +35,9 @@ services:
     build:
       context: .
       args:
-        OFFICIAL_REGISTRY: ${OFFICIAL_REGISTRY:-docker.io}
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-alpine}
+        GO_IMAGE: ${GO_IMAGE:-golang:1.25-alpine}
+        ALPINE_IMAGE: ${ALPINE_IMAGE:-alpine:3.22}
     restart: unless-stopped
     depends_on:
       panel-init:

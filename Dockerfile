@@ -1,19 +1,21 @@
-ARG OFFICIAL_REGISTRY=docker.io
-FROM ${OFFICIAL_REGISTRY}/library/node:22-alpine AS web
+ARG NODE_IMAGE=node:22-alpine
+ARG GO_IMAGE=golang:1.25-alpine
+ARG ALPINE_IMAGE=alpine:3.22
+FROM ${NODE_IMAGE} AS web
 WORKDIR /src/web
 COPY web/package*.json ./
 RUN npm ci
 COPY web/ ./
 RUN npm run build
 
-FROM ${OFFICIAL_REGISTRY}/library/golang:1.25-alpine AS backend
+FROM ${GO_IMAGE} AS backend
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/panel ./cmd/panel
 
-FROM ${OFFICIAL_REGISTRY}/library/alpine:3.22
+FROM ${ALPINE_IMAGE}
 RUN addgroup -S -g 10001 panel && adduser -S -D -H -u 10001 -G panel panel && apk add --no-cache ca-certificates tzdata
 COPY --from=backend /out/panel /usr/local/bin/panel
 COPY --from=web /src/web/dist /opt/panel/web
