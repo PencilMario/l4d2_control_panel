@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
@@ -126,7 +127,7 @@ func TestReconcileMarksMissingAndReturnsUnknownContainers(t *testing.T) {
 	known.GamePort = 27016
 	_ = db.CreateInstance(context.Background(), missing)
 	_ = db.CreateInstance(context.Background(), known)
-	engine := &fakeEngine{containers: []docker.Container{{ID: "known-container", State: "running", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "known"}}, {ID: "unknown-container", State: "running", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "unknown"}}}}
+	engine := &fakeEngine{containers: []docker.Container{{ID: "known-container", State: "running", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "known", docker.RoleLabel: "game"}}, {ID: "unknown-container", State: "running", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "unknown", docker.RoleLabel: "game"}}}}
 	unknown, err := New(db, engine, freePorts{}, root).Reconcile(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -135,6 +136,69 @@ func TestReconcileMarksMissingAndReturnsUnknownContainers(t *testing.T) {
 	gotKnown, _ := db.Instance(context.Background(), "known")
 	if gotMissing.ActualState != domain.StateOrphaned || gotKnown.ContainerID != "known-container" || gotKnown.ActualState != domain.StateRunning || len(unknown) != 1 || unknown[0].ID != "unknown-container" {
 		t.Fatalf("missing=%#v known=%#v unknown=%#v", gotMissing, gotKnown, unknown)
+	}
+}
+
+func TestReconcileDoesNotAdoptContainerWithoutValidRole(t *testing.T) {
+	root := t.TempDir()
+	db, _ := store.Open(filepath.Join(root, "panel.db"))
+	defer db.Close()
+	instance := domain.Instance{ID: "abc", NodeID: "local", Name: "one", ContainerID: "trusted-game", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: domain.StateStopped, ActualState: domain.StateStopped}
+	_ = db.CreateInstance(context.Background(), instance)
+	invalid := docker.Container{ID: "missing-role", State: "running", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "abc"}}
+	unknown, err := New(db, &fakeEngine{containers: []docker.Container{invalid}}, freePorts{}, root).Reconcile(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := db.Instance(context.Background(), "abc")
+	if got.ContainerID != "trusted-game" || len(unknown) != 1 || unknown[0].ID != invalid.ID {
+		t.Fatalf("instance=%#v unknown=%#v", got, unknown)
+	}
+}
+
+func TestReconcileSeparatesMaintenanceWriterFromGameContainer(t *testing.T) {
+	root := t.TempDir()
+	db, _ := store.Open(filepath.Join(root, "panel.db"))
+	defer db.Close()
+	instance := domain.Instance{ID: "abc", NodeID: "local", Name: "one", ContainerID: "old-game", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}
+	_ = db.CreateInstance(context.Background(), instance)
+	engine := &fakeEngine{containers: []docker.Container{
+		{ID: "game", State: "exited", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "abc", docker.RoleLabel: "game"}},
+		{ID: "maintenance", State: "running", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "abc", docker.RoleLabel: "maintenance"}},
+	}}
+	unknown, err := New(db, engine, freePorts{}, root).Reconcile(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := db.Instance(context.Background(), "abc")
+	if got.ContainerID != "game" || got.ActualState != domain.StateUpdating || got.DesiredState != domain.StateRunning || len(unknown) != 0 {
+		t.Fatalf("instance=%#v unknown=%#v", got, unknown)
+	}
+}
+
+func TestLifecycleMutationsRejectSameInstanceMaintenanceWriter(t *testing.T) {
+	operations := map[string]func(*Service, context.Context, string) error{
+		"start":   func(s *Service, ctx context.Context, id string) error { return s.Start(ctx, id) },
+		"stop":    func(s *Service, ctx context.Context, id string) error { return s.Stop(ctx, id) },
+		"rebuild": func(s *Service, ctx context.Context, id string) error { return s.Rebuild(ctx, id) },
+		"delete":  func(s *Service, ctx context.Context, id string) error { return s.Delete(ctx, id, false) },
+	}
+	for name, operation := range operations {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			db, _ := store.Open(filepath.Join(root, "panel.db"))
+			defer db.Close()
+			instance := domain.Instance{ID: "abc", NodeID: "local", Name: "one", ContainerID: "game", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}
+			_ = db.CreateInstance(context.Background(), instance)
+			engine := &fakeEngine{containers: []docker.Container{{ID: "writer", State: "running", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "abc", docker.RoleLabel: "maintenance"}}}}
+			err := operation(New(db, engine, freePorts{}, root), context.Background(), "abc")
+			if err == nil || !errors.Is(err, ErrMaintenanceActive) {
+				t.Fatalf("err=%v", err)
+			}
+			if engine.started || engine.stopped || engine.removed {
+				t.Fatalf("mutation reached Docker despite writer: %#v", engine)
+			}
+		})
 	}
 }
 

@@ -34,6 +34,13 @@ func NewPackageManager(root string) (*PackageManager, error) {
 	}
 	return &PackageManager{directory: directory}, nil
 }
+func (m *PackageManager) CreateDownloadTemp() (*os.File, error) {
+	directory := filepath.Join(filepath.Dir(m.directory), "uploads")
+	if err := os.MkdirAll(directory, 0750); err != nil {
+		return nil, err
+	}
+	return os.CreateTemp(directory, "release-*.part")
+}
 func (m *PackageManager) AddUpload(filename, version string, reader io.Reader, size int64) (PackageVersion, error) {
 	if filepath.Base(filename) != filename || strings.ToLower(filepath.Ext(filename)) != ".zip" || version == "" || size < 1 {
 		return PackageVersion{}, errors.New("safe ZIP filename, version and size required")

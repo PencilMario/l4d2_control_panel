@@ -25,6 +25,8 @@ type Engine interface {
 	Remove(context.Context, string) error
 }
 
+var ErrMaintenanceActive = errors.New("instance maintenance writer is active")
+
 func (s *Service) Reconcile(ctx context.Context) ([]docker.Container, error) {
 	containers, err := s.engine.ListManaged(ctx)
 	if err != nil {
@@ -34,15 +36,31 @@ func (s *Service) Reconcile(ctx context.Context) ([]docker.Container, error) {
 	if err != nil {
 		return nil, err
 	}
-	byID := make(map[string]docker.Container, len(containers))
+	gameByID := make(map[string]docker.Container, len(containers))
+	maintenanceByID := make(map[string]bool)
 	for _, container := range containers {
-		byID[container.InstanceID()] = container
+		switch container.Role() {
+		case "maintenance":
+			maintenanceByID[container.InstanceID()] = true
+		case "game":
+			gameByID[container.InstanceID()] = container
+		}
 	}
 	known := make(map[string]bool, len(instances))
 	for _, instance := range instances {
 		known[instance.ID] = true
-		if container, ok := byID[instance.ID]; ok {
+		container, hasGame := gameByID[instance.ID]
+		if hasGame {
 			instance.ContainerID = container.ID
+		}
+		if maintenanceByID[instance.ID] {
+			instance.ActualState = domain.StateUpdating
+			if err := s.repo.UpdateInstance(ctx, instance); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if hasGame {
 			if container.State == "running" {
 				if s.health == nil {
 					instance.ActualState = domain.StateRunning
@@ -75,7 +93,8 @@ func (s *Service) Reconcile(ctx context.Context) ([]docker.Container, error) {
 	}
 	unknown := make([]docker.Container, 0)
 	for _, container := range containers {
-		if !known[container.InstanceID()] {
+		role := container.Role()
+		if !known[container.InstanceID()] || (role != "game" && role != "maintenance") {
 			unknown = append(unknown, container)
 		}
 	}
@@ -113,6 +132,9 @@ func New(repo Repository, engine Engine, ports PortChecker, dataRoot string, opt
 	return service
 }
 func (s *Service) Start(ctx context.Context, id string) error {
+	if err := s.ensureNoMaintenance(ctx, id); err != nil {
+		return err
+	}
 	v, err := s.repo.Instance(ctx, id)
 	if err != nil {
 		return err
@@ -172,6 +194,9 @@ func (s *Service) Start(ctx context.Context, id string) error {
 	return s.repo.UpdateInstance(ctx, v)
 }
 func (s *Service) Stop(ctx context.Context, id string) error {
+	if err := s.ensureNoMaintenance(ctx, id); err != nil {
+		return err
+	}
 	v, err := s.repo.Instance(ctx, id)
 	if err != nil {
 		return err
@@ -193,6 +218,9 @@ func (s *Service) Restart(ctx context.Context, id string) error {
 	return s.Start(ctx, id)
 }
 func (s *Service) Rebuild(ctx context.Context, id string) error {
+	if err := s.ensureNoMaintenance(ctx, id); err != nil {
+		return err
+	}
 	instance, err := s.repo.Instance(ctx, id)
 	if err != nil {
 		return err
@@ -226,6 +254,9 @@ func (s *Service) Rebuild(ctx context.Context, id string) error {
 	return nil
 }
 func (s *Service) Delete(ctx context.Context, id string, deleteData bool) error {
+	if err := s.ensureNoMaintenance(ctx, id); err != nil {
+		return err
+	}
 	instance, err := s.repo.Instance(ctx, id)
 	if err != nil {
 		return err
@@ -259,4 +290,17 @@ func (s *Service) fault(ctx context.Context, v domain.Instance, cause error) err
 	v.ActualState = domain.StateFaulted
 	_ = s.repo.UpdateInstance(ctx, v)
 	return cause
+}
+
+func (s *Service) ensureNoMaintenance(ctx context.Context, instanceID string) error {
+	containers, err := s.engine.ListManaged(ctx)
+	if err != nil {
+		return err
+	}
+	for _, container := range containers {
+		if container.InstanceID() == instanceID && container.Role() == "maintenance" {
+			return fmt.Errorf("%w: %s", ErrMaintenanceActive, container.ID)
+		}
+	}
+	return nil
 }

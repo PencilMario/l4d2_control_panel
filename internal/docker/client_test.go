@@ -94,6 +94,8 @@ func TestGameUpdateUsesFixedSteamCMDMaintenanceContainer(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.Method+" "+r.URL.Path)
 		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/json"):
+			_ = json.NewEncoder(w).Encode([]Container{})
 		case strings.HasSuffix(r.URL.Path, "/containers/create"):
 			if err := json.NewDecoder(r.Body).Decode(&created); err != nil {
 				t.Fatal(err)
@@ -113,8 +115,70 @@ func TestGameUpdateUsesFixedSteamCMDMaintenanceContainer(t *testing.T) {
 	if strings.Join(created.Cmd, " ") != "steamcmd +@sSteamCmdForcePlatformType linux +force_install_dir /opt/l4d2/game +login anonymous +app_info_update 1 +app_update 222860 validate +quit" || created.HostConfig.NetworkMode != "bridge" || created.Labels[RoleLabel] != "maintenance" {
 		t.Fatalf("request=%#v", created)
 	}
-	if len(paths) != 4 {
+	if len(paths) != 5 {
 		t.Fatalf("paths=%v", paths)
+	}
+}
+
+func TestGameUpdateAdoptsExistingMaintenanceContainer(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/json"):
+			_ = json.NewEncoder(w).Encode([]Container{{ID: "maintenance-existing", State: "running", Labels: map[string]string{ManagedLabel: "true", InstanceLabel: "abc", RoleLabel: "maintenance"}}})
+		case strings.HasSuffix(r.URL.Path, "/wait"):
+			_ = json.NewEncoder(w).Encode(map[string]int{"StatusCode": 0})
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+
+	instance := domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"}
+	if err := NewEngine(server.URL).UpdateGame(context.Background(), t.TempDir(), instance); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range paths {
+		if path == "POST /v1.44/containers/create" || path == "POST /v1.44/containers/maintenance-existing/start" {
+			t.Fatalf("existing maintenance container was not adopted: %v", paths)
+		}
+	}
+	want := []string{
+		"GET /v1.44/containers/json",
+		"POST /v1.44/containers/maintenance-existing/wait",
+		"DELETE /v1.44/containers/maintenance-existing",
+	}
+	if strings.Join(paths, "|") != strings.Join(want, "|") {
+		t.Fatalf("paths=%v want=%v", paths, want)
+	}
+}
+
+func TestGameUpdateKeepsUnclassifiedMaintenanceContainerForRetry(t *testing.T) {
+	var deleted bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/json"):
+			_ = json.NewEncoder(w).Encode([]Container{})
+		case strings.HasSuffix(r.URL.Path, "/containers/create"):
+			_ = json.NewEncoder(w).Encode(map[string]string{"Id": "maintenance-new"})
+		case strings.HasSuffix(r.URL.Path, "/wait"):
+			http.Error(w, "interrupted", http.StatusServiceUnavailable)
+		case r.Method == http.MethodDelete:
+			deleted = true
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+
+	err := NewEngine(server.URL).UpdateGame(context.Background(), t.TempDir(), domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"})
+	if err == nil {
+		t.Fatal("interrupted wait unexpectedly succeeded")
+	}
+	if deleted {
+		t.Fatal("unclassified maintenance container was deleted instead of retained for adoption")
 	}
 }
 
@@ -178,16 +242,23 @@ func TestEngineUsesOnlyFixedLifecycleEndpoints(t *testing.T) {
 	}
 }
 
-func TestListManagedFiltersByLabels(t *testing.T) {
+func TestListManagedIncludesGameAndMaintenanceRoles(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.URL.RawQuery, "filters=") {
-			t.Fatal("missing label filters")
+		var filters map[string][]string
+		if err := json.Unmarshal([]byte(r.URL.Query().Get("filters")), &filters); err != nil {
+			t.Fatalf("filters: %v", err)
 		}
-		_ = json.NewEncoder(w).Encode([]Container{{ID: "one", Labels: map[string]string{ManagedLabel: "true", InstanceLabel: "abc"}, State: "running"}})
+		if got := strings.Join(filters["label"], ","); got != ManagedLabel+"=true" {
+			t.Fatalf("role-specific filter hides maintenance containers: %q", got)
+		}
+		_ = json.NewEncoder(w).Encode([]Container{
+			{ID: "game", Labels: map[string]string{ManagedLabel: "true", InstanceLabel: "abc", RoleLabel: "game"}, State: "running"},
+			{ID: "maintenance", Labels: map[string]string{ManagedLabel: "true", InstanceLabel: "abc", RoleLabel: "maintenance"}, State: "running"},
+		})
 	}))
 	defer server.Close()
 	items, err := NewEngine(server.URL).ListManaged(context.Background())
-	if err != nil || len(items) != 1 || items[0].InstanceID() != "abc" {
+	if err != nil || len(items) != 2 || items[0].InstanceID() != "abc" || items[1].Labels[RoleLabel] != "maintenance" {
 		t.Fatalf("items=%#v err=%v", items, err)
 	}
 }

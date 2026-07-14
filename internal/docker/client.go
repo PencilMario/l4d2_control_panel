@@ -139,6 +139,7 @@ func (e *Engine) Stats(ctx context.Context, containerID string) (ResourceStats, 
 }
 
 func (c Container) InstanceID() string { return c.Labels[InstanceLabel] }
+func (c Container) Role() string       { return c.Labels[RoleLabel] }
 
 type hostConfig struct {
 	Binds          []string `json:"Binds"`
@@ -157,33 +158,72 @@ type createRequest struct {
 }
 
 func (e *Engine) UpdateGame(ctx context.Context, dataRoot string, instance domain.Instance) error {
-	command := []string{"steamcmd", "+@sSteamCmdForcePlatformType", "linux", "+force_install_dir", "/opt/l4d2/game"}
-	command = append(command, e.steamLoginArgs()...)
-	command = append(command, "+app_info_update", "1", "+app_update", "222860", "validate", "+quit")
-	body := createRequest{Image: instance.RuntimeImage, Env: e.runtimeEnv(nil), Cmd: command, User: "steam", Labels: map[string]string{ManagedLabel: "true", InstanceLabel: instance.ID, RoleLabel: "maintenance"}, HostConfig: hostConfig{Binds: []string{filepath.Join(dataRoot, "instances", instance.ID, "game") + ":/opt/l4d2/game"}, NetworkMode: "bridge", SecurityOpt: []string{"no-new-privileges"}}}
-	var created struct {
-		ID string `json:"Id"`
-	}
-	name := "l4d2-update-" + instance.ID + "-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
-	if err := e.do(ctx, http.MethodPost, "/containers/create", url.Values{"name": []string{name}}, body, &created); err != nil {
+	maintenance, err := e.maintenanceContainers(ctx, instance.ID)
+	if err != nil {
 		return err
 	}
-	defer func() {
-		_ = e.do(context.WithoutCancel(ctx), http.MethodDelete, "/containers/"+url.PathEscape(created.ID), url.Values{"force": []string{"true"}, "v": []string{"false"}}, nil, nil)
-	}()
-	if err := e.Start(ctx, created.ID); err != nil {
-		return err
+	if len(maintenance) > 1 {
+		return fmt.Errorf("multiple maintenance containers found for instance %s", instance.ID)
 	}
+
+	containerID := ""
+	if len(maintenance) == 1 {
+		containerID = maintenance[0].ID
+		if maintenance[0].State == "created" {
+			if err := e.Start(ctx, containerID); err != nil {
+				return err
+			}
+		}
+	} else {
+		command := []string{"steamcmd", "+@sSteamCmdForcePlatformType", "linux", "+force_install_dir", "/opt/l4d2/game"}
+		command = append(command, e.steamLoginArgs()...)
+		command = append(command, "+app_info_update", "1", "+app_update", "222860", "validate", "+quit")
+		body := createRequest{Image: instance.RuntimeImage, Env: e.runtimeEnv(nil), Cmd: command, User: "steam", Labels: map[string]string{ManagedLabel: "true", InstanceLabel: instance.ID, RoleLabel: "maintenance"}, HostConfig: hostConfig{Binds: []string{filepath.Join(dataRoot, "instances", instance.ID, "game") + ":/opt/l4d2/game"}, NetworkMode: "bridge", SecurityOpt: []string{"no-new-privileges"}}}
+		var created struct {
+			ID string `json:"Id"`
+		}
+		name := "l4d2-update-" + instance.ID + "-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
+		if err := e.do(ctx, http.MethodPost, "/containers/create", url.Values{"name": []string{name}}, body, &created); err != nil {
+			return err
+		}
+		containerID = created.ID
+		if err := e.Start(ctx, containerID); err != nil {
+			return err
+		}
+	}
+
 	var result struct {
 		StatusCode int `json:"StatusCode"`
 	}
-	if err := e.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(created.ID)+"/wait", url.Values{"condition": []string{"not-running"}}, nil, &result); err != nil {
+	if err := e.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(containerID)+"/wait", url.Values{"condition": []string{"not-running"}}, nil, &result); err != nil {
+		return err
+	}
+	if err := e.do(context.WithoutCancel(ctx), http.MethodDelete, "/containers/"+url.PathEscape(containerID), url.Values{"force": []string{"true"}, "v": []string{"false"}}, nil, nil); err != nil {
 		return err
 	}
 	if result.StatusCode != 0 {
 		return fmt.Errorf("steamcmd exited with code %d", result.StatusCode)
 	}
 	return nil
+}
+
+func (e *Engine) HasMaintenance(ctx context.Context, instanceID string) (bool, error) {
+	containers, err := e.maintenanceContainers(ctx, instanceID)
+	return len(containers) > 0, err
+}
+
+func (e *Engine) maintenanceContainers(ctx context.Context, instanceID string) ([]Container, error) {
+	containers, err := e.ListManaged(ctx)
+	if err != nil {
+		return nil, err
+	}
+	maintenance := make([]Container, 0, 1)
+	for _, container := range containers {
+		if container.InstanceID() == instanceID && container.Role() == "maintenance" {
+			maintenance = append(maintenance, container)
+		}
+	}
+	return maintenance, nil
 }
 
 func NewEngine(host string, options ...EngineOption) *Engine {
@@ -363,7 +403,7 @@ func (e *Engine) consoleRoundTrip(ctx context.Context, containerID, command stri
 	return "", errors.New("console response exceeded limit")
 }
 func (e *Engine) ListManaged(ctx context.Context) ([]Container, error) {
-	filters, _ := json.Marshal(map[string][]string{"label": {ManagedLabel + "=true", RoleLabel + "=game"}})
+	filters, _ := json.Marshal(map[string][]string{"label": {ManagedLabel + "=true"}})
 	var result []Container
 	err := e.do(ctx, http.MethodGet, "/containers/json", url.Values{"all": []string{"true"}, "filters": []string{string(filters)}}, nil, &result)
 	return result, err

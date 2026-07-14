@@ -10,6 +10,7 @@ type InstanceRepository interface {
 	UpdateInstance(context.Context, domain.Instance) error
 }
 type GameUpdater interface {
+	HasMaintenance(context.Context, string) (bool, error)
 	UpdateGame(context.Context, string, domain.Instance) error
 }
 type PrivateApplier interface {
@@ -28,21 +29,53 @@ func (c GameCoordinator) Update(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if err := c.Lifecycle.Stop(ctx, id); err != nil {
+	maintenance, err := c.Updater.HasMaintenance(ctx, id)
+	if err != nil {
+		return err
+	}
+	resume := instance.DesiredState == domain.StateRunning
+	needsStop := instance.ActualState == domain.StateRunning || instance.ActualState == domain.StateStarting || instance.ActualState == domain.StateInstalling
+	if !maintenance && needsStop {
+		if err := c.Lifecycle.Stop(ctx, id); err != nil {
+			return err
+		}
+	}
+	instance, err = c.Instances.Instance(ctx, id)
+	if err != nil {
+		return err
+	}
+	if resume {
+		instance.DesiredState = domain.StateRunning
+	}
+	instance.ActualState = domain.StateUpdating
+	if err := c.Instances.UpdateInstance(ctx, instance); err != nil {
 		return err
 	}
 	if err := c.Updater.UpdateGame(ctx, c.Root, instance); err != nil {
-		return c.fault(ctx, instance, err)
+		return c.fault(ctx, id, err)
 	}
 	if err := c.Private.Apply(ctx, id); err != nil {
-		return c.fault(ctx, instance, err)
+		return c.fault(ctx, id, err)
 	}
-	if err := c.Lifecycle.Start(ctx, id); err != nil {
-		return c.fault(ctx, instance, err)
+	latest, err := c.Instances.Instance(ctx, id)
+	if err != nil {
+		return err
 	}
-	return nil
+	if latest.DesiredState == domain.StateRunning {
+		if err := c.Lifecycle.Start(ctx, id); err != nil {
+			return c.fault(ctx, id, err)
+		}
+		return nil
+	}
+	latest.ActualState = domain.StateStopped
+	return c.Instances.UpdateInstance(ctx, latest)
 }
-func (c GameCoordinator) fault(ctx context.Context, instance domain.Instance, cause error) error {
+
+func (c GameCoordinator) fault(ctx context.Context, id string, cause error) error {
+	instance, err := c.Instances.Instance(ctx, id)
+	if err != nil {
+		return cause
+	}
 	instance.ActualState = domain.StateFaulted
 	_ = c.Instances.UpdateInstance(ctx, instance)
 	return cause

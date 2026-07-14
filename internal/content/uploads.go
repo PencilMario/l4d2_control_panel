@@ -63,15 +63,11 @@ func (m *UploadManager) Begin(name string, size int64, hash string) (UploadSessi
 func (m *UploadManager) Write(id string, offset int64, reader io.Reader) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	session, err := m.load(id)
+	session, err := m.loadRecovered(id)
 	if err != nil {
 		return 0, err
 	}
-	info, err := os.Stat(m.part(id))
-	if err != nil {
-		return 0, err
-	}
-	if offset != info.Size() || offset != session.Offset {
+	if offset != session.Offset {
 		return 0, fmt.Errorf("expected offset %d", session.Offset)
 	}
 	file, err := os.OpenFile(m.part(id), os.O_WRONLY|os.O_APPEND, 0640)
@@ -80,6 +76,15 @@ func (m *UploadManager) Write(id string, offset int64, reader io.Reader) (int64,
 	}
 	limited := io.LimitReader(reader, session.Size-session.Offset+1)
 	written, copyErr := io.Copy(file, limited)
+	if copyErr == nil {
+		copyErr = file.Sync()
+	}
+	if written > session.Size-session.Offset {
+		_ = file.Truncate(session.Offset)
+		_ = file.Sync()
+		_ = file.Close()
+		return written, errors.New("upload exceeds declared size")
+	}
 	closeErr := file.Close()
 	if copyErr != nil {
 		return written, copyErr
@@ -88,15 +93,12 @@ func (m *UploadManager) Write(id string, offset int64, reader io.Reader) (int64,
 		return written, closeErr
 	}
 	session.Offset += written
-	if session.Offset > session.Size {
-		return written, errors.New("upload exceeds declared size")
-	}
 	return written, m.save(session)
 }
 func (m *UploadManager) Complete(id string) (SharedVPK, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	session, err := m.load(id)
+	session, err := m.loadRecovered(id)
 	if err != nil {
 		return SharedVPK{}, false, err
 	}
@@ -167,6 +169,26 @@ func (m *UploadManager) load(id string) (UploadSession, error) {
 	var session UploadSession
 	err = json.Unmarshal(raw, &session)
 	return session, err
+}
+func (m *UploadManager) loadRecovered(id string) (UploadSession, error) {
+	session, err := m.load(id)
+	if err != nil {
+		return UploadSession{}, err
+	}
+	info, err := os.Stat(m.part(id))
+	if err != nil {
+		return UploadSession{}, err
+	}
+	if info.Size() > session.Size {
+		return UploadSession{}, errors.New("upload part exceeds declared size")
+	}
+	if session.Offset != info.Size() {
+		session.Offset = info.Size()
+		if err := m.save(session); err != nil {
+			return UploadSession{}, err
+		}
+	}
+	return session, nil
 }
 func (m *UploadManager) cleanup(id string) { _ = os.Remove(m.meta(id)); _ = os.Remove(m.part(id)) }
 func (m *UploadManager) List() ([]SharedVPK, error) {

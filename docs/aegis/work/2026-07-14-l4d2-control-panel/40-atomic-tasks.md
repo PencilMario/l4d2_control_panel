@@ -15,12 +15,12 @@
 - [x] Repair browser/API contracts, destructive confirmations, large VPK chunking and truthful loading/error/health states.
 - [x] Declare, persist and reserve SourceTV/plugin ports across API, lifecycle, runtime and UI.
 - [x] Add durable package-update journal recovery and bounded Panel shutdown/Job drain.
-- [ ] Reconcile maintenance writers and recover interrupted uploads/backups/game updates.
+- [x] Reconcile maintenance writers and recover interrupted uploads/backups/game updates.
 - [ ] Add real-HTTP Playwright acceptance and the safe Linux fault-injection matrix.
 
 ## Active slice
 
-Reconcile maintenance writers and recover interrupted VPK uploads, backups and game updates, then complete real-browser and fault acceptance in Task 12.
+Add real-HTTP Playwright acceptance and complete the safe fault-injection matrix in Task 12.
 
 ## Completed in the latest slice
 
@@ -54,6 +54,11 @@ Reconcile maintenance writers and recover interrupted VPK uploads, backups and g
 - Made initial Job persistence mandatory, tracked accepted goroutines for context-bounded drain, and propagated creation errors through HTTP and scheduled dispatch.
 - Replaced fatal serving with SIGINT/SIGTERM handling ordered as HTTP shutdown, bounded Cron stop and Job drain.
 - Verified a disposable Linux Panel received Docker SIGTERM, logged drain, exited 0 and left the existing game container ID unchanged.
+- Expanded managed-container scans to include maintenance writers while requiring an explicit valid role before reconciliation can adopt a container.
+- Blocked same-instance lifecycle mutations while a maintenance artifact remains unclassified; game-update retries adopt the existing writer instead of creating a second one.
+- Persisted the pre-update desired-running intent and made game-update fault writes merge against the latest instance record.
+- Recovered VPK offsets from `.part` length, staged Release downloads below managed package storage and published backups only after close/fsync plus atomic rename.
+- Verified writer retention and adoption against Docker 29.6.1 on `sirphomesv`; the existing game container remained unchanged and no maintenance container was left behind.
 
 ## Blocked-on
 
@@ -61,12 +66,12 @@ Reconcile maintenance writers and recover interrupted VPK uploads, backups and g
 
 ## Next
 
-1. Reconcile maintenance writers and interrupted artifacts.
-2. Add real HTTP Playwright coverage and run the remaining safe fault-injection matrix.
+1. Add real HTTP Playwright coverage.
+2. Run the remaining safe fault-injection matrix and final release bundle.
 
 ## DriftCheckDraft
 
 - Scope: continues to implement the approved single-host, single-admin design.
 - Compatibility: host networking, fixed Supervisor Exec operations and content precedence are unchanged.
-- New owner/fallback: update journals and `Deployment` own package commit/rollback state; `jobs.Manager` owns accepted-goroutine drain. In-memory-only rollback, pre-health backup deletion, ignored initial Job saves and fatal serving are retired without fallback.
-- Decision: `continue`; Task 10 preserves public Job JSON/SSE and content precedence, with fresh restart, rollback and Linux signal evidence.
+- New owner/fallback: Docker maintenance labels own writer adoption; `.part` size owns recoverable VPK offsets; `PackageManager` owns Release staging; backup final names only identify fully synced archives. The game-only scan, stale JSON offset, global Release temp and direct final backup write are retired without fallback.
+- Decision: `continue`; Task 11 preserves fixed SteamCMD commands, anonymous authentication, desired state, package precedence and the existing game container.

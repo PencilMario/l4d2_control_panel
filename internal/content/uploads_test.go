@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -63,6 +65,64 @@ func TestChunkedUploadResumesVerifiesAndMovesAtomically(t *testing.T) {
 	items, _ = manager.List()
 	if len(items) != 0 {
 		t.Fatalf("items after delete=%#v", items)
+	}
+}
+
+func TestChunkedUploadRecoversOffsetFromPartFile(t *testing.T) {
+	root := t.TempDir()
+	data := []byte("recoverable-vpk")
+	sum := sha256.Sum256(data)
+	manager, _ := NewUploadManager(root)
+	session, err := manager.Begin("recover.vpk", int64(len(data)), hex.EncodeToString(sum[:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manager.part(session.ID), data[:5], 0640); err != nil {
+		t.Fatal(err)
+	}
+
+	manager, _ = NewUploadManager(root)
+	if _, err := manager.Write(session.ID, 5, bytes.NewReader(data[5:8])); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(manager.meta(session.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recovered UploadSession
+	if err := json.Unmarshal(raw, &recovered); err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Offset != 8 {
+		t.Fatalf("offset=%d want=8", recovered.Offset)
+	}
+	if _, err := manager.Write(session.ID, 8, bytes.NewReader(data[8:])); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := manager.Complete(session.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestChunkedUploadCompletesWhenPartFileOutranMetadata(t *testing.T) {
+	root := t.TempDir()
+	data := []byte("complete-after-crash")
+	sum := sha256.Sum256(data)
+	manager, _ := NewUploadManager(root)
+	session, err := manager.Begin("complete.vpk", int64(len(data)), hex.EncodeToString(sum[:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manager.part(session.ID), data, 0640); err != nil {
+		t.Fatal(err)
+	}
+	manager, _ = NewUploadManager(root)
+	item, duplicate, err := manager.Complete(session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duplicate || item.Name != "complete.vpk" || item.Size != int64(len(data)) {
+		t.Fatalf("item=%#v duplicate=%v", item, duplicate)
 	}
 }
 func TestUploadRejectsUnsafeNameOffsetAndHash(t *testing.T) {

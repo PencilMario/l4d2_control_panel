@@ -98,7 +98,7 @@ func (c Client) FetchLatest(ctx context.Context, repository, assetPattern, token
 	if limit <= 0 {
 		limit = 2 << 30
 	}
-	temporary, err := os.CreateTemp("", "l4d2-release-*.zip")
+	temporary, err := packages.CreateDownloadTemp()
 	if err != nil {
 		return content.PackageVersion{}, err
 	}

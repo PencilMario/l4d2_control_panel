@@ -36,3 +36,27 @@ func TestBackupAndCleanupStayInsideInstanceData(t *testing.T) {
 		t.Fatal("fresh backup removed")
 	}
 }
+
+func TestCanceledBackupDoesNotPublishPartialArchive(t *testing.T) {
+	root := t.TempDir()
+	private := filepath.Join(root, "instances", "abc", "private")
+	if err := os.MkdirAll(private, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(private, "server.cfg"), []byte("data"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := New(root).Backup(ctx, "abc"); err == nil {
+		t.Fatal("canceled backup unexpectedly succeeded")
+	}
+	backupDir := filepath.Join(root, "instances", "abc", "backups")
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("partial backup was published: %v", entries)
+	}
+}

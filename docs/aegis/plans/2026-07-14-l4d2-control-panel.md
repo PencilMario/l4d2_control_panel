@@ -187,10 +187,10 @@
 
 **Verification:** `go test ./internal/docker ./internal/lifecycle ./internal/updates ./internal/content ./internal/releases ./internal/maintenance ./runtime`.
 
-- [ ] Add failing maintenance adoption, desired-running recovery and idempotent game-update retry tests.
-- [ ] Add failing VPK append/metadata crash and partial-backup publication tests.
-- [ ] Implement the smallest recovery controller and atomic artifact rules.
-- [ ] Run package regressions and disposable Linux interruption smokes, then commit.
+- [x] Add failing maintenance adoption, desired-running recovery and idempotent game-update retry tests.
+- [x] Add failing VPK append/metadata crash and partial-backup publication tests.
+- [x] Implement the smallest recovery controller and atomic artifact rules.
+- [x] Run package regressions and disposable Linux interruption smokes, then commit.
 
 ### Task 12: Real-browser and fault-injection acceptance
 

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -26,10 +27,18 @@ func (m *Manager) Backup(ctx context.Context, instanceID string) (string, error)
 		return "", err
 	}
 	target := filepath.Join(backupDir, "backup-"+time.Now().UTC().Format("20060102T150405.000000000")+".tar.gz")
-	file, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0640)
+	temporary := target + ".partial"
+	file, err := os.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0640)
 	if err != nil {
 		return "", err
 	}
+	published := false
+	defer func() {
+		_ = file.Close()
+		if !published {
+			_ = os.Remove(temporary)
+		}
+	}()
 	gzipWriter := gzip.NewWriter(file)
 	writer := tar.NewWriter(gzipWriter)
 	sources := []string{filepath.Join(base, "private"), filepath.Join(base, "package-manifest.json")}
@@ -78,9 +87,8 @@ func (m *Manager) Backup(ctx context.Context, instanceID string) (string, error)
 			return closeErr
 		})
 		if err != nil {
-			writer.Close()
-			gzipWriter.Close()
-			file.Close()
+			_ = writer.Close()
+			_ = gzipWriter.Close()
 			return "", err
 		}
 	}
@@ -90,10 +98,33 @@ func (m *Manager) Backup(ctx context.Context, instanceID string) (string, error)
 	if err := gzipWriter.Close(); err != nil {
 		return "", err
 	}
+	if err := file.Sync(); err != nil {
+		return "", err
+	}
 	if err := file.Close(); err != nil {
 		return "", err
 	}
+	if err := os.Rename(temporary, target); err != nil {
+		return "", err
+	}
+	if err := syncDirectory(backupDir); err != nil {
+		_ = os.Remove(target)
+		return "", err
+	}
+	published = true
 	return target, nil
+}
+
+func syncDirectory(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }
 func (m *Manager) Cleanup(ctx context.Context, retention time.Duration) (int, error) {
 	cutoff := time.Now().Add(-retention)
