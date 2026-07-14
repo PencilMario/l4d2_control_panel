@@ -11,8 +11,12 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/google/uuid"
 )
 
 const apiVersion = "/v1.44"
@@ -174,6 +178,48 @@ func (e *Engine) AttachSupervisor(ctx context.Context, containerID string) (io.R
 		return nil, fmt.Errorf("docker attach: %s: %s", response.Status, string(raw))
 	}
 	return &attachStream{Conn: conn, reader: reader}, nil
+}
+
+var playerCommandPattern = regexp.MustCompile(`^(kickid [1-9][0-9]*|banid (0|[1-9][0-9]*) [1-9][0-9]* kick; writeid)$`)
+
+func (e *Engine) Status(ctx context.Context, containerID string) (string, error) {
+	return e.consoleRoundTrip(ctx, containerID, "status")
+}
+func (e *Engine) PlayerCommand(ctx context.Context, containerID, command string) error {
+	if !playerCommandPattern.MatchString(command) {
+		return errors.New("console command is not an approved player operation")
+	}
+	_, err := e.consoleRoundTrip(ctx, containerID, command)
+	return err
+}
+func (e *Engine) consoleRoundTrip(ctx context.Context, containerID, command string) (string, error) {
+	stream, err := e.AttachSupervisor(ctx, containerID)
+	if err != nil {
+		return "", err
+	}
+	defer stream.Close()
+	marker := "L4D2_PANEL_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	if deadline, ok := stream.(interface{ SetDeadline(time.Time) error }); ok {
+		_ = deadline.SetDeadline(time.Now().Add(4 * time.Second))
+	}
+	if _, err := io.WriteString(stream, command+"\necho "+marker+"\n"); err != nil {
+		return "", err
+	}
+	var output bytes.Buffer
+	buffer := make([]byte, 16*1024)
+	for output.Len() < 2*1024*1024 {
+		n, readErr := stream.Read(buffer)
+		if n > 0 {
+			output.Write(buffer[:n])
+			if strings.Contains(output.String(), marker) {
+				return output.String(), nil
+			}
+		}
+		if readErr != nil {
+			return "", readErr
+		}
+	}
+	return "", errors.New("console response exceeded limit")
 }
 func (e *Engine) ListManaged(ctx context.Context) ([]Container, error) {
 	filters, _ := json.Marshal(map[string][]string{"label": {ManagedLabel + "=true", RoleLabel + "=game"}})

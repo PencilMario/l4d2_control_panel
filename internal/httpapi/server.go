@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -14,6 +15,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
+	"github.com/not0721here/l4d2-control-panel/internal/players"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 )
 
@@ -26,6 +28,7 @@ type Server struct {
 	lifecycle Lifecycle
 	jobs      *jobs.Manager
 	console   ConsoleAttacher
+	players   PlayerService
 }
 
 type Lifecycle interface {
@@ -45,6 +48,14 @@ type ConsoleAttacher interface {
 
 func WithConsole(attacher ConsoleAttacher) Option { return func(s *Server) { s.console = attacher } }
 
+type PlayerService interface {
+	Online(context.Context, string) (players.Snapshot, error)
+	Kick(context.Context, string, int) error
+	Ban(context.Context, string, int, int) error
+}
+
+func WithPlayers(service PlayerService) Option { return func(s *Server) { s.players = service } }
+
 func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 	s := &Server{store: db, auth: a}
 	for _, option := range options {
@@ -63,9 +74,64 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Post("/api/instances/{id}/actions", s.instanceAction)
 		r.Get("/api/jobs/{id}", s.getJob)
 		r.Get("/api/instances/{id}/console", s.consoleSocket)
+		r.Get("/api/instances/{id}/players", s.onlinePlayers)
+		r.Post("/api/instances/{id}/players/{userID}/actions", s.playerAction)
 	})
 	s.router = r
 	return s
+}
+
+func (s *Server) onlinePlayers(w http.ResponseWriter, r *http.Request) {
+	if s.players == nil {
+		writeError(w, 503, "players_unavailable", "player query unavailable")
+		return
+	}
+	snapshot, err := s.players.Online(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, 502, "player_query_failed", err.Error())
+		return
+	}
+	writeJSON(w, 200, snapshot)
+}
+func (s *Server) playerAction(w http.ResponseWriter, r *http.Request) {
+	if s.players == nil || s.jobs == nil {
+		writeError(w, 503, "players_unavailable", "player operations unavailable")
+		return
+	}
+	userID, err := strconv.Atoi(chi.URLParam(r, "userID"))
+	if err != nil || userID < 1 {
+		writeError(w, 422, "invalid_user_id", "numeric UserID required")
+		return
+	}
+	var input struct {
+		Action  string `json:"action"`
+		Minutes int    `json:"minutes"`
+		Confirm bool   `json:"confirm"`
+	}
+	if decodeJSON(w, r, &input) != nil {
+		return
+	}
+	if !input.Confirm {
+		writeError(w, http.StatusPreconditionRequired, "confirmation_required", "player action requires confirmation")
+		return
+	}
+	id := chi.URLParam(r, "id")
+	operation := func(ctx context.Context, _ jobs.Reporter) error {
+		switch input.Action {
+		case "kick":
+			return s.players.Kick(ctx, id, userID)
+		case "ban":
+			return s.players.Ban(ctx, id, userID, input.Minutes)
+		default:
+			return errors.New("unsupported player action")
+		}
+	}
+	if input.Action != "kick" && input.Action != "ban" {
+		writeError(w, 422, "invalid_action", "supported actions: kick, ban")
+		return
+	}
+	job := s.jobs.Start(context.WithoutCancel(r.Context()), id, "player_"+input.Action, operation)
+	writeJSON(w, http.StatusAccepted, job)
 }
 
 var consoleUpgrader = websocket.Upgrader{ReadBufferSize: 4096, WriteBufferSize: 4096, CheckOrigin: func(r *http.Request) bool {

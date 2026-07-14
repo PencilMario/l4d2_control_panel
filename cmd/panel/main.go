@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"github.com/not0721here/l4d2-control-panel/internal/a2s"
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/config"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/httpapi"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/lifecycle"
+	"github.com/not0721here/l4d2-control-panel/internal/players"
 	"github.com/not0721here/l4d2-control-panel/internal/ports"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 	"log"
@@ -52,7 +54,12 @@ func main() {
 		log.Printf("found %d unclaimed managed containers", len(unknown))
 	}
 	jobManager := jobs.NewPersistentManager(db)
-	api := httpapi.New(db, sessions, httpapi.WithOperations(life, jobManager), httpapi.WithConsole(engine))
+	gameHost := os.Getenv("L4D2_PANEL_GAME_HOST")
+	if gameHost == "" {
+		gameHost = "127.0.0.1"
+	}
+	playerService := players.NewService(db, a2s.Client{}, engine, gameHost)
+	api := httpapi.New(db, sessions, httpapi.WithOperations(life, jobManager), httpapi.WithConsole(engine), httpapi.WithPlayers(playerService))
 	mux := http.NewServeMux()
 	mux.Handle("/api/", api.Handler())
 	web := os.Getenv("L4D2_PANEL_WEB_ROOT")

@@ -75,6 +75,12 @@ func TestAttachSupervisorHijacksFixedExecStream(t *testing.T) {
 	}
 }
 
+func TestPlayerCommandRejectsArbitraryConsoleInput(t *testing.T) {
+	if err := NewEngine("http://127.0.0.1:1").PlayerCommand(context.Background(), "container", "quit"); err == nil {
+		t.Fatal("arbitrary console command accepted")
+	}
+}
+
 func TestEngineUsesOnlyFixedLifecycleEndpoints(t *testing.T) {
 	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
