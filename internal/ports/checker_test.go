@@ -1,6 +1,10 @@
 package ports
 
-import "testing"
+import (
+	"net"
+	"strconv"
+	"testing"
+)
 
 func TestCheckerRejectsConfiguredAndListeningPorts(t *testing.T) {
 	c := Checker{Configured: func() []int { return []int{27015} }, Listening: func(port int) bool { return port == 27016 }}
@@ -12,5 +16,18 @@ func TestCheckerRejectsConfiguredAndListeningPorts(t *testing.T) {
 	}
 	if err := c.Available(27017); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestIsListeningDetectsHostTCPPort(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	_, raw, _ := net.SplitHostPort(listener.Addr().String())
+	port, _ := strconv.Atoi(raw)
+	if !IsListening(port) {
+		t.Fatalf("port %d not detected", port)
 	}
 }

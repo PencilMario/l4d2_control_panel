@@ -31,12 +31,12 @@ func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) CreateInstance(ctx context.Context, v domain.Instance) error {
 	now := time.Now().UTC()
 	v.CreatedAt, v.UpdatedAt = now, now
-	_, err := s.db.ExecContext(ctx, `INSERT INTO instances(id,node_id,name,game_port,sourcetv_port,start_map,game_mode,tickrate,max_players,extra_args,runtime_image,package_version,desired_state,actual_state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, fields(v)...)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO instances(id,node_id,name,container_id,game_port,sourcetv_port,start_map,game_mode,tickrate,max_players,extra_args,runtime_image,package_version,desired_state,actual_state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, fields(v)...)
 	return err
 }
 func (s *Store) UpdateInstance(ctx context.Context, v domain.Instance) error {
 	v.UpdatedAt = time.Now().UTC()
-	r, err := s.db.ExecContext(ctx, `UPDATE instances SET node_id=?,name=?,game_port=?,sourcetv_port=?,start_map=?,game_mode=?,tickrate=?,max_players=?,extra_args=?,runtime_image=?,package_version=?,desired_state=?,actual_state=?,updated_at=? WHERE id=?`, v.NodeID, v.Name, v.GamePort, v.SourceTVPort, v.StartMap, v.GameMode, v.Tickrate, v.MaxPlayers, v.ExtraArgs, v.RuntimeImage, v.PackageVersion, v.DesiredState, v.ActualState, v.UpdatedAt.Format(time.RFC3339Nano), v.ID)
+	r, err := s.db.ExecContext(ctx, `UPDATE instances SET node_id=?,name=?,container_id=?,game_port=?,sourcetv_port=?,start_map=?,game_mode=?,tickrate=?,max_players=?,extra_args=?,runtime_image=?,package_version=?,desired_state=?,actual_state=?,updated_at=? WHERE id=?`, v.NodeID, v.Name, v.ContainerID, v.GamePort, v.SourceTVPort, v.StartMap, v.GameMode, v.Tickrate, v.MaxPlayers, v.ExtraArgs, v.RuntimeImage, v.PackageVersion, v.DesiredState, v.ActualState, v.UpdatedAt.Format(time.RFC3339Nano), v.ID)
 	if err == nil {
 		if n, _ := r.RowsAffected(); n == 0 {
 			return ErrNotFound
@@ -72,14 +72,14 @@ func (s *Store) Instances(ctx context.Context) ([]domain.Instance, error) {
 	return out, rows.Err()
 }
 
-const selectInstance = `SELECT id,node_id,name,game_port,sourcetv_port,start_map,game_mode,tickrate,max_players,extra_args,runtime_image,package_version,desired_state,actual_state,created_at,updated_at FROM instances`
+const selectInstance = `SELECT id,node_id,name,container_id,game_port,sourcetv_port,start_map,game_mode,tickrate,max_players,extra_args,runtime_image,package_version,desired_state,actual_state,created_at,updated_at FROM instances`
 
 type scanner interface{ Scan(...any) error }
 
 func scanInstance(s scanner) (domain.Instance, error) {
 	var v domain.Instance
 	var c, u string
-	err := s.Scan(&v.ID, &v.NodeID, &v.Name, &v.GamePort, &v.SourceTVPort, &v.StartMap, &v.GameMode, &v.Tickrate, &v.MaxPlayers, &v.ExtraArgs, &v.RuntimeImage, &v.PackageVersion, &v.DesiredState, &v.ActualState, &c, &u)
+	err := s.Scan(&v.ID, &v.NodeID, &v.Name, &v.ContainerID, &v.GamePort, &v.SourceTVPort, &v.StartMap, &v.GameMode, &v.Tickrate, &v.MaxPlayers, &v.ExtraArgs, &v.RuntimeImage, &v.PackageVersion, &v.DesiredState, &v.ActualState, &c, &u)
 	if err == nil {
 		v.CreatedAt, _ = time.Parse(time.RFC3339Nano, c)
 		v.UpdatedAt, _ = time.Parse(time.RFC3339Nano, u)
@@ -87,7 +87,7 @@ func scanInstance(s scanner) (domain.Instance, error) {
 	return v, err
 }
 func fields(v domain.Instance) []any {
-	return []any{v.ID, v.NodeID, v.Name, v.GamePort, v.SourceTVPort, v.StartMap, v.GameMode, v.Tickrate, v.MaxPlayers, v.ExtraArgs, v.RuntimeImage, v.PackageVersion, v.DesiredState, v.ActualState, v.CreatedAt.Format(time.RFC3339Nano), v.UpdatedAt.Format(time.RFC3339Nano)}
+	return []any{v.ID, v.NodeID, v.Name, v.ContainerID, v.GamePort, v.SourceTVPort, v.StartMap, v.GameMode, v.Tickrate, v.MaxPlayers, v.ExtraArgs, v.RuntimeImage, v.PackageVersion, v.DesiredState, v.ActualState, v.CreatedAt.Format(time.RFC3339Nano), v.UpdatedAt.Format(time.RFC3339Nano)}
 }
 
 func (s *Store) LoadCredential() (hash, salt []byte, found bool, err error) {
@@ -124,4 +124,23 @@ func (s *Store) SessionValid(tokenHash []byte, now time.Time) (bool, error) {
 func (s *Store) DeleteSession(tokenHash []byte) error {
 	_, err := s.db.Exec(`DELETE FROM sessions WHERE token_hash=?`, tokenHash)
 	return err
+}
+
+func (s *Store) SaveJob(v domain.JobRecord) error {
+	_, err := s.db.Exec(`INSERT INTO jobs(id,instance_id,type,status,stage,percent,message,error,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,stage=excluded.stage,percent=excluded.percent,message=excluded.message,error=excluded.error,updated_at=excluded.updated_at`, v.ID, v.InstanceID, v.Type, v.Status, v.Stage, v.Percent, v.Message, v.Error, v.CreatedAt.Format(time.RFC3339Nano), v.UpdatedAt.Format(time.RFC3339Nano))
+	return err
+}
+func (s *Store) LoadJob(id string) (domain.JobRecord, bool, error) {
+	var v domain.JobRecord
+	var created, updated string
+	err := s.db.QueryRow(`SELECT id,instance_id,type,status,stage,percent,message,error,created_at,updated_at FROM jobs WHERE id=?`, id).Scan(&v.ID, &v.InstanceID, &v.Type, &v.Status, &v.Stage, &v.Percent, &v.Message, &v.Error, &created, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return v, false, nil
+	}
+	if err != nil {
+		return v, false, err
+	}
+	v.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	v.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+	return v, true, nil
 }

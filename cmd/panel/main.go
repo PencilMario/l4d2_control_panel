@@ -3,7 +3,11 @@ package main
 import (
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/config"
+	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/httpapi"
+	"github.com/not0721here/l4d2-control-panel/internal/jobs"
+	"github.com/not0721here/l4d2-control-panel/internal/lifecycle"
+	"github.com/not0721here/l4d2-control-panel/internal/ports"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 	"log"
 	"net/http"
@@ -34,7 +38,15 @@ func main() {
 			log.Fatal(err)
 		}
 	}
-	api := httpapi.New(db, sessions)
+	dockerHost := os.Getenv("DOCKER_HOST")
+	if dockerHost == "" {
+		dockerHost = "http://127.0.0.1:23750"
+	}
+	engine := docker.NewEngine(dockerHost)
+	portChecker := ports.Checker{Configured: func() []int { return nil }, Listening: ports.IsListening}
+	life := lifecycle.New(db, engine, portChecker, cfg.DataRoot)
+	jobManager := jobs.NewPersistentManager(db)
+	api := httpapi.New(db, sessions, httpapi.WithOperations(life, jobManager))
 	mux := http.NewServeMux()
 	mux.Handle("/api/", api.Handler())
 	web := os.Getenv("L4D2_PANEL_WEB_ROOT")

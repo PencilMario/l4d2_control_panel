@@ -1,0 +1,66 @@
+package lifecycle
+
+import (
+	"context"
+	"github.com/not0721here/l4d2-control-panel/internal/docker"
+	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/store"
+	"path/filepath"
+	"testing"
+)
+
+type fakeEngine struct {
+	created, started, stopped bool
+	execOperation             string
+}
+
+func (f *fakeEngine) Create(context.Context, docker.ContainerSpec) (string, error) {
+	f.created = true
+	return "container-1", nil
+}
+func (f *fakeEngine) Start(context.Context, string) error { f.started = true; return nil }
+func (f *fakeEngine) RunSupervisor(_ context.Context, _ string, op string) error {
+	f.execOperation = op
+	return nil
+}
+func (f *fakeEngine) Stop(context.Context, string, int) error { f.stopped = true; return nil }
+
+type freePorts struct{}
+
+func (freePorts) Available(int) error { return nil }
+func TestStartCreatesContainerPersistsIDAndStarts(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	v := domain.Instance{ID: "abc", NodeID: "local", Name: "one", GamePort: 27015, StartMap: "c2m1_highway", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime:v1", DesiredState: domain.StateStopped, ActualState: domain.StateUninstalled}
+	if err := db.CreateInstance(context.Background(), v); err != nil {
+		t.Fatal(err)
+	}
+	engine := &fakeEngine{}
+	svc := New(db, engine, freePorts{}, root)
+	if err := svc.Start(context.Background(), "abc"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := db.Instance(context.Background(), "abc")
+	if !engine.created || !engine.started || got.ContainerID != "container-1" || got.ActualState != domain.StateRunning {
+		t.Fatalf("engine=%#v instance=%#v", engine, got)
+	}
+}
+func TestStopUsesSupervisorBeforeDocker(t *testing.T) {
+	root := t.TempDir()
+	db, _ := store.Open(filepath.Join(root, "panel.db"))
+	defer db.Close()
+	v := domain.Instance{ID: "abc", NodeID: "local", Name: "one", ContainerID: "container-1", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime:v1", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}
+	_ = db.CreateInstance(context.Background(), v)
+	engine := &fakeEngine{}
+	if err := New(db, engine, freePorts{}, root).Stop(context.Background(), "abc"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := db.Instance(context.Background(), "abc")
+	if engine.execOperation != "stop" || !engine.stopped || got.ActualState != domain.StateStopped {
+		t.Fatalf("engine=%#v instance=%#v", engine, got)
+	}
+}

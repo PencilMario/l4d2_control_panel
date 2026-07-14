@@ -17,8 +17,14 @@ const (
 )
 
 type Instance struct {
-	ID, NodeID, Name, StartMap, GameMode, ExtraArgs, RuntimeImage, PackageVersion string
-	GamePort, SourceTVPort, Tickrate, MaxPlayers                                  int
-	DesiredState, ActualState                                                     InstanceState
-	CreatedAt, UpdatedAt                                                          time.Time
+	ID, NodeID, Name, ContainerID, StartMap, GameMode, ExtraArgs, RuntimeImage, PackageVersion string
+	GamePort, SourceTVPort, Tickrate, MaxPlayers                                               int
+	DesiredState, ActualState                                                                  InstanceState
+	CreatedAt, UpdatedAt                                                                       time.Time
+}
+
+type JobRecord struct {
+	ID, InstanceID, Type, Stage, Message, Status, Error string
+	Percent                                             int
+	CreatedAt, UpdatedAt                                time.Time
 }

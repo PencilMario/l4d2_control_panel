@@ -1,26 +1,45 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 )
 
 const sessionCookie = "l4d2_panel_session"
 
 type Server struct {
-	store  *store.Store
-	auth   *auth.Service
-	router http.Handler
+	store     *store.Store
+	auth      *auth.Service
+	router    http.Handler
+	lifecycle Lifecycle
+	jobs      *jobs.Manager
 }
 
-func New(db *store.Store, a *auth.Service) *Server {
+type Lifecycle interface {
+	Start(context.Context, string) error
+	Stop(context.Context, string) error
+	Restart(context.Context, string) error
+}
+type Option func(*Server)
+
+func WithOperations(lifecycle Lifecycle, manager *jobs.Manager) Option {
+	return func(s *Server) { s.lifecycle = lifecycle; s.jobs = manager }
+}
+
+func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 	s := &Server{store: db, auth: a}
+	for _, option := range options {
+		option(s)
+	}
 	r := chi.NewRouter()
 	r.Post("/api/auth/login", s.login)
 	r.Group(func(r chi.Router) {
@@ -31,9 +50,60 @@ func New(db *store.Store, a *auth.Service) *Server {
 		})
 		r.Get("/api/instances", s.listInstances)
 		r.Post("/api/instances", s.createInstance)
+		r.Post("/api/instances/{id}/actions", s.instanceAction)
+		r.Get("/api/jobs/{id}", s.getJob)
 	})
 	s.router = r
 	return s
+}
+
+func (s *Server) instanceAction(w http.ResponseWriter, r *http.Request) {
+	if s.lifecycle == nil || s.jobs == nil {
+		writeError(w, 503, "operations_unavailable", "container operations unavailable")
+		return
+	}
+	var input struct {
+		Action  string `json:"action"`
+		Confirm bool   `json:"confirm"`
+	}
+	if decodeJSON(w, r, &input) != nil {
+		return
+	}
+	if (input.Action == "stop" || input.Action == "restart") && !input.Confirm {
+		writeError(w, http.StatusPreconditionRequired, "confirmation_required", "this action requires confirmation")
+		return
+	}
+	id := chi.URLParam(r, "id")
+	operation := func(ctx context.Context, _ jobs.Reporter) error {
+		switch input.Action {
+		case "start":
+			return s.lifecycle.Start(ctx, id)
+		case "stop":
+			return s.lifecycle.Stop(ctx, id)
+		case "restart":
+			return s.lifecycle.Restart(ctx, id)
+		default:
+			return errors.New("unsupported action")
+		}
+	}
+	if input.Action != "start" && input.Action != "stop" && input.Action != "restart" {
+		writeError(w, 422, "invalid_action", "supported actions: start, stop, restart")
+		return
+	}
+	job := s.jobs.Start(context.WithoutCancel(r.Context()), id, input.Action, operation)
+	writeJSON(w, http.StatusAccepted, job)
+}
+func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
+	if s.jobs == nil {
+		writeError(w, 503, "jobs_unavailable", "job manager unavailable")
+		return
+	}
+	job, ok := s.jobs.Get(chi.URLParam(r, "id"))
+	if !ok {
+		writeError(w, 404, "job_not_found", "job not found")
+		return
+	}
+	writeJSON(w, 200, job)
 }
 func (s *Server) Handler() http.Handler { return s.router }
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {

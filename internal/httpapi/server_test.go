@@ -8,10 +8,18 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
+	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 )
+
+type fakeLifecycle struct{ action string }
+
+func (f *fakeLifecycle) Start(context.Context, string) error   { f.action = "start"; return nil }
+func (f *fakeLifecycle) Stop(context.Context, string) error    { f.action = "stop"; return nil }
+func (f *fakeLifecycle) Restart(context.Context, string) error { f.action = "restart"; return nil }
 
 func testServer(t *testing.T) (*Server, *store.Store) {
 	t.Helper()
@@ -79,5 +87,61 @@ func TestCreateRejectsInvalidPort(t *testing.T) {
 	s.Handler().ServeHTTP(w, r)
 	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestInstanceActionRunsAsPersistentJob(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	cookie := loginCookie(t, s)
+	v := map[string]any{"name": "Coop", "game_port": 27015, "start_map": "map", "game_mode": "coop", "tickrate": 100, "max_players": 8}
+	raw, _ := json.Marshal(v)
+	r := httptest.NewRequest(http.MethodPost, "/api/instances", bytes.NewReader(raw))
+	r.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	var created struct {
+		ID string `json:"ID"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	life := &fakeLifecycle{}
+	s = New(db, s.auth, WithOperations(life, jobs.NewPersistentManager(db)))
+	r = httptest.NewRequest(http.MethodPost, "/api/instances/"+created.ID+"/actions", bytes.NewBufferString(`{"action":"start"}`))
+	r.AddCookie(cookie)
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var job jobs.Job
+	_ = json.Unmarshal(w.Body.Bytes(), &job)
+	deadline := time.Now().Add(time.Second)
+	for life.action == "" && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if life.action != "start" {
+		t.Fatalf("action=%q", life.action)
+	}
+	r = httptest.NewRequest(http.MethodGet, "/api/jobs/"+job.ID, nil)
+	r.AddCookie(cookie)
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"succeeded"`)) {
+		t.Fatalf("job: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestStopActionRequiresConfirmation(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	life := &fakeLifecycle{}
+	s = New(db, s.auth, WithOperations(life, jobs.NewPersistentManager(db)))
+	cookie := loginCookie(t, s)
+	r := httptest.NewRequest(http.MethodPost, "/api/instances/abc/actions", bytes.NewBufferString(`{"action":"stop"}`))
+	r.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusPreconditionRequired {
+		t.Fatalf("status=%d", w.Code)
 	}
 }

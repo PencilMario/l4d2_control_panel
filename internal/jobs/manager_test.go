@@ -2,9 +2,12 @@ package jobs
 
 import (
 	"context"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/not0721here/l4d2-control-panel/internal/store"
 )
 
 func TestManagerSerializesMutationPerInstance(t *testing.T) {
@@ -23,6 +26,32 @@ func TestManagerSerializesMutationPerInstance(t *testing.T) {
 	wait(t, m, job.ID)
 	if !overlap.Load() {
 		t.Fatal("queued job never ran")
+	}
+}
+
+func TestPersistentManagerReloadsCompletedJob(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "panel.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewPersistentManager(db)
+	job := m.Start(context.Background(), "a", "install", func(_ context.Context, r Reporter) error { r.Progress("steamcmd", 42, "downloading"); return nil })
+	got := wait(t, m, job.ID)
+	if got.Status != Succeeded {
+		t.Fatalf("job=%#v", got)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	reloaded, ok := NewPersistentManager(db).Get(job.ID)
+	if !ok || reloaded.Status != Succeeded || reloaded.Stage != "steamcmd" || reloaded.Percent != 100 {
+		t.Fatalf("reloaded=%#v ok=%v", reloaded, ok)
 	}
 }
 func TestReporterPersistsProgress(t *testing.T) {

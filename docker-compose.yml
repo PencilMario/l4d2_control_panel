@@ -18,6 +18,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks: [control]
+    ports: ["127.0.0.1:23750:2375"]
     read_only: true
   panel:
     build: .
@@ -27,11 +28,10 @@ services:
       L4D2_PANEL_LISTEN: :8080
       L4D2_PANEL_DATA_ROOT: /srv/l4d2-panel
       L4D2_PANEL_ADMIN_PASSWORD: ${L4D2_PANEL_ADMIN_PASSWORD:?set admin password}
-      DOCKER_HOST: tcp://socket-proxy:2375
+      DOCKER_HOST: tcp://127.0.0.1:23750
     volumes:
       - ${L4D2_PANEL_DATA_ROOT:-/srv/l4d2-panel}:/srv/l4d2-panel
-    ports: ["127.0.0.1:${L4D2_PANEL_HTTP_PORT:-8080}:8080"]
-    networks: [control]
+    network_mode: host
     security_opt: [no-new-privileges:true]
 networks:
   control:
