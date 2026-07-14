@@ -366,6 +366,8 @@ func (s *Server) updateInstance(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Name         string `json:"name"`
 		GamePort     int    `json:"game_port"`
+		SourceTVPort int    `json:"sourcetv_port"`
+		PluginPorts  []int  `json:"plugin_ports"`
 		StartMap     string `json:"start_map"`
 		GameMode     string `json:"game_mode"`
 		Tickrate     int    `json:"tickrate"`
@@ -376,11 +378,15 @@ func (s *Server) updateInstance(w http.ResponseWriter, r *http.Request) {
 	if decodeJSON(w, r, &input) != nil {
 		return
 	}
-	if input.Name == "" || input.GamePort < 1024 || input.GamePort > 65535 || input.StartMap == "" || input.GameMode == "" || input.Tickrate < 30 || input.Tickrate > 128 || input.MaxPlayers < 1 || input.MaxPlayers > 32 {
+	if input.Name == "" || input.StartMap == "" || input.GameMode == "" || input.Tickrate < 30 || input.Tickrate > 128 || input.MaxPlayers < 1 || input.MaxPlayers > 32 {
 		writeError(w, 422, "invalid_instance", "invalid instance configuration")
 		return
 	}
-	instance.Name, instance.GamePort, instance.StartMap, instance.GameMode, instance.Tickrate, instance.MaxPlayers, instance.ExtraArgs = input.Name, input.GamePort, input.StartMap, input.GameMode, input.Tickrate, input.MaxPlayers, input.ExtraArgs
+	if err := validateDeclaredPorts(input.GamePort, input.SourceTVPort, input.PluginPorts); err != nil {
+		writeError(w, 422, "invalid_instance", err.Error())
+		return
+	}
+	instance.Name, instance.GamePort, instance.SourceTVPort, instance.PluginPorts, instance.StartMap, instance.GameMode, instance.Tickrate, instance.MaxPlayers, instance.ExtraArgs = input.Name, input.GamePort, input.SourceTVPort, input.PluginPorts, input.StartMap, input.GameMode, input.Tickrate, input.MaxPlayers, input.ExtraArgs
 	if input.RuntimeImage != "" {
 		instance.RuntimeImage = input.RuntimeImage
 	}
@@ -991,26 +997,51 @@ func (s *Server) listInstances(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Name       string `json:"name"`
-		GamePort   int    `json:"game_port"`
-		StartMap   string `json:"start_map"`
-		GameMode   string `json:"game_mode"`
-		Tickrate   int    `json:"tickrate"`
-		MaxPlayers int    `json:"max_players"`
+		Name         string `json:"name"`
+		GamePort     int    `json:"game_port"`
+		SourceTVPort int    `json:"sourcetv_port"`
+		PluginPorts  []int  `json:"plugin_ports"`
+		StartMap     string `json:"start_map"`
+		GameMode     string `json:"game_mode"`
+		Tickrate     int    `json:"tickrate"`
+		MaxPlayers   int    `json:"max_players"`
 	}
 	if decodeJSON(w, r, &in) != nil {
 		return
 	}
-	if in.Name == "" || in.GamePort < 1024 || in.GamePort > 65535 || in.StartMap == "" || in.GameMode == "" || in.Tickrate < 30 || in.Tickrate > 128 || in.MaxPlayers < 1 || in.MaxPlayers > 32 {
+	if in.Name == "" || in.StartMap == "" || in.GameMode == "" || in.Tickrate < 30 || in.Tickrate > 128 || in.MaxPlayers < 1 || in.MaxPlayers > 32 {
 		writeError(w, 422, "invalid_instance", "name, valid port, map, mode, tickrate and player limit are required")
 		return
 	}
-	v := domain.Instance{ID: uuid.NewString(), NodeID: "local", Name: in.Name, GamePort: in.GamePort, StartMap: in.StartMap, GameMode: in.GameMode, Tickrate: in.Tickrate, MaxPlayers: in.MaxPlayers, RuntimeImage: "l4d2-server-runtime:latest", DesiredState: domain.StateStopped, ActualState: domain.StateUninstalled}
+	if err := validateDeclaredPorts(in.GamePort, in.SourceTVPort, in.PluginPorts); err != nil {
+		writeError(w, 422, "invalid_instance", err.Error())
+		return
+	}
+	v := domain.Instance{ID: uuid.NewString(), NodeID: "local", Name: in.Name, GamePort: in.GamePort, SourceTVPort: in.SourceTVPort, PluginPorts: in.PluginPorts, StartMap: in.StartMap, GameMode: in.GameMode, Tickrate: in.Tickrate, MaxPlayers: in.MaxPlayers, RuntimeImage: "l4d2-server-runtime:latest", DesiredState: domain.StateStopped, ActualState: domain.StateUninstalled}
 	if err := s.store.CreateInstance(r.Context(), v); err != nil {
 		writeError(w, 409, "instance_conflict", err.Error())
 		return
 	}
 	writeJSON(w, 201, v)
+}
+
+func validateDeclaredPorts(gamePort, sourceTVPort int, pluginPorts []int) error {
+	ports := []int{gamePort}
+	if sourceTVPort != 0 {
+		ports = append(ports, sourceTVPort)
+	}
+	ports = append(ports, pluginPorts...)
+	seen := make(map[int]struct{}, len(ports))
+	for _, port := range ports {
+		if port < 1024 || port > 65535 {
+			return fmt.Errorf("port %d is outside the allowed range", port)
+		}
+		if _, exists := seen[port]; exists {
+			return fmt.Errorf("port %d is declared more than once", port)
+		}
+		seen[port] = struct{}{}
+	}
+	return nil
 }
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))

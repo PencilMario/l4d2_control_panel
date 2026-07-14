@@ -67,6 +67,46 @@ func TestInstanceCRUD(t *testing.T) {
 	}
 }
 
+func TestPluginPortMigrationSurvivesReopenAndCascades(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "panel.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance := domain.Instance{ID: "instance-ports", NodeID: "local", Name: "Ports", GamePort: 27015, SourceTVPort: 27020, PluginPorts: []int{27021, 27022}, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: domain.StateStopped, ActualState: domain.StateUninstalled}
+	if err := s.CreateInstance(context.Background(), instance); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Instance(context.Background(), instance.ID)
+	if err != nil || len(got.PluginPorts) != 2 || got.PluginPorts[0] != 27021 || got.PluginPorts[1] != 27022 {
+		t.Fatalf("created=%#v err=%v", got, err)
+	}
+	got.PluginPorts = []int{27031}
+	if err := s.UpdateInstance(context.Background(), got); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	got, err = s.Instance(context.Background(), instance.ID)
+	if err != nil || len(got.PluginPorts) != 1 || got.PluginPorts[0] != 27031 {
+		t.Fatalf("reopened=%#v err=%v", got, err)
+	}
+	if err := s.DeleteInstance(context.Background(), instance.ID); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := s.DB().QueryRow(`SELECT count(*) FROM instance_plugin_ports WHERE instance_id=?`, instance.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("orphan count=%d err=%v", count, err)
+	}
+}
+
 func TestAuditEventsPersist(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {

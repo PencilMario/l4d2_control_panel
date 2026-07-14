@@ -148,11 +148,11 @@
 
 **Verification:** `go test ./internal/store ./internal/ports ./internal/lifecycle ./internal/docker ./internal/httpapi ./runtime`; `cd web && npm test -- --run && npm run build`.
 
-- [ ] Write failing migration/CRUD tests for plugin-port round trips on new and reopened databases.
-- [ ] Write failing reservation tests for cross-kind conflicts, self exclusion and host listeners.
-- [ ] Write failing Docker/runtime/API/React tests for SourceTV and plugin-port propagation.
-- [ ] Implement the additive data contract and multi-port checker, then run all target tests.
-- [ ] Commit the port-management slice.
+- [x] Write failing migration/CRUD tests for plugin-port round trips on new and reopened databases.
+- [x] Write failing reservation tests for cross-kind conflicts, self exclusion and host listeners.
+- [x] Write failing Docker/runtime/API/React tests for SourceTV and plugin-port propagation.
+- [x] Implement the additive data contract and multi-port checker, then run all target tests.
+- [x] Commit the port-management slice.
 
 ### Task 10: Persist update transactions and drain Panel shutdown
 

@@ -85,6 +85,17 @@ Targeted red/green evidence in the latest slice:
 - Fresh verification passed: `go test -count=1 -p 1 ./...`, `go vet ./...`, `npm test -- --run` (16 tests), `npm run build`, `npm audit --omit=dev` (0 vulnerabilities), `docker compose --env-file .env.example config --quiet`, and `git diff --check`.
 - Review judgment: no Critical or Important Task 8 finding. Real HTTP, Secure-cookie, SSE/WebSocket, focus-trap and responsive Chromium journeys remain explicitly assigned to Task 12 rather than inferred from jsdom.
 
+## Task 9 managed-port completion (2026-07-15)
+
+- RED evidence: store tests could not compile without `PluginPorts`, the migration test failed because `instance_plugin_ports` did not exist, HTTP strict decoding rejected `sourcetv_port`, lifecycle checked only `27015`, Docker omitted the new environment values, the React form had no corresponding fields, and the portable runtime source assertion found no `SRCDS_TV_PORT` support.
+- SQLite now creates additive migration version 2 and transactionally stores sorted plugin ports with instance creation/update. Reopen round trips and `ON DELETE CASCADE` cleanup are covered.
+- `ports.Checker` consumes real database reservations for game, SourceTV and plugin ports, excludes the current instance, rejects duplicate/invalid declarations, propagates provider errors and rejects host listeners. Lifecycle checks every declared port before starting an existing or newly created container.
+- Docker passes `SRCDS_TV_PORT` and `L4D2_PLUGIN_PORTS`; the Supervisor only appends `+tv_enable 1 +tv_port <port>` for a nonzero TV port. The API and React create/card flow expose the same declarations.
+- On `sirphomesv`, direct Docker socket access as the SSH user was denied, while the existing restricted proxy at `127.0.0.1:23759` and `sudo -n docker` both reported Docker 29.6.1. No daemon change or restart was needed.
+- The copied current Supervisor passed its Linux PTY self-test. With `SRCDS_TV_PORT=0`, the rendered command had no TV arguments; with `27020`, it ended in `+tv_enable 1 +tv_port 27020`. Temporary remote files were removed.
+- Fresh verification passed: `go test -count=1 -p 1 ./...`, `go vet ./...`, `npm test -- --run` (17 tests), `npm run build`, `npm audit --omit=dev` (0 vulnerabilities), `docker compose --env-file .env.example config --quiet`, and `git diff --check`.
+- Review judgment: no Critical or Important Task 9 finding. Port allocation remains intentionally advisory at the host-listener boundary; the database declaration check prevents cross-instance races inside the single Panel owner.
+
 ## Evidence judgment
 
 Confidence is A for the fresh local test/build claims, browser contract regressions, direct anonymous Steam installation and the exercised Panel-managed SRCDS/A2S/PTY/lifecycle journey. Confidence remains B for recovery paths not yet fault-injected. This bundle is verified evidence, not an authoritative completion signal.

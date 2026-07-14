@@ -118,6 +118,59 @@ func TestCreateRejectsInvalidPort(t *testing.T) {
 	}
 }
 
+func TestCreateAndUpdateExposeSourceTVAndPluginPorts(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	cookie := loginCookie(t, s)
+	create := `{"name":"Ports","game_port":27015,"sourcetv_port":27020,"plugin_ports":[27021,27022],"start_map":"c2m1_highway","game_mode":"coop","tickrate":100,"max_players":8}`
+	r := httptest.NewRequest(http.MethodPost, "/api/instances", bytes.NewBufferString(create))
+	r.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"sourcetv_port":27020`) || !strings.Contains(w.Body.String(), `"plugin_ports":[27021,27022]`) {
+		t.Fatalf("create: status=%d body=%s", w.Code, w.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := created["ID"].(string)
+	update := `{"name":"Ports","game_port":27015,"sourcetv_port":27030,"plugin_ports":[27031],"start_map":"c2m1_highway","game_mode":"coop","tickrate":100,"max_players":8,"extra_args":""}`
+	r = httptest.NewRequest(http.MethodPut, "/api/instances/"+id, bytes.NewBufferString(update))
+	r.AddCookie(cookie)
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"sourcetv_port":27030`) || !strings.Contains(w.Body.String(), `"plugin_ports":[27031]`) {
+		t.Fatalf("update: status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateRejectsDuplicateDeclaredPorts(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	cookie := loginCookie(t, s)
+	r := httptest.NewRequest(http.MethodPost, "/api/instances", bytes.NewBufferString(`{"name":"Bad Ports","game_port":27015,"sourcetv_port":27015,"plugin_ports":[27020,27020],"start_map":"map","game_mode":"coop","tickrate":100,"max_players":8}`))
+	r.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateRejectsInvalidPluginPort(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	cookie := loginCookie(t, s)
+	r := httptest.NewRequest(http.MethodPost, "/api/instances", bytes.NewBufferString(`{"name":"Bad Plugin Port","game_port":27015,"plugin_ports":[80],"start_map":"map","game_mode":"coop","tickrate":100,"max_players":8}`))
+	r.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestScheduleAcceptsSnakeCaseJSONAndRejectsUnknownFields(t *testing.T) {
 	s, db := testServer(t)
 	defer db.Close()

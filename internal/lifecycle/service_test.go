@@ -34,7 +34,14 @@ func (f *fakeEngine) Remove(context.Context, string) error { f.removed = true; r
 
 type freePorts struct{}
 
-func (freePorts) Available(int) error { return nil }
+func (freePorts) Available(context.Context, string, []int) error { return nil }
+
+type recordingPorts struct{ checked []int }
+
+func (p *recordingPorts) Available(_ context.Context, _ string, ports []int) error {
+	p.checked = append(p.checked, ports...)
+	return nil
+}
 
 type fixedSpace uint64
 
@@ -58,6 +65,26 @@ func TestStartCreatesContainerPersistsIDAndStarts(t *testing.T) {
 	got, _ := db.Instance(context.Background(), "abc")
 	if !engine.created || !engine.started || got.ContainerID != "container-1" || got.ActualState != domain.StateRunning {
 		t.Fatalf("engine=%#v instance=%#v", engine, got)
+	}
+}
+
+func TestStartChecksEveryDeclaredPort(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	v := domain.Instance{ID: "ports", NodeID: "local", Name: "ports", GamePort: 27015, SourceTVPort: 27020, PluginPorts: []int{27021, 27022}, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", ActualState: domain.StateStopped}
+	if err := db.CreateInstance(context.Background(), v); err != nil {
+		t.Fatal(err)
+	}
+	checker := &recordingPorts{}
+	if err := New(db, &fakeEngine{}, checker, root).Start(context.Background(), v.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(checker.checked) != 4 || checker.checked[0] != 27015 || checker.checked[1] != 27020 || checker.checked[2] != 27021 || checker.checked[3] != 27022 {
+		t.Fatalf("checked=%v", checker.checked)
 	}
 }
 func TestStartRejectsInstallWhenDiskSpaceIsLow(t *testing.T) {

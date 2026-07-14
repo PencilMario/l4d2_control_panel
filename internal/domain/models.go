@@ -18,7 +18,10 @@ const (
 
 type Instance struct {
 	ID, NodeID, Name, ContainerID, StartMap, GameMode, ExtraArgs, RuntimeImage, PackageVersion string
-	GamePort, SourceTVPort, Tickrate, MaxPlayers                                               int
+	GamePort                                                                                   int
+	SourceTVPort                                                                               int   `json:"sourcetv_port"`
+	PluginPorts                                                                                []int `json:"plugin_ports"`
+	Tickrate, MaxPlayers                                                                       int
 	DesiredState, ActualState                                                                  InstanceState
 	CreatedAt, UpdatedAt                                                                       time.Time
 }

@@ -13,14 +13,14 @@
 - [ ] Complete fresh-host runtime acceptance (anonymous install and Panel-managed SRCDS/A2S/PTY/lifecycle persistence are verified; game-update maintenance remains).
 - [ ] Production delivery documentation, TLS/reverse-proxy guidance and final branch integration.
 - [x] Repair browser/API contracts, destructive confirmations, large VPK chunking and truthful loading/error/health states.
-- [ ] Declare, persist and reserve SourceTV/plugin ports across API, lifecycle, runtime and UI.
+- [x] Declare, persist and reserve SourceTV/plugin ports across API, lifecycle, runtime and UI.
 - [ ] Add durable package-update journal recovery and bounded Panel shutdown/Job drain.
 - [ ] Reconcile maintenance writers and recover interrupted uploads/backups/game updates.
 - [ ] Add real-HTTP Playwright acceptance and the safe Linux fault-injection matrix.
 
 ## Active slice
 
-Declare and reserve SourceTV and plugin ports across persistence, API, lifecycle, runtime and UI, then continue through Tasks 10-12 for journal recovery, maintenance recovery and browser/fault acceptance.
+Persist package-update transactions and add bounded Panel shutdown/Job drain, then continue through Tasks 11-12 for maintenance recovery and browser/fault acceptance.
 
 ## Completed in the latest slice
 
@@ -45,6 +45,10 @@ Declare and reserve SourceTV and plugin ports across persistence, API, lifecycle
 - Added explicit confirmation dialogs for game updates, full package updates, player kicks and permanent bans without weakening server-side confirmation enforcement.
 - Replaced whole-file VPK hashing and one-shot PATCH with incremental SHA-256 and sequential 8 MiB chunks.
 - Corrected the Steam settings copy to state that anonymous dual-platform installation is supported and licensed credentials are optional.
+- Added additive plugin-port persistence and explicit SourceTV/plugin JSON fields, with transactional instance CRUD and cascade cleanup.
+- Made `ports.Checker` the sole configured/listening conflict owner, including all declared port kinds, current-instance exclusion and real SQLite reservations.
+- Passed SourceTV/plugin declarations through Docker and the React create/display flow; Supervisor enables SourceTV only for a nonzero managed port.
+- Verified the POSIX command path and Supervisor PTY self-test on `sirphomesv` without changing or restarting Docker daemon.
 
 ## Blocked-on
 
@@ -52,14 +56,13 @@ Declare and reserve SourceTV and plugin ports across persistence, API, lifecycle
 
 ## Next
 
-1. Implement SourceTV/plugin-port persistence, conflict checking, runtime arguments and UI fields.
-2. Implement durable update-stage recovery and graceful shutdown with regression tests.
-3. Reconcile maintenance writers and interrupted artifacts.
-4. Add real HTTP Playwright coverage and run the remaining safe fault-injection matrix.
+1. Implement durable update-stage recovery and graceful shutdown with regression tests.
+2. Reconcile maintenance writers and interrupted artifacts.
+3. Add real HTTP Playwright coverage and run the remaining safe fault-injection matrix.
 
 ## DriftCheckDraft
 
 - Scope: continues to implement the approved single-host, single-admin design.
 - Compatibility: host networking, fixed Supervisor Exec operations and content precedence are unchanged.
-- New owner/fallback: `Config.GameHost` remains the sole A2S target owner. `ScheduledTask` JSON tags now own the browser schedule contract; UI dialogs add no second authorization owner because HTTP confirmation remains enforced server-side.
-- Decision: `continue`; Task 8 stayed within the approved browser/API boundary, retired one-shot VPK upload and direct destructive submissions, and introduced no compatibility fallback.
+- New owner/fallback: `ports.Checker` now owns configured and listening conflicts using SQLite-backed reservations. The empty production provider, single-game-port check and dormant SourceTV path are retired; no fallback was added.
+- Decision: `continue`; Task 9 stayed within the approved host-network port boundary and fresh local/Linux evidence covers its public and runtime contracts.

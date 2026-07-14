@@ -130,6 +130,8 @@ def ensure_game():
 
 def srcds_command():
     args=['./srcds_run','-game','left4dead2','-console','-port',os.getenv('SRCDS_PORT','27015'),'-tickrate',os.getenv('SRCDS_TICKRATE','100'),'+map',os.getenv('SRCDS_MAP','c2m1_highway'),'+mp_gamemode',os.getenv('SRCDS_MODE','coop'),'-maxplayers',os.getenv('SRCDS_MAXPLAYERS','8')]
+    tv_port=os.getenv('SRCDS_TV_PORT','0').strip()
+    if tv_port and tv_port != '0': args.extend(['+tv_enable','1','+tv_port',tv_port])
     args.extend(shlex.split(os.getenv('SRCDS_EXTRA_ARGS','')));return args
 
 def selftest():

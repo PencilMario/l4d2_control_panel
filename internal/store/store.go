@@ -31,18 +31,37 @@ func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) CreateInstance(ctx context.Context, v domain.Instance) error {
 	now := time.Now().UTC()
 	v.CreatedAt, v.UpdatedAt = now, now
-	_, err := s.db.ExecContext(ctx, `INSERT INTO instances(id,node_id,name,container_id,game_port,sourcetv_port,start_map,game_mode,tickrate,max_players,extra_args,runtime_image,package_version,desired_state,actual_state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, fields(v)...)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO instances(id,node_id,name,container_id,game_port,sourcetv_port,start_map,game_mode,tickrate,max_players,extra_args,runtime_image,package_version,desired_state,actual_state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, fields(v)...); err != nil {
+		return err
+	}
+	if err = replacePluginPorts(ctx, tx, v.ID, v.PluginPorts); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (s *Store) UpdateInstance(ctx context.Context, v domain.Instance) error {
 	v.UpdatedAt = time.Now().UTC()
-	r, err := s.db.ExecContext(ctx, `UPDATE instances SET node_id=?,name=?,container_id=?,game_port=?,sourcetv_port=?,start_map=?,game_mode=?,tickrate=?,max_players=?,extra_args=?,runtime_image=?,package_version=?,desired_state=?,actual_state=?,updated_at=? WHERE id=?`, v.NodeID, v.Name, v.ContainerID, v.GamePort, v.SourceTVPort, v.StartMap, v.GameMode, v.Tickrate, v.MaxPlayers, v.ExtraArgs, v.RuntimeImage, v.PackageVersion, v.DesiredState, v.ActualState, v.UpdatedAt.Format(time.RFC3339Nano), v.ID)
-	if err == nil {
-		if n, _ := r.RowsAffected(); n == 0 {
-			return ErrNotFound
-		}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
 	}
-	return err
+	defer tx.Rollback()
+	r, err := tx.ExecContext(ctx, `UPDATE instances SET node_id=?,name=?,container_id=?,game_port=?,sourcetv_port=?,start_map=?,game_mode=?,tickrate=?,max_players=?,extra_args=?,runtime_image=?,package_version=?,desired_state=?,actual_state=?,updated_at=? WHERE id=?`, v.NodeID, v.Name, v.ContainerID, v.GamePort, v.SourceTVPort, v.StartMap, v.GameMode, v.Tickrate, v.MaxPlayers, v.ExtraArgs, v.RuntimeImage, v.PackageVersion, v.DesiredState, v.ActualState, v.UpdatedAt.Format(time.RFC3339Nano), v.ID)
+	if err != nil {
+		return err
+	}
+	if n, _ := r.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	if err = replacePluginPorts(ctx, tx, v.ID, v.PluginPorts); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (s *Store) DeleteInstance(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, "DELETE FROM instances WHERE id=?", id)
@@ -53,6 +72,10 @@ func (s *Store) Instance(ctx context.Context, id string) (domain.Instance, error
 	if errors.Is(err, sql.ErrNoRows) {
 		return v, ErrNotFound
 	}
+	if err != nil {
+		return v, err
+	}
+	v.PluginPorts, err = s.pluginPorts(ctx, id)
 	return v, err
 }
 func (s *Store) Instances(ctx context.Context) ([]domain.Instance, error) {
@@ -69,7 +92,70 @@ func (s *Store) Instances(ctx context.Context) ([]domain.Instance, error) {
 		}
 		out = append(out, v)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	pluginPorts, err := s.allPluginPorts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].PluginPorts = pluginPorts[out[i].ID]
+		if out[i].PluginPorts == nil {
+			out[i].PluginPorts = []int{}
+		}
+	}
+	return out, nil
+}
+
+func replacePluginPorts(ctx context.Context, tx *sql.Tx, instanceID string, ports []int) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM instance_plugin_ports WHERE instance_id=?`, instanceID); err != nil {
+		return err
+	}
+	for _, port := range ports {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO instance_plugin_ports(instance_id,port) VALUES(?,?)`, instanceID, port); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) pluginPorts(ctx context.Context, instanceID string) ([]int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT port FROM instance_plugin_ports WHERE instance_id=? ORDER BY port`, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ports := []int{}
+	for rows.Next() {
+		var port int
+		if err := rows.Scan(&port); err != nil {
+			return nil, err
+		}
+		ports = append(ports, port)
+	}
+	return ports, rows.Err()
+}
+
+func (s *Store) allPluginPorts(ctx context.Context) (map[string][]int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT instance_id,port FROM instance_plugin_ports ORDER BY instance_id,port`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ports := make(map[string][]int)
+	for rows.Next() {
+		var instanceID string
+		var port int
+		if err := rows.Scan(&instanceID, &port); err != nil {
+			return nil, err
+		}
+		ports[instanceID] = append(ports[instanceID], port)
+	}
+	return ports, rows.Err()
 }
 
 const selectInstance = `SELECT id,node_id,name,container_id,game_port,sourcetv_port,start_map,game_mode,tickrate,max_players,extra_args,runtime_image,package_version,desired_state,actual_state,created_at,updated_at FROM instances`

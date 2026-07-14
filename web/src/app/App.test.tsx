@@ -7,6 +7,8 @@ const instance: Instance = {
   name: "深夜战役",
   actual_state: "running",
   game_port: 27015,
+  sourcetv_port: 27020,
+  plugin_ports: [27021],
   start_map: "c2m1_highway",
   game_mode: "coop",
   max_players: 8,
@@ -24,6 +26,7 @@ describe("App", () => {
     expect(screen.getByText("深夜战役")).toBeInTheDocument();
     expect(screen.getByText("4 / 8")).toBeInTheDocument();
     expect(screen.getByText("c2m1_highway")).toBeInTheDocument();
+    expect(screen.getByText(/TV 27020.*插件 27021/)).toBeInTheDocument();
   });
   it("requires confirmation before stopping", async () => {
     const onAction = vi.fn();
@@ -35,6 +38,32 @@ describe("App", () => {
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "确认停止" }));
     expect(onAction).toHaveBeenCalledWith("1", "stop");
+  });
+  it("submits SourceTV and plugin ports when creating an instance", async () => {
+    let submitted: Record<string, unknown> | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          submitted = JSON.parse(String(init.body));
+        }
+        return new Response(init?.method === "POST" ? "{}" : "[]", {
+          status: 201,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+    render(<App initialInstances={[]} />);
+    await userEvent.click(screen.getByRole("button", { name: "创建实例" }));
+    await userEvent.type(screen.getByLabelText("名称"), "端口测试");
+    await userEvent.clear(screen.getByLabelText("SourceTV 端口"));
+    await userEvent.type(screen.getByLabelText("SourceTV 端口"), "27020");
+    await userEvent.type(screen.getByLabelText("插件端口"), "27021, 27022");
+    await userEvent.click(screen.getByRole("button", { name: "创建" }));
+    expect(submitted).toMatchObject({
+      sourcetv_port: 27020,
+      plugin_ports: [27021, 27022],
+    });
   });
   it("logs in and loads real instances", async () => {
     const fetchMock = vi

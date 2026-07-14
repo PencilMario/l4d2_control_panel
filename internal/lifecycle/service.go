@@ -82,7 +82,9 @@ func (s *Service) Reconcile(ctx context.Context) ([]docker.Container, error) {
 	return unknown, nil
 }
 
-type PortChecker interface{ Available(int) error }
+type PortChecker interface {
+	Available(context.Context, string, []int) error
+}
 type HealthChecker interface {
 	Wait(context.Context, domain.Instance) error
 }
@@ -124,10 +126,17 @@ func (s *Service) Start(ctx context.Context, id string) error {
 			return fmt.Errorf("insufficient disk space: have %d bytes, need %d", available, s.minimumInstallBytes)
 		}
 	}
-	if v.ContainerID == "" {
-		if err := s.ports.Available(v.GamePort); err != nil {
+	declaredPorts := []int{v.GamePort}
+	if v.SourceTVPort != 0 {
+		declaredPorts = append(declaredPorts, v.SourceTVPort)
+	}
+	declaredPorts = append(declaredPorts, v.PluginPorts...)
+	if s.ports != nil {
+		if err := s.ports.Available(ctx, v.ID, declaredPorts); err != nil {
 			return err
 		}
+	}
+	if v.ContainerID == "" {
 		base := filepath.Join(s.dataRoot, "instances", v.ID)
 		for _, dir := range []string{"game", "private", "backups", "console"} {
 			if err := os.MkdirAll(filepath.Join(base, dir), 0750); err != nil {

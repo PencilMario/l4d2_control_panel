@@ -47,6 +47,36 @@ func TestAnonymousFirstInstallBootstrapsWindowsBeforeLinuxValidate(t *testing.T)
 	}
 }
 
+func TestSourceTVCommandIsEnabledOnlyForDeclaredPort(t *testing.T) {
+	raw, err := os.ReadFile("supervisor.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"SRCDS_TV_PORT", "+tv_enable", "+tv_port"} {
+		if !strings.Contains(string(raw), required) {
+			t.Fatalf("supervisor source is missing %q", required)
+		}
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("runtime command integration requires POSIX Python")
+	}
+	run := func(port string) string {
+		command := exec.Command("python3", "-c", `import os, supervisor; os.environ["SRCDS_TV_PORT"] = os.environ["TEST_TV_PORT"]; print(" ".join(supervisor.srcds_command()))`)
+		command.Env = append(os.Environ(), "TEST_TV_PORT="+port)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("port=%s err=%v output=%s", port, err, output)
+		}
+		return string(output)
+	}
+	if output := run("0"); strings.Contains(output, "tv_enable") || strings.Contains(output, "tv_port") {
+		t.Fatalf("SourceTV unexpectedly enabled: %s", output)
+	}
+	if output := run("27020"); !strings.Contains(output, "+tv_enable 1 +tv_port 27020") {
+		t.Fatalf("SourceTV command missing: %s", output)
+	}
+}
+
 func TestSupervisorSelfTest(t *testing.T) {
 	raw, err := os.ReadFile("supervisor.py")
 	if err != nil {

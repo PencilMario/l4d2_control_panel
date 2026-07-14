@@ -38,6 +38,8 @@ export const normalizeInstance = (value: any) => ({
   name: value.name ?? value.Name,
   actual_state: value.actual_state ?? value.ActualState,
   game_port: value.game_port ?? value.GamePort,
+  sourcetv_port: value.sourcetv_port ?? value.SourceTVPort ?? 0,
+  plugin_ports: value.plugin_ports ?? value.PluginPorts ?? [],
   start_map: value.start_map ?? value.StartMap,
   game_mode: value.game_mode ?? value.GameMode,
   max_players: value.max_players ?? value.MaxPlayers,

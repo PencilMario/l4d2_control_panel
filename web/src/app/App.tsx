@@ -34,6 +34,8 @@ export type Instance = {
   name: string;
   actual_state: string;
   game_port: number;
+  sourcetv_port: number;
+  plugin_ports: number[];
   start_map: string;
   game_mode: string;
   max_players: number;
@@ -435,7 +437,13 @@ function Overview({
                 </button>
               </div>
               <h3>{x.name}</h3>
-              <p className="endpoint">LOCAL-01 : {x.game_port}</p>
+              <p className="endpoint">
+                LOCAL-01 : {x.game_port}
+                {x.sourcetv_port ? ` · TV ${x.sourcetv_port}` : ""}
+                {x.plugin_ports.length
+                  ? ` · 插件 ${x.plugin_ports.join(", ")}`
+                  : ""}
+              </p>
               <div className="map">
                 <Map />
                 <span>
@@ -548,11 +556,18 @@ function CreateInstance({
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const data = new FormData(e.currentTarget);
+    const pluginPorts = String(data.get("plugin_ports") || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map(Number);
     await api("/api/instances", {
       method: "POST",
       body: JSON.stringify({
         name: data.get("name"),
         game_port: Number(data.get("port")),
+        sourcetv_port: Number(data.get("sourcetv_port")),
+        plugin_ports: pluginPorts,
         start_map: data.get("map"),
         game_mode: data.get("mode"),
         tickrate: 100,
@@ -572,7 +587,31 @@ function CreateInstance({
         </label>
         <label>
           游戏端口
-          <input name="port" type="number" defaultValue="27015" />
+          <input
+            name="port"
+            type="number"
+            min="1024"
+            max="65535"
+            defaultValue="27015"
+          />
+        </label>
+        <label>
+          SourceTV 端口
+          <input
+            name="sourcetv_port"
+            type="number"
+            min="0"
+            max="65535"
+            defaultValue="0"
+          />
+        </label>
+        <label>
+          插件端口
+          <input
+            name="plugin_ports"
+            inputMode="numeric"
+            placeholder="27021, 27022"
+          />
         </label>
         <label>
           启动地图

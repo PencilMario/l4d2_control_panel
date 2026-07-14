@@ -33,4 +33,10 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
 );
 CREATE TABLE IF NOT EXISTS secrets (name TEXT PRIMARY KEY, ciphertext BLOB NOT NULL, updated_at TEXT NOT NULL);
 INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS instance_plugin_ports (
+ instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+ port INTEGER NOT NULL CHECK(port BETWEEN 1024 AND 65535),
+ PRIMARY KEY(instance_id, port)
+);
+INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (2, CURRENT_TIMESTAMP);
 `

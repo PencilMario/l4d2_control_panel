@@ -68,7 +68,13 @@ func main() {
 		return username, password
 	}
 	engine := docker.NewEngine(dockerHost, docker.WithDownloadProxy(os.Getenv("L4D2_PANEL_DOWNLOAD_PROXY")), docker.WithSteamCredentials(steamCredentials))
-	portChecker := ports.Checker{Configured: func() []int { return nil }, Listening: ports.IsListening}
+	portChecker := ports.Checker{Configured: func(ctx context.Context) ([]ports.Reservation, error) {
+		instances, err := db.Instances(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return ports.Reservations(instances), nil
+	}, Listening: ports.IsListening}
 	healthChecker := health.Checker{Host: cfg.GameHost, Query: a2s.Client{}, Probe: engine}
 	life := lifecycle.New(db, engine, portChecker, cfg.DataRoot, lifecycle.WithHealth(healthChecker), lifecycle.WithSpace(disk.Checker{}, 12<<30))
 	if unknown, reconcileErr := life.Reconcile(context.Background()); reconcileErr != nil {
