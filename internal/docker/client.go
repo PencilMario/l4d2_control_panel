@@ -39,8 +39,17 @@ type ResourceStats struct {
 	CPUPercent  float64 `json:"cpu_percent"`
 	MemoryBytes uint64  `json:"memory_bytes"`
 }
-type Info struct{ServerVersion string `json:"ServerVersion"`;ContainersRunning int `json:"ContainersRunning"`}
-func(e *Engine)Info(ctx context.Context)(Info,error){var info Info;err:=e.do(ctx,http.MethodGet,"/info",nil,nil,&info);return info,err}
+type Info struct {
+	ServerVersion     string `json:"ServerVersion"`
+	ContainersRunning int    `json:"ContainersRunning"`
+}
+
+func (e *Engine) Info(ctx context.Context) (Info, error) {
+	var info Info
+	err := e.do(ctx, http.MethodGet, "/info", nil, nil, &info)
+	return info, err
+}
+
 type statsResponse struct {
 	CPUStats struct {
 		CPUUsage struct {

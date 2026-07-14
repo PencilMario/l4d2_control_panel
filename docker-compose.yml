@@ -15,28 +15,26 @@ services:
     entrypoint: ["/bin/true"]
     profiles: [images]
   socket-proxy:
-    image: ${SOCKET_PROXY_IMAGE:-tecnativa/docker-socket-proxy:0.3.0}
+    image: l4d2-docker-socket-proxy:latest
+    build:
+      context: .
+      dockerfile: socket-proxy/Dockerfile
+      args:
+        OFFICIAL_REGISTRY: ${OFFICIAL_REGISTRY:-docker.io}
     restart: unless-stopped
-    environment:
-      CONTAINERS: 1
-      IMAGES: 1
-      INFO: 1
-      NETWORKS: 0
-      SERVICES: 0
-      TASKS: 0
-      VOLUMES: 0
-      POST: 1
-      AUTH: 0
-      SECRETS: 0
-      SWARM: 0
-      SYSTEM: 0
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks: [control]
     ports: ["127.0.0.1:${L4D2_PANEL_DOCKER_PROXY_PORT:-23750}:2375"]
     read_only: true
+    user: "0:0"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
   panel:
-    build: .
+    build:
+      context: .
+      args:
+        OFFICIAL_REGISTRY: ${OFFICIAL_REGISTRY:-docker.io}
     restart: unless-stopped
     depends_on:
       panel-init:

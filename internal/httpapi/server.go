@@ -14,8 +14,8 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
-	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
+	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/players"
 	"github.com/not0721here/l4d2-control-panel/internal/releases"
@@ -52,8 +52,8 @@ type Lifecycle interface {
 	Start(context.Context, string) error
 	Stop(context.Context, string) error
 	Restart(context.Context, string) error
-	Rebuild(context.Context,string)error
-	Delete(context.Context,string,bool)error
+	Rebuild(context.Context, string) error
+	Delete(context.Context, string, bool) error
 }
 type Option func(*Server)
 
@@ -91,10 +91,20 @@ func WithScheduler(service *scheduler.Service) Option {
 	return func(s *Server) { s.schedules = service }
 }
 func WithSecrets(service *secrets.Service) Option { return func(s *Server) { s.secrets = service } }
-type ResourceProvider interface{Stats(context.Context,string)(docker.ResourceStats,error)}
-func WithResources(provider ResourceProvider)Option{return func(s *Server){s.resources=provider}}
-type SystemProvider interface{Info(context.Context)(docker.Info,error)}
-func WithSystem(provider SystemProvider)Option{return func(s *Server){s.system=provider}}
+
+type ResourceProvider interface {
+	Stats(context.Context, string) (docker.ResourceStats, error)
+}
+
+func WithResources(provider ResourceProvider) Option {
+	return func(s *Server) { s.resources = provider }
+}
+
+type SystemProvider interface {
+	Info(context.Context) (docker.Info, error)
+}
+
+func WithSystem(provider SystemProvider) Option { return func(s *Server) { s.system = provider } }
 
 func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 	s := &Server{store: db, auth: a}
@@ -103,7 +113,7 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 	}
 	r := chi.NewRouter()
 	r.Post("/api/auth/login", s.login)
-	r.Get("/api/health",s.health)
+	r.Get("/api/health", s.health)
 	r.Group(func(r chi.Router) {
 		r.Use(s.requireAuth)
 		r.Use(s.auditMutations)
@@ -113,13 +123,13 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		})
 		r.Get("/api/instances", s.listInstances)
 		r.Post("/api/instances", s.createInstance)
-		r.Put("/api/instances/{id}",s.updateInstance)
-		r.Delete("/api/instances/{id}",s.deleteInstance)
+		r.Put("/api/instances/{id}", s.updateInstance)
+		r.Delete("/api/instances/{id}", s.deleteInstance)
 		r.Post("/api/instances/{id}/actions", s.instanceAction)
 		r.Get("/api/jobs/{id}", s.getJob)
 		r.Get("/api/instances/{id}/console", s.consoleSocket)
 		r.Get("/api/instances/{id}/players", s.onlinePlayers)
-		r.Get("/api/instances/{id}/resources",s.instanceResources)
+		r.Get("/api/instances/{id}/resources", s.instanceResources)
 		r.Post("/api/instances/{id}/players/{userID}/actions", s.playerAction)
 		r.Get("/api/audit", s.auditEvents)
 		r.Get("/api/content/vpk", s.listVPK)
@@ -147,12 +157,100 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 	return s
 }
 
-func(s *Server)health(w http.ResponseWriter,r *http.Request){if err:=s.store.DB().PingContext(r.Context());err!=nil{writeError(w,503,"database_unavailable",err.Error());return};result:=map[string]any{"status":"ok","database":"ok"};if s.system!=nil{info,err:=s.system.Info(r.Context());if err!=nil{writeError(w,503,"docker_unavailable",err.Error());return};result["docker_version"]=info.ServerVersion;result["containers_running"]=info.ContainersRunning};writeJSON(w,200,result)}
+func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.DB().PingContext(r.Context()); err != nil {
+		writeError(w, 503, "database_unavailable", err.Error())
+		return
+	}
+	result := map[string]any{"status": "ok", "database": "ok"}
+	if s.system != nil {
+		info, err := s.system.Info(r.Context())
+		if err != nil {
+			writeError(w, 503, "docker_unavailable", err.Error())
+			return
+		}
+		result["docker_version"] = info.ServerVersion
+		result["containers_running"] = info.ContainersRunning
+	}
+	writeJSON(w, 200, result)
+}
 
-func(s *Server)instanceResources(w http.ResponseWriter,r *http.Request){if s.resources==nil{writeError(w,503,"resources_unavailable","resource provider unavailable");return};instance,err:=s.store.Instance(r.Context(),chi.URLParam(r,"id"));if err!=nil||instance.ContainerID==""{writeError(w,404,"instance_not_running","instance container unavailable");return};stats,err:=s.resources.Stats(r.Context(),instance.ContainerID);if err!=nil{writeError(w,502,"stats_failed",err.Error());return};writeJSON(w,200,stats)}
+func (s *Server) instanceResources(w http.ResponseWriter, r *http.Request) {
+	if s.resources == nil {
+		writeError(w, 503, "resources_unavailable", "resource provider unavailable")
+		return
+	}
+	instance, err := s.store.Instance(r.Context(), chi.URLParam(r, "id"))
+	if err != nil || instance.ContainerID == "" {
+		writeError(w, 404, "instance_not_running", "instance container unavailable")
+		return
+	}
+	stats, err := s.resources.Stats(r.Context(), instance.ContainerID)
+	if err != nil {
+		writeError(w, 502, "stats_failed", err.Error())
+		return
+	}
+	writeJSON(w, 200, stats)
+}
 
-func(s *Server)updateInstance(w http.ResponseWriter,r *http.Request){instance,err:=s.store.Instance(r.Context(),chi.URLParam(r,"id"));if err!=nil{writeError(w,404,"instance_not_found",err.Error());return};var input struct{Name string `json:"name"`;GamePort int `json:"game_port"`;StartMap string `json:"start_map"`;GameMode string `json:"game_mode"`;Tickrate int `json:"tickrate"`;MaxPlayers int `json:"max_players"`;ExtraArgs string `json:"extra_args"`;RuntimeImage string `json:"runtime_image"`};if decodeJSON(w,r,&input)!=nil{return};if input.Name==""||input.GamePort<1024||input.GamePort>65535||input.StartMap==""||input.GameMode==""||input.Tickrate<30||input.Tickrate>128||input.MaxPlayers<1||input.MaxPlayers>32{writeError(w,422,"invalid_instance","invalid instance configuration");return};instance.Name,instance.GamePort,instance.StartMap,instance.GameMode,instance.Tickrate,instance.MaxPlayers,instance.ExtraArgs=input.Name,input.GamePort,input.StartMap,input.GameMode,input.Tickrate,input.MaxPlayers,input.ExtraArgs;if input.RuntimeImage!=""{instance.RuntimeImage=input.RuntimeImage};if err:=s.store.UpdateInstance(r.Context(),instance);err!=nil{writeError(w,409,"instance_conflict",err.Error());return};if instance.ContainerID!=""&&s.lifecycle!=nil&&s.jobs!=nil{job:=s.jobs.Start(context.WithoutCancel(r.Context()),instance.ID,"rebuild",func(ctx context.Context,_ jobs.Reporter)error{return s.lifecycle.Rebuild(ctx,instance.ID)});writeJSON(w,202,job);return};writeJSON(w,200,instance)}
-func(s *Server)deleteInstance(w http.ResponseWriter,r *http.Request){if s.lifecycle==nil||s.jobs==nil{writeError(w,503,"operations_unavailable","lifecycle unavailable");return};var input struct{Confirm bool `json:"confirm"`;DeleteData bool `json:"delete_data"`};if decodeJSON(w,r,&input)!=nil{return};if !input.Confirm{writeError(w,428,"confirmation_required","instance deletion requires confirmation");return};id:=chi.URLParam(r,"id");job:=s.jobs.Start(context.WithoutCancel(r.Context()),id,"delete",func(ctx context.Context,_ jobs.Reporter)error{return s.lifecycle.Delete(ctx,id,input.DeleteData)});writeJSON(w,202,job)}
+func (s *Server) updateInstance(w http.ResponseWriter, r *http.Request) {
+	instance, err := s.store.Instance(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, 404, "instance_not_found", err.Error())
+		return
+	}
+	var input struct {
+		Name         string `json:"name"`
+		GamePort     int    `json:"game_port"`
+		StartMap     string `json:"start_map"`
+		GameMode     string `json:"game_mode"`
+		Tickrate     int    `json:"tickrate"`
+		MaxPlayers   int    `json:"max_players"`
+		ExtraArgs    string `json:"extra_args"`
+		RuntimeImage string `json:"runtime_image"`
+	}
+	if decodeJSON(w, r, &input) != nil {
+		return
+	}
+	if input.Name == "" || input.GamePort < 1024 || input.GamePort > 65535 || input.StartMap == "" || input.GameMode == "" || input.Tickrate < 30 || input.Tickrate > 128 || input.MaxPlayers < 1 || input.MaxPlayers > 32 {
+		writeError(w, 422, "invalid_instance", "invalid instance configuration")
+		return
+	}
+	instance.Name, instance.GamePort, instance.StartMap, instance.GameMode, instance.Tickrate, instance.MaxPlayers, instance.ExtraArgs = input.Name, input.GamePort, input.StartMap, input.GameMode, input.Tickrate, input.MaxPlayers, input.ExtraArgs
+	if input.RuntimeImage != "" {
+		instance.RuntimeImage = input.RuntimeImage
+	}
+	if err := s.store.UpdateInstance(r.Context(), instance); err != nil {
+		writeError(w, 409, "instance_conflict", err.Error())
+		return
+	}
+	if instance.ContainerID != "" && s.lifecycle != nil && s.jobs != nil {
+		job := s.jobs.Start(context.WithoutCancel(r.Context()), instance.ID, "rebuild", func(ctx context.Context, _ jobs.Reporter) error { return s.lifecycle.Rebuild(ctx, instance.ID) })
+		writeJSON(w, 202, job)
+		return
+	}
+	writeJSON(w, 200, instance)
+}
+func (s *Server) deleteInstance(w http.ResponseWriter, r *http.Request) {
+	if s.lifecycle == nil || s.jobs == nil {
+		writeError(w, 503, "operations_unavailable", "lifecycle unavailable")
+		return
+	}
+	var input struct {
+		Confirm    bool `json:"confirm"`
+		DeleteData bool `json:"delete_data"`
+	}
+	if decodeJSON(w, r, &input) != nil {
+		return
+	}
+	if !input.Confirm {
+		writeError(w, 428, "confirmation_required", "instance deletion requires confirmation")
+		return
+	}
+	id := chi.URLParam(r, "id")
+	job := s.jobs.Start(context.WithoutCancel(r.Context()), id, "delete", func(ctx context.Context, _ jobs.Reporter) error { return s.lifecycle.Delete(ctx, id, input.DeleteData) })
+	writeJSON(w, 202, job)
+}
 
 func (s *Server) githubTokenStatus(w http.ResponseWriter, r *http.Request) {
 	if s.secrets == nil {
