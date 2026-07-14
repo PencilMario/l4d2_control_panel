@@ -24,9 +24,10 @@ import (
 const apiVersion = "/v1.44"
 
 type Engine struct {
-	base     string
-	http     *http.Client
-	extraEnv []string
+	base             string
+	http             *http.Client
+	extraEnv         []string
+	steamCredentials func() (string, string)
 }
 type EngineOption func(*Engine)
 
@@ -36,6 +37,28 @@ func WithDownloadProxy(proxy string) EngineOption {
 			e.extraEnv = []string{"HTTP_PROXY=" + proxy, "HTTPS_PROXY=" + proxy}
 		}
 	}
+}
+func WithSteamCredentials(provider func() (string, string)) EngineOption {
+	return func(e *Engine) { e.steamCredentials = provider }
+}
+func (e *Engine) runtimeEnv(base []string) []string {
+	result := append(append([]string{}, base...), e.extraEnv...)
+	if e.steamCredentials != nil {
+		username, password := e.steamCredentials()
+		if username != "" {
+			result = append(result, "STEAM_USERNAME="+username, "STEAM_PASSWORD="+password)
+		}
+	}
+	return result
+}
+func (e *Engine) steamLoginArgs() []string {
+	if e.steamCredentials != nil {
+		username, password := e.steamCredentials()
+		if username != "" {
+			return []string{"+login", username, password}
+		}
+	}
+	return []string{"+login", "anonymous"}
 }
 
 type Container struct {
@@ -59,6 +82,17 @@ func (e *Engine) Info(ctx context.Context) (Info, error) {
 	var info Info
 	err := e.do(ctx, http.MethodGet, "/info", nil, nil, &info)
 	return info, err
+}
+func (e *Engine) Running(ctx context.Context, containerID string) (bool, error) {
+	var result struct {
+		State struct {
+			Running bool `json:"Running"`
+		} `json:"State"`
+	}
+	if err := e.do(ctx, http.MethodGet, "/containers/"+url.PathEscape(containerID)+"/json", nil, nil, &result); err != nil {
+		return false, err
+	}
+	return result.State.Running, nil
 }
 
 type statsResponse struct {
@@ -123,7 +157,10 @@ type createRequest struct {
 }
 
 func (e *Engine) UpdateGame(ctx context.Context, dataRoot string, instance domain.Instance) error {
-	body := createRequest{Image: instance.RuntimeImage, Env: append([]string{}, e.extraEnv...), Cmd: []string{"steamcmd", "+force_install_dir", "/opt/l4d2/game", "+login", "anonymous", "+app_update", "222860", "validate", "+quit"}, User: "steam", Labels: map[string]string{ManagedLabel: "true", InstanceLabel: instance.ID, RoleLabel: "maintenance"}, HostConfig: hostConfig{Binds: []string{filepath.Join(dataRoot, "instances", instance.ID, "game") + ":/opt/l4d2/game"}, NetworkMode: "bridge", SecurityOpt: []string{"no-new-privileges"}}}
+	command := []string{"steamcmd", "+@sSteamCmdForcePlatformType", "linux", "+force_install_dir", "/opt/l4d2/game"}
+	command = append(command, e.steamLoginArgs()...)
+	command = append(command, "+app_info_update", "1", "+app_update", "222860", "validate", "+quit")
+	body := createRequest{Image: instance.RuntimeImage, Env: e.runtimeEnv(nil), Cmd: command, User: "steam", Labels: map[string]string{ManagedLabel: "true", InstanceLabel: instance.ID, RoleLabel: "maintenance"}, HostConfig: hostConfig{Binds: []string{filepath.Join(dataRoot, "instances", instance.ID, "game") + ":/opt/l4d2/game"}, NetworkMode: "bridge", SecurityOpt: []string{"no-new-privileges"}}}
 	var created struct {
 		ID string `json:"Id"`
 	}
@@ -196,7 +233,7 @@ func (e *Engine) Create(ctx context.Context, spec ContainerSpec) (string, error)
 	var result struct {
 		ID string `json:"Id"`
 	}
-	request := createRequest{Image: spec.Image, Env: append(append([]string{}, spec.Env...), e.extraEnv...), Labels: spec.Labels, HostConfig: hostConfig{Binds: spec.Mounts, NetworkMode: spec.NetworkMode, Privileged: false, ReadonlyRootfs: false, SecurityOpt: []string{"no-new-privileges"}}}
+	request := createRequest{Image: spec.Image, Env: e.runtimeEnv(spec.Env), Labels: spec.Labels, HostConfig: hostConfig{Binds: spec.Mounts, NetworkMode: spec.NetworkMode, Privileged: false, ReadonlyRootfs: false, SecurityOpt: []string{"no-new-privileges"}}}
 	err := e.do(ctx, http.MethodPost, "/containers/create", url.Values{"name": []string{spec.Name}}, request, &result)
 	return result.ID, err
 }

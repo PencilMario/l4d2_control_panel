@@ -50,17 +50,30 @@ func main() {
 			log.Fatal(err)
 		}
 	}
+	secretKey, err := secrets.LoadOrCreateKey(filepath.Join(cfg.PanelDir, "secret.key"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	secretService, err := secrets.New(db, secretKey)
+	if err != nil {
+		log.Fatal(err)
+	}
 	dockerHost := os.Getenv("DOCKER_HOST")
 	if dockerHost == "" {
 		dockerHost = "http://127.0.0.1:23750"
 	}
-	engine := docker.NewEngine(dockerHost, docker.WithDownloadProxy(os.Getenv("L4D2_PANEL_DOWNLOAD_PROXY")))
+	steamCredentials := func() (string, string) {
+		username, _, _ := secretService.Get(context.Background(), "steam_username")
+		password, _, _ := secretService.Get(context.Background(), "steam_password")
+		return username, password
+	}
+	engine := docker.NewEngine(dockerHost, docker.WithDownloadProxy(os.Getenv("L4D2_PANEL_DOWNLOAD_PROXY")), docker.WithSteamCredentials(steamCredentials))
 	portChecker := ports.Checker{Configured: func() []int { return nil }, Listening: ports.IsListening}
 	gameHost := os.Getenv("L4D2_PANEL_GAME_HOST")
 	if gameHost == "" {
 		gameHost = "127.0.0.1"
 	}
-	healthChecker := health.Checker{Host: gameHost, Query: a2s.Client{}}
+	healthChecker := health.Checker{Host: gameHost, Query: a2s.Client{}, Probe: engine}
 	life := lifecycle.New(db, engine, portChecker, cfg.DataRoot, lifecycle.WithHealth(healthChecker), lifecycle.WithSpace(disk.Checker{}, 12<<30))
 	if unknown, reconcileErr := life.Reconcile(context.Background()); reconcileErr != nil {
 		log.Printf("container reconciliation deferred: %v", reconcileErr)
@@ -81,14 +94,6 @@ func main() {
 	updatePipeline := updates.New(cfg.DataRoot)
 	updateCoordinator := &updates.Coordinator{Lifecycle: life, Deployer: updatePipeline}
 	gameCoordinator := &updates.GameCoordinator{Root: cfg.DataRoot, Instances: db, Lifecycle: life, Updater: engine, Private: privateManager}
-	secretKey, err := secrets.LoadOrCreateKey(filepath.Join(cfg.PanelDir, "secret.key"))
-	if err != nil {
-		log.Fatal(err)
-	}
-	secretService, err := secrets.New(db, secretKey)
-	if err != nil {
-		log.Fatal(err)
-	}
 	dispatcher := automation.Dispatcher{Jobs: jobManager, Players: playerService, Packages: packageManager, PackagesUpdate: updateCoordinator, GameUpdate: gameCoordinator, Releases: releases.Client{}, Maintenance: maintenance.New(cfg.DataRoot), Secrets: secretService}
 	scheduleService := scheduler.NewService(db, dispatcher)
 	defer scheduleService.Stop()

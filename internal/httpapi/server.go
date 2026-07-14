@@ -152,9 +152,54 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Get("/api/settings/github-token", s.githubTokenStatus)
 		r.Put("/api/settings/github-token", s.setGithubToken)
 		r.Delete("/api/settings/github-token", s.deleteGithubToken)
+		r.Get("/api/settings/steam", s.steamCredentialStatus)
+		r.Put("/api/settings/steam", s.setSteamCredentials)
+		r.Delete("/api/settings/steam", s.deleteSteamCredentials)
 	})
 	s.router = r
 	return s
+}
+
+func (s *Server) steamCredentialStatus(w http.ResponseWriter, r *http.Request) {
+	if s.secrets == nil {
+		writeError(w, 503, "secrets_unavailable", "secret store unavailable")
+		return
+	}
+	_, user, _ := s.secrets.Get(r.Context(), "steam_username")
+	_, password, _ := s.secrets.Get(r.Context(), "steam_password")
+	writeJSON(w, 200, map[string]bool{"configured": user && password})
+}
+func (s *Server) setSteamCredentials(w http.ResponseWriter, r *http.Request) {
+	if s.secrets == nil {
+		writeError(w, 503, "secrets_unavailable", "secret store unavailable")
+		return
+	}
+	var input struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if decodeJSON(w, r, &input) != nil {
+		return
+	}
+	if err := s.secrets.Set(r.Context(), "steam_username", input.Username); err != nil {
+		writeError(w, 422, "secret_error", err.Error())
+		return
+	}
+	if err := s.secrets.Set(r.Context(), "steam_password", input.Password); err != nil {
+		_ = s.secrets.Delete(r.Context(), "steam_username")
+		writeError(w, 422, "secret_error", err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"configured": true})
+}
+func (s *Server) deleteSteamCredentials(w http.ResponseWriter, r *http.Request) {
+	if s.secrets == nil {
+		writeError(w, 503, "secrets_unavailable", "secret store unavailable")
+		return
+	}
+	_ = s.secrets.Delete(r.Context(), "steam_username")
+	_ = s.secrets.Delete(r.Context(), "steam_password")
+	w.WriteHeader(204)
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {

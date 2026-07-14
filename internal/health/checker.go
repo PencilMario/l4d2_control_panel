@@ -13,10 +13,14 @@ import (
 type Query interface {
 	Info(string) (a2s.Info, error)
 }
+type ContainerProbe interface {
+	Running(context.Context, string) (bool, error)
+}
 type Checker struct {
 	Host              string
 	Query             Query
 	Timeout, Interval time.Duration
+	Probe             ContainerProbe
 }
 
 func (c Checker) Wait(ctx context.Context, instance domain.Instance) error {
@@ -35,6 +39,12 @@ func (c Checker) Wait(ctx context.Context, instance domain.Instance) error {
 	address := net.JoinHostPort(c.Host, strconv.Itoa(instance.GamePort))
 	var last error
 	for {
+		if c.Probe != nil && instance.ContainerID != "" {
+			running, probeErr := c.Probe.Running(ctx, instance.ContainerID)
+			if probeErr == nil && !running {
+				return errors.New("managed container exited before A2S became healthy")
+			}
+		}
 		if _, err := c.Query.Info(address); err == nil {
 			return nil
 		} else {

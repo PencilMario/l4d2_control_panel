@@ -42,7 +42,7 @@ type Props = {
   initialInstances?: Instance[];
   onAction?: (id: string, action: string) => void;
 };
-type Page = "overview" | "content" | "schedules";
+type Page = "overview" | "content" | "schedules" | "settings";
 
 export function App({ initialInstances, onAction }: Props) {
   const injected = initialInstances !== undefined;
@@ -56,15 +56,24 @@ export function App({ initialInstances, onAction }: Props) {
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState("");
   const loadInstances = async () => {
-    const base=(await api<any[]>("/api/instances")).map(normalizeInstance);
-    const enriched=await Promise.all(base.map(async instance=>{
-      if(instance.actual_state!=="running")return instance;
-      const [resources,players]=await Promise.all([
-        api<any>(`/api/instances/${instance.id}/resources`).catch(()=>null),
-        api<any>(`/api/instances/${instance.id}/players`).catch(()=>null),
-      ]);
-      return {...instance,cpu:resources?.cpu_percent??0,memory:resources?.memory_bytes?resources.memory_bytes/(1<<30):0,players:players?.players?.length??0};
-    }));
+    const base = (await api<any[]>("/api/instances")).map(normalizeInstance);
+    const enriched = await Promise.all(
+      base.map(async (instance) => {
+        if (instance.actual_state !== "running") return instance;
+        const [resources, players] = await Promise.all([
+          api<any>(`/api/instances/${instance.id}/resources`).catch(() => null),
+          api<any>(`/api/instances/${instance.id}/players`).catch(() => null),
+        ]);
+        return {
+          ...instance,
+          cpu: resources?.cpu_percent ?? 0,
+          memory: resources?.memory_bytes
+            ? resources.memory_bytes / (1 << 30)
+            : 0,
+          players: players?.players?.length ?? 0,
+        };
+      }),
+    );
     setInstances(enriched);
   };
   useEffect(() => {
@@ -150,12 +159,15 @@ export function App({ initialInstances, onAction }: Props) {
           >
             计划任务
           </Nav>
+          <Nav
+            active={page === "settings"}
+            onClick={() => setPage("settings")}
+            icon={<Settings />}
+          >
+            系统设置
+          </Nav>
         </nav>
         <div className="aside-foot">
-          <a>
-            <Settings />
-            系统设置
-          </a>
           <div className="node">
             <i></i>
             <span>
@@ -173,7 +185,9 @@ export function App({ initialInstances, onAction }: Props) {
                 ? "服务器作战室"
                 : page === "content"
                   ? "内容仓库"
-                  : "自动维护计划"}
+                  : page === "schedules"
+                    ? "自动维护计划"
+                    : "系统与凭据"}
             </h1>
             <p>管理游戏进程、内容部署与计划维护。</p>
           </div>
@@ -206,6 +220,7 @@ export function App({ initialInstances, onAction }: Props) {
         )}{" "}
         {page === "content" && <ContentPage />}
         {page === "schedules" && <SchedulesPage instances={instances} />}{" "}
+        {page === "settings" && <SettingsPage />}{" "}
         {job && <JobStrip job={job} />}
       </main>
       {pending && (
@@ -361,16 +376,18 @@ function Overview({
               </div>
               <div className="stats">
                 <span>
-                    <small>玩家</small>
-                    <b>{x.players} / {x.max_players}</b>
+                  <small>玩家</small>
+                  <b>
+                    {x.players} / {x.max_players}
+                  </b>
                 </span>
                 <span>
-                    <small>CPU</small>
-                    <b>{x.cpu.toFixed(1)}%</b>
+                  <small>CPU</small>
+                  <b>{x.cpu.toFixed(1)}%</b>
                 </span>
                 <span>
-                    <small>内存</small>
-                    <b>{x.memory.toFixed(2)} GB</b>
+                  <small>内存</small>
+                  <b>{x.memory.toFixed(2)} GB</b>
                 </span>
               </div>
               <div className="bar">
@@ -683,6 +700,77 @@ function SchedulesPage({ instances }: { instances: Instance[] }) {
     </div>
   );
 }
+function SettingsPage() {
+  const [steam, setSteam] = useState(false);
+  const [github, setGithub] = useState(false);
+  useEffect(() => {
+    api<any>("/api/settings/steam")
+      .then((x) => setSteam(x.configured))
+      .catch(() => {});
+    api<any>("/api/settings/github-token")
+      .then((x) => setGithub(x.configured))
+      .catch(() => {});
+  }, []);
+  const saveSteam = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const data = new FormData(e.currentTarget);
+    await api("/api/settings/steam", {
+      method: "PUT",
+      body: JSON.stringify({
+        username: data.get("username"),
+        password: data.get("password"),
+      }),
+    });
+    setSteam(true);
+    e.currentTarget.reset();
+  };
+  const saveGithub = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const data = new FormData(e.currentTarget);
+    await api("/api/settings/github-token", {
+      method: "PUT",
+      body: JSON.stringify({ token: data.get("token") }),
+    });
+    setGithub(true);
+    e.currentTarget.reset();
+  };
+  return (
+    <div className="content-layout">
+      <form className="control-form" onSubmit={saveSteam}>
+        <p className="eyebrow">STEAMCMD LICENSE</p>
+        <h2>Steam 安装凭据</h2>
+        <p>
+          {steam ? "已加密配置" : "未配置；匿名账号可能无法安装 App 222860"}
+        </p>
+        <label>
+          用户名
+          <input name="username" autoComplete="username" required />
+        </label>
+        <label>
+          密码
+          <input
+            name="password"
+            type="password"
+            autoComplete="current-password"
+            required
+          />
+        </label>
+        <button className="create">加密保存</button>
+      </form>
+      <form className="control-form" onSubmit={saveGithub}>
+        <p className="eyebrow">GITHUB RELEASES</p>
+        <h2>GitHub Token</h2>
+        <p>{github ? "已加密配置" : "未配置；公开仓库仍可有限访问"}</p>
+        <label>
+          Token
+          <input name="token" type="password" required />
+        </label>
+        <button className="create">加密保存</button>
+      </form>
+    </div>
+  );
+}
+
 function FileButton({
   label,
   accept,

@@ -28,7 +28,7 @@ func TestEngineCreatesRestrictedManagedContainer(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"Id": "container-1"})
 	}))
 	defer server.Close()
-	client := NewEngine(server.URL, WithDownloadProxy("http://proxy:7890"))
+	client := NewEngine(server.URL, WithDownloadProxy("http://proxy:7890"), WithSteamCredentials(func() (string, string) { return "owner", "password" }))
 	id, err := client.Create(context.Background(), BuildContainerSpec("/srv/l4d2-panel", domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"}))
 	if err != nil {
 		t.Fatal(err)
@@ -38,6 +38,9 @@ func TestEngineCreatesRestrictedManagedContainer(t *testing.T) {
 	}
 	if !slices.Contains(got.Env, "HTTPS_PROXY=http://proxy:7890") {
 		t.Fatalf("env=%v", got.Env)
+	}
+	if !slices.Contains(got.Env, "STEAM_USERNAME=owner") || !slices.Contains(got.Env, "STEAM_PASSWORD=password") {
+		t.Fatalf("steam env=%v", got.Env)
 	}
 }
 
@@ -107,7 +110,7 @@ func TestGameUpdateUsesFixedSteamCMDMaintenanceContainer(t *testing.T) {
 	if err := NewEngine(server.URL).UpdateGame(context.Background(), t.TempDir(), instance); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(created.Cmd, " ") != "steamcmd +force_install_dir /opt/l4d2/game +login anonymous +app_update 222860 validate +quit" || created.HostConfig.NetworkMode != "bridge" || created.Labels[RoleLabel] != "maintenance" {
+	if strings.Join(created.Cmd, " ") != "steamcmd +@sSteamCmdForcePlatformType linux +force_install_dir /opt/l4d2/game +login anonymous +app_info_update 1 +app_update 222860 validate +quit" || created.HostConfig.NetworkMode != "bridge" || created.Labels[RoleLabel] != "maintenance" {
 		t.Fatalf("request=%#v", created)
 	}
 	if len(paths) != 4 {

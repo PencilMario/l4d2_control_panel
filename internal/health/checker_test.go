@@ -28,3 +28,13 @@ func TestWaitPollsUntilA2SResponds(t *testing.T) {
 		t.Fatalf("calls=%d", query.calls)
 	}
 }
+
+type stoppedProbe struct{}
+
+func (stoppedProbe) Running(context.Context, string) (bool, error) { return false, nil }
+func TestWaitFailsImmediatelyWhenContainerExits(t *testing.T) {
+	checker := Checker{Host: "127.0.0.1", Query: &eventualQuery{}, Probe: stoppedProbe{}, Timeout: time.Second}
+	if err := checker.Wait(context.Background(), domain.Instance{ContainerID: "dead", GamePort: 27015}); err == nil {
+		t.Fatal("exited container treated as healthy")
+	}
+}
