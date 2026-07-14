@@ -11,7 +11,7 @@ type Lifecycle interface {
 	Stop(context.Context, string) error
 }
 type Deployer interface {
-	Apply(context.Context, string, string, string, Mode) error
+	Begin(context.Context, string, string, string, Mode) (Deployment, error)
 }
 type Coordinator struct {
 	Lifecycle Lifecycle
@@ -20,7 +20,14 @@ type Coordinator struct {
 
 func (c Coordinator) ApplyPackage(ctx context.Context, instanceID string, item content.PackageVersion, mode Mode) error {
 	if mode == Hot {
-		return c.Deployer.Apply(ctx, instanceID, item.ArchivePath, item.Version, mode)
+		transaction, err := c.Deployer.Begin(ctx, instanceID, item.ArchivePath, item.Version, mode)
+		if err != nil {
+			return err
+		}
+		if err := transaction.Commit(); err != nil {
+			return errors.Join(err, transaction.Rollback())
+		}
+		return nil
 	}
 	if mode != Full {
 		return errors.New("unsupported update mode")
@@ -28,13 +35,29 @@ func (c Coordinator) ApplyPackage(ctx context.Context, instanceID string, item c
 	if err := c.Lifecycle.Stop(ctx, instanceID); err != nil {
 		return err
 	}
-	deployErr := c.Deployer.Apply(ctx, instanceID, item.ArchivePath, item.Version, mode)
-	startErr := c.Lifecycle.Start(ctx, instanceID)
-	if deployErr != nil && startErr != nil {
-		return errors.Join(deployErr, startErr)
-	}
+	transaction, deployErr := c.Deployer.Begin(ctx, instanceID, item.ArchivePath, item.Version, mode)
 	if deployErr != nil {
-		return deployErr
+		return errors.Join(deployErr, c.Lifecycle.Start(ctx, instanceID))
 	}
-	return startErr
+	startErr := c.Lifecycle.Start(ctx, instanceID)
+	if startErr == nil {
+		if commitErr := transaction.Commit(); commitErr == nil {
+			return nil
+		} else {
+			return c.rollbackStarted(ctx, instanceID, transaction, commitErr)
+		}
+	}
+	return c.rollbackStarted(ctx, instanceID, transaction, startErr)
+}
+
+func (c Coordinator) rollbackStarted(ctx context.Context, instanceID string, transaction Deployment, cause error) error {
+	stopErr := c.Lifecycle.Stop(ctx, instanceID)
+	if stopErr != nil {
+		return errors.Join(cause, stopErr)
+	}
+	rollbackErr := transaction.Rollback()
+	if rollbackErr != nil {
+		return errors.Join(cause, rollbackErr)
+	}
+	return errors.Join(cause, c.Lifecycle.Start(ctx, instanceID))
 }

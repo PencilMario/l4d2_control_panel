@@ -46,6 +46,50 @@ func TestFailureRollsBackReplacedFiles(t *testing.T) {
 		t.Fatalf("rollback got %q", raw)
 	}
 }
+
+func TestRecoverRollsBackUncommittedDeployment(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "instances", "abc")
+	target := filepath.Join(base, "game", "left4dead2", "cfg")
+	if err := os.MkdirAll(target, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "plugin.cfg"), []byte("old"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeManifest(filepath.Join(base, "package-manifest.json"), manifest{Version: "v1", Files: map[string]string{"cfg/plugin.cfg": "old-hash"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	deployment, err := New(root).Begin(context.Background(), "abc", zipFile(t, map[string]string{"cfg/plugin.cfg": "new"}), "v2", Full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deployment == nil {
+		t.Fatal("missing deployment transaction")
+	}
+	raw, _ := os.ReadFile(filepath.Join(target, "plugin.cfg"))
+	if string(raw) != "new" {
+		t.Fatalf("deployed=%q", raw)
+	}
+	if journals, _ := filepath.Glob(filepath.Join(base, "backups", "update-*", "journal.json")); len(journals) != 1 {
+		t.Fatalf("journals=%v", journals)
+	}
+
+	if err := New(root).Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = os.ReadFile(filepath.Join(target, "plugin.cfg"))
+	if string(raw) != "old" {
+		t.Fatalf("recovered=%q", raw)
+	}
+	if got := readManifest(filepath.Join(base, "package-manifest.json")); got.Version != "v1" {
+		t.Fatalf("manifest=%#v", got)
+	}
+	if journals, _ := filepath.Glob(filepath.Join(base, "backups", "update-*", "journal.json")); len(journals) != 0 {
+		t.Fatalf("stale journals=%v", journals)
+	}
+}
 func zipFile(t *testing.T, files map[string]string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "package.zip")

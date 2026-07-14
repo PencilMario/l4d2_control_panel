@@ -49,6 +49,7 @@ type Manager struct {
 	jobs  map[string]Job
 	locks map[string]*sync.Mutex
 	repo  Repository
+	wg    sync.WaitGroup
 }
 
 type Repository interface {
@@ -65,21 +66,25 @@ func NewPersistentManager(repo Repository) *Manager {
 	}
 	return m
 }
-func (m *Manager) Start(ctx context.Context, instanceID, kind string, fn func(context.Context, Reporter) error) Job {
+func (m *Manager) Start(ctx context.Context, instanceID, kind string, fn func(context.Context, Reporter) error) (Job, error) {
 	now := time.Now().UTC()
 	j := Job{ID: uuid.NewString(), InstanceID: instanceID, Type: kind, Status: Pending, CreatedAt: now, UpdatedAt: now}
+	if m.repo != nil {
+		if err := m.repo.SaveJob(toRecord(j)); err != nil {
+			return Job{}, err
+		}
+	}
 	m.mu.Lock()
 	m.jobs[j.ID] = j
-	if m.repo != nil {
-		_ = m.repo.SaveJob(toRecord(j))
-	}
 	lock := m.locks[instanceID]
 	if lock == nil {
 		lock = &sync.Mutex{}
 		m.locks[instanceID] = lock
 	}
+	m.wg.Add(1)
 	m.mu.Unlock()
 	go func() {
+		defer m.wg.Done()
 		lock.Lock()
 		defer lock.Unlock()
 		m.setStatus(j.ID, Running, 0, "")
@@ -90,7 +95,21 @@ func (m *Manager) Start(ctx context.Context, instanceID, kind string, fn func(co
 			m.setStatus(j.ID, Succeeded, 100, "")
 		}
 	}()
-	return j
+	return j, nil
+}
+
+func (m *Manager) Wait(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 func (m *Manager) setStatus(id string, status Status, percent int, message string) {
 	m.mu.Lock()

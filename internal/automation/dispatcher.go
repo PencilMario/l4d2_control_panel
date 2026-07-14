@@ -31,7 +31,7 @@ func (d Dispatcher) Dispatch(ctx context.Context, task domain.ScheduledTask) err
 	if d.Jobs == nil {
 		return errors.New("job manager unavailable")
 	}
-	d.Jobs.Start(context.WithoutCancel(ctx), task.InstanceID, "scheduled_"+task.Type, func(run context.Context, reporter jobs.Reporter) error {
+	_, err := d.Jobs.Start(context.WithoutCancel(ctx), task.InstanceID, "scheduled_"+task.Type, func(run context.Context, reporter jobs.Reporter) error {
 		if task.OnlinePolicy != "force" && task.InstanceID != "" && d.Players != nil {
 			for {
 				snapshot, err := d.Players.Online(run, task.InstanceID)
@@ -93,5 +93,5 @@ func (d Dispatcher) Dispatch(ctx context.Context, task domain.ScheduledTask) err
 			return errors.New("unsupported scheduled task type")
 		}
 	})
-	return nil
+	return err
 }

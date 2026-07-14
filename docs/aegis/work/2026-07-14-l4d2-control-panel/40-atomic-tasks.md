@@ -14,13 +14,13 @@
 - [ ] Production delivery documentation, TLS/reverse-proxy guidance and final branch integration.
 - [x] Repair browser/API contracts, destructive confirmations, large VPK chunking and truthful loading/error/health states.
 - [x] Declare, persist and reserve SourceTV/plugin ports across API, lifecycle, runtime and UI.
-- [ ] Add durable package-update journal recovery and bounded Panel shutdown/Job drain.
+- [x] Add durable package-update journal recovery and bounded Panel shutdown/Job drain.
 - [ ] Reconcile maintenance writers and recover interrupted uploads/backups/game updates.
 - [ ] Add real-HTTP Playwright acceptance and the safe Linux fault-injection matrix.
 
 ## Active slice
 
-Persist package-update transactions and add bounded Panel shutdown/Job drain, then continue through Tasks 11-12 for maintenance recovery and browser/fault acceptance.
+Reconcile maintenance writers and recover interrupted VPK uploads, backups and game updates, then complete real-browser and fault acceptance in Task 12.
 
 ## Completed in the latest slice
 
@@ -49,6 +49,11 @@ Persist package-update transactions and add bounded Panel shutdown/Job drain, th
 - Made `ports.Checker` the sole configured/listening conflict owner, including all declared port kinds, current-instance exclusion and real SQLite reservations.
 - Passed SourceTV/plugin declarations through Docker and the React create/display flow; Supervisor enables SourceTV only for a nonzero managed port.
 - Verified the POSIX command path and Supervisor PTY self-test on `sirphomesv` without changing or restarting Docker daemon.
+- Replaced in-memory-only package rollback with atomic stage journals that retain backups until explicit commit and restore files plus the package manifest on startup.
+- Made full package updates commit only after restart health succeeds; failed health or journal commit stops the new run, rolls back and restarts the old version.
+- Made initial Job persistence mandatory, tracked accepted goroutines for context-bounded drain, and propagated creation errors through HTTP and scheduled dispatch.
+- Replaced fatal serving with SIGINT/SIGTERM handling ordered as HTTP shutdown, bounded Cron stop and Job drain.
+- Verified a disposable Linux Panel received Docker SIGTERM, logged drain, exited 0 and left the existing game container ID unchanged.
 
 ## Blocked-on
 
@@ -56,13 +61,12 @@ Persist package-update transactions and add bounded Panel shutdown/Job drain, th
 
 ## Next
 
-1. Implement durable update-stage recovery and graceful shutdown with regression tests.
-2. Reconcile maintenance writers and interrupted artifacts.
-3. Add real HTTP Playwright coverage and run the remaining safe fault-injection matrix.
+1. Reconcile maintenance writers and interrupted artifacts.
+2. Add real HTTP Playwright coverage and run the remaining safe fault-injection matrix.
 
 ## DriftCheckDraft
 
 - Scope: continues to implement the approved single-host, single-admin design.
 - Compatibility: host networking, fixed Supervisor Exec operations and content precedence are unchanged.
-- New owner/fallback: `ports.Checker` now owns configured and listening conflicts using SQLite-backed reservations. The empty production provider, single-game-port check and dormant SourceTV path are retired; no fallback was added.
-- Decision: `continue`; Task 9 stayed within the approved host-network port boundary and fresh local/Linux evidence covers its public and runtime contracts.
+- New owner/fallback: update journals and `Deployment` own package commit/rollback state; `jobs.Manager` owns accepted-goroutine drain. In-memory-only rollback, pre-health backup deletion, ignored initial Job saves and fatal serving are retired without fallback.
+- Decision: `continue`; Task 10 preserves public Job JSON/SSE and content precedence, with fresh restart, rollback and Linux signal evidence.

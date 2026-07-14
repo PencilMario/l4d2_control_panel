@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -16,9 +17,14 @@ func TestManagerSerializesMutationPerInstance(t *testing.T) {
 	release := make(chan struct{})
 	started := make(chan struct{})
 	var overlap atomic.Bool
-	m.Start(context.Background(), "a", "update", func(context.Context, Reporter) error { close(started); <-release; return nil })
+	if _, err := m.Start(context.Background(), "a", "update", func(context.Context, Reporter) error { close(started); <-release; return nil }); err != nil {
+		t.Fatal(err)
+	}
 	<-started
-	job := m.Start(context.Background(), "a", "restart", func(context.Context, Reporter) error { overlap.Store(true); return nil })
+	job, err := m.Start(context.Background(), "a", "restart", func(context.Context, Reporter) error { overlap.Store(true); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
 	time.Sleep(20 * time.Millisecond)
 	if overlap.Load() {
 		t.Fatal("jobs overlapped")
@@ -37,7 +43,10 @@ func TestPersistentManagerReloadsCompletedJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := NewPersistentManager(db)
-	job := m.Start(context.Background(), "a", "install", func(_ context.Context, r Reporter) error { r.Progress("steamcmd", 42, "downloading"); return nil })
+	job, err := m.Start(context.Background(), "a", "install", func(_ context.Context, r Reporter) error { r.Progress("steamcmd", 42, "downloading"); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
 	got := wait(t, m, job.ID)
 	if got.Status != Succeeded {
 		t.Fatalf("job=%#v", got)
@@ -75,10 +84,51 @@ func TestPersistentManagerMarksStaleRunningJobInterrupted(t *testing.T) {
 }
 func TestReporterPersistsProgress(t *testing.T) {
 	m := NewManager()
-	job := m.Start(context.Background(), "a", "install", func(_ context.Context, r Reporter) error { r.Progress("steamcmd", 42, "downloading"); return nil })
+	job, err := m.Start(context.Background(), "a", "install", func(_ context.Context, r Reporter) error { r.Progress("steamcmd", 42, "downloading"); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
 	got := wait(t, m, job.ID)
 	if got.Status != Succeeded || got.Stage != "steamcmd" || got.Percent != 100 {
 		t.Fatalf("job=%#v", got)
+	}
+}
+
+type failingRepository struct{ err error }
+
+func (r failingRepository) SaveJob(domain.JobRecord) error { return r.err }
+func (failingRepository) LoadJob(string) (domain.JobRecord, bool, error) {
+	return domain.JobRecord{}, false, nil
+}
+
+func TestStartReturnsInitialPersistenceFailureWithoutRunning(t *testing.T) {
+	want := errors.New("database unavailable")
+	m := NewPersistentManager(failingRepository{err: want})
+	ran := atomic.Bool{}
+	if _, err := m.Start(context.Background(), "a", "install", func(context.Context, Reporter) error { ran.Store(true); return nil }); !errors.Is(err, want) {
+		t.Fatalf("start error=%v", err)
+	}
+	if ran.Load() {
+		t.Fatal("unpersisted job ran")
+	}
+}
+
+func TestWaitIsBoundedByContextAndDrainsActiveJobs(t *testing.T) {
+	m := NewManager()
+	release := make(chan struct{})
+	if _, err := m.Start(context.Background(), "a", "install", func(context.Context, Reporter) error { <-release; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	timed, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := m.Wait(timed); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("bounded wait error=%v", err)
+	}
+	close(release)
+	drained, cancelDrain := context.WithTimeout(context.Background(), time.Second)
+	defer cancelDrain()
+	if err := m.Wait(drained); err != nil {
+		t.Fatal(err)
 	}
 }
 func wait(t *testing.T, m *Manager, id string) Job {

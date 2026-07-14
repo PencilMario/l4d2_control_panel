@@ -395,7 +395,10 @@ func (s *Server) updateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if instance.ContainerID != "" && s.lifecycle != nil && s.jobs != nil {
-		job := s.jobs.Start(context.WithoutCancel(r.Context()), instance.ID, "rebuild", func(ctx context.Context, _ jobs.Reporter) error { return s.lifecycle.Rebuild(ctx, instance.ID) })
+		job, ok := s.startJob(w, r, instance.ID, "rebuild", func(ctx context.Context, _ jobs.Reporter) error { return s.lifecycle.Rebuild(ctx, instance.ID) })
+		if !ok {
+			return
+		}
 		writeJSON(w, 202, job)
 		return
 	}
@@ -418,7 +421,10 @@ func (s *Server) deleteInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	job := s.jobs.Start(context.WithoutCancel(r.Context()), id, "delete", func(ctx context.Context, _ jobs.Reporter) error { return s.lifecycle.Delete(ctx, id, input.DeleteData) })
+	job, ok := s.startJob(w, r, id, "delete", func(ctx context.Context, _ jobs.Reporter) error { return s.lifecycle.Delete(ctx, id, input.DeleteData) })
+	if !ok {
+		return
+	}
 	writeJSON(w, 202, job)
 }
 
@@ -545,10 +551,13 @@ func (s *Server) updateGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	job := s.jobs.Start(context.WithoutCancel(r.Context()), id, "game_update", func(ctx context.Context, reporter jobs.Reporter) error {
+	job, ok := s.startJob(w, r, id, "game_update", func(ctx context.Context, reporter jobs.Reporter) error {
 		reporter.Progress("steamcmd", 10, "validating App 222860")
 		return s.gameUpdates.Update(ctx, id)
 	})
+	if !ok {
+		return
+	}
 	writeJSON(w, 202, job)
 }
 
@@ -592,7 +601,7 @@ func (s *Server) fetchRelease(w http.ResponseWriter, r *http.Request) {
 	if decodeJSON(w, r, &input) != nil {
 		return
 	}
-	job := s.jobs.Start(context.WithoutCancel(r.Context()), "global", "release_fetch", func(ctx context.Context, reporter jobs.Reporter) error {
+	job, ok := s.startJob(w, r, "global", "release_fetch", func(ctx context.Context, reporter jobs.Reporter) error {
 		reporter.Progress("release", 10, "checking GitHub Release")
 		token := ""
 		if s.secrets != nil {
@@ -601,6 +610,9 @@ func (s *Server) fetchRelease(w http.ResponseWriter, r *http.Request) {
 		_, err := s.releases.FetchLatest(ctx, input.Repository, input.AssetPattern, token, s.packages)
 		return err
 	})
+	if !ok {
+		return
+	}
 	writeJSON(w, 202, job)
 }
 func (s *Server) updatePackage(w http.ResponseWriter, r *http.Request) {
@@ -630,7 +642,7 @@ func (s *Server) updatePackage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	job := s.jobs.Start(context.WithoutCancel(r.Context()), id, "package_"+string(input.Mode), func(ctx context.Context, reporter jobs.Reporter) error {
+	job, ok := s.startJob(w, r, id, "package_"+string(input.Mode), func(ctx context.Context, reporter jobs.Reporter) error {
 		reporter.Progress("deploy", 10, "deploying package")
 		if err := s.updateCoordinator.ApplyPackage(ctx, id, item, input.Mode); err != nil {
 			return err
@@ -642,6 +654,9 @@ func (s *Server) updatePackage(w http.ResponseWriter, r *http.Request) {
 		instance.PackageVersion = item.ID
 		return s.store.UpdateInstance(ctx, instance)
 	})
+	if !ok {
+		return
+	}
 	writeJSON(w, 202, job)
 }
 
@@ -751,7 +766,10 @@ func (s *Server) applyPrivate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	job := s.jobs.Start(context.WithoutCancel(r.Context()), id, "apply_private", func(ctx context.Context, _ jobs.Reporter) error { return s.private.Apply(ctx, id) })
+	job, ok := s.startJob(w, r, id, "apply_private", func(ctx context.Context, _ jobs.Reporter) error { return s.private.Apply(ctx, id) })
+	if !ok {
+		return
+	}
 	writeJSON(w, 202, job)
 }
 
@@ -834,7 +852,10 @@ func (s *Server) playerAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 422, "invalid_action", "supported actions: kick, ban")
 		return
 	}
-	job := s.jobs.Start(context.WithoutCancel(r.Context()), id, "player_"+input.Action, operation)
+	job, ok := s.startJob(w, r, id, "player_"+input.Action, operation)
+	if !ok {
+		return
+	}
 	writeJSON(w, http.StatusAccepted, job)
 }
 
@@ -936,8 +957,20 @@ func (s *Server) instanceAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 422, "invalid_action", "supported actions: start, stop, restart")
 		return
 	}
-	job := s.jobs.Start(context.WithoutCancel(r.Context()), id, input.Action, operation)
+	job, ok := s.startJob(w, r, id, input.Action, operation)
+	if !ok {
+		return
+	}
 	writeJSON(w, http.StatusAccepted, job)
+}
+
+func (s *Server) startJob(w http.ResponseWriter, r *http.Request, instanceID, kind string, operation func(context.Context, jobs.Reporter) error) (jobs.Job, bool) {
+	job, err := s.jobs.Start(context.WithoutCancel(r.Context()), instanceID, kind, operation)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "job_persistence_failed", err.Error())
+		return jobs.Job{}, false
+	}
+	return job, true
 }
 func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
 	if s.jobs == nil {

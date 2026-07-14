@@ -168,10 +168,10 @@
 
 **Verification:** `go test ./internal/updates ./internal/jobs ./cmd/panel`; targeted process-restart fixture; `go vet ./...`.
 
-- [ ] Add failing tests for recovering a partially applied transaction and full-update health failure rollback.
-- [ ] Add failing tests for initial Job persistence failure and bounded Job drain.
-- [ ] Implement atomic journal writes, startup recovery, commit/rollback ownership and Panel signal shutdown.
-- [ ] Re-run targets and a disposable Linux Panel SIGTERM smoke, then commit.
+- [x] Add failing tests for recovering a partially applied transaction and full-update health failure rollback.
+- [x] Add failing tests for initial Job persistence failure and bounded Job drain.
+- [x] Implement atomic journal writes, startup recovery, commit/rollback ownership and Panel signal shutdown.
+- [x] Re-run targets and a disposable Linux Panel SIGTERM smoke, then commit.
 
 ### Task 11: Recover maintenance writers and interrupted artifacts
 

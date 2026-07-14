@@ -66,7 +66,7 @@ Targeted red/green evidence in the latest slice:
 - Verify the game-update maintenance path against the installed SRCDS when another full Steam validation is acceptable for the host disk/time budget.
 - Browser E2E for login, create, console, upload, update, Cron and recovery.
 - Full fault injection for Panel termination during update, SRCDS termination, Docker restart and interrupted download.
-- Verify or strengthen true stage-journal continuation/rollback rather than only marking active jobs interrupted.
+- Verify maintenance-writer adoption and desired-running recovery after interrupted game updates.
 
 ## Requirement-gap audit (2026-07-15)
 
@@ -95,6 +95,17 @@ Targeted red/green evidence in the latest slice:
 - The copied current Supervisor passed its Linux PTY self-test. With `SRCDS_TV_PORT=0`, the rendered command had no TV arguments; with `27020`, it ended in `+tv_enable 1 +tv_port 27020`. Temporary remote files were removed.
 - Fresh verification passed: `go test -count=1 -p 1 ./...`, `go vet ./...`, `npm test -- --run` (17 tests), `npm run build`, `npm audit --omit=dev` (0 vulnerabilities), `docker compose --env-file .env.example config --quiet`, and `git diff --check`.
 - Review judgment: no Critical or Important Task 9 finding. Port allocation remains intentionally advisory at the host-listener boundary; the database declaration check prevents cross-instance races inside the single Panel owner.
+
+## Task 10 durable-update and shutdown completion (2026-07-15)
+
+- RED evidence: updates had no `Begin`/`Recover` transaction contract, a restart-health failure never rolled files back, `jobs.Manager.Start` could not return the initial `SaveJob` failure, no active-job Wait existed, and `cmd/panel` had no shutdown coordinator.
+- Package deployment now backs up every package/private affected path plus the prior manifest, then fsyncs and atomically renames `prepared`, `applying`, `deployed` and `committed` journal stages below `instances/<id>/backups/update-*`. Recovery validates journal identity and safe relative paths before rolling back any uncommitted stage.
+- Coordinator retains the transaction through restart health. Health or pre-commit journal failure stops the new run, restores old files/manifest and restarts the previous version; successful commit is the only point that retires backups.
+- Initial Job persistence is now a prerequisite for launching its goroutine. HTTP and scheduler callers propagate that failure, and `jobs.Manager.Wait` provides context-bounded drain for all accepted work.
+- Panel startup recovers package journals before container reconciliation. SIGINT/SIGTERM shutdown is ordered HTTP, bounded scheduler stop, then Job wait; the old `log.Fatal(server.ListenAndServe())` path is gone.
+- Fresh local verification passed: `go test -count=1 -p 1 ./...`, `go vet ./...`, `npm test -- --run` (17 tests), `npm run build`, `npm audit --omit=dev` (0 vulnerabilities), Compose config and `git diff --check`. A transient Windows executable lock occurred on the first runtime run; a standalone runtime binary passed 10 repetitions and a fresh full run then passed.
+- A disposable static Linux Panel on `sirphomesv` served healthy at `127.0.0.1:18081` through the existing restricted Docker proxy, received Docker SIGTERM, logged its drain and exited `0` without OOM. The managed game container remained `f66b76805fab` before and after; no Docker daemon change/restart occurred. All Task 10 remote artifacts were removed.
+- Windows race instrumentation was unavailable because the local Go toolchain has CGO disabled. Review found no Critical or Important Task 10 issue; Linux process behavior and all deterministic transaction/drain paths have direct regression coverage.
 
 ## Evidence judgment
 
