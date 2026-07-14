@@ -18,9 +18,10 @@ type PrivateManager struct {
 	maxBytes int
 }
 type PrivateFile struct {
-	Path, Hash string
-	Size       int64
-	UpdatedAt  time.Time
+	Path      string    `json:"path"`
+	Hash      string    `json:"hash,omitempty"`
+	Size      int64     `json:"size"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 func NewPrivateManager(root string, maxBytes int) *PrivateManager {

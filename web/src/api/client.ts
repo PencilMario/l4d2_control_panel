@@ -5,7 +5,7 @@ export type Job = {
   Percent: number;
   Error: string;
 };
-export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function request(path: string, init: RequestInit) {
   const response = await fetch(path, {
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", ...(init.headers || {}) },
@@ -19,8 +19,19 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     } catch {}
     throw new Error(message);
   }
+  return response;
+}
+export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const response = await request(path, init);
   if (response.status === 204) return undefined as T;
   return response.json();
+}
+export async function apiText(
+  path: string,
+  init: RequestInit = {},
+): Promise<string> {
+  const response = await request(path, init);
+  return response.text();
 }
 export const normalizeInstance = (value: any) => ({
   id: value.id ?? value.ID,

@@ -116,11 +116,17 @@ def prepare_content():
     private='/opt/l4d2/private'
     if os.path.isdir(private): shutil.copytree(private,game,dirs_exist_ok=True,symlinks=False)
 
-def ensure_game():
-    if os.path.isfile(os.path.join(GAME,'srcds_run')): return
+def steamcmd_install_command():
+    steamcmd='/home/steam/steamcmd/steamcmd.sh'
     username=os.getenv('STEAM_USERNAME','anonymous');password=os.getenv('STEAM_PASSWORD','')
     login=['+login',username] if username=='anonymous' else ['+login',username,password]
-    subprocess.run(['/home/steam/steamcmd/steamcmd.sh','+@sSteamCmdForcePlatformType','linux','+force_install_dir',GAME,*login,'+app_info_update','1','+app_update','222860','validate','+quit'],check=True)
+    if username=='anonymous':
+        return [steamcmd,'+@sSteamCmdForcePlatformType','windows','+force_install_dir',GAME,*login,'+app_update','222860','+@sSteamCmdForcePlatformType','linux','+app_update','222860','validate','+quit']
+    return [steamcmd,'+@sSteamCmdForcePlatformType','linux','+force_install_dir',GAME,*login,'+app_info_update','1','+app_update','222860','validate','+quit']
+
+def ensure_game():
+    if os.path.isfile(os.path.join(GAME,'srcds_run')): return
+    subprocess.run(steamcmd_install_command(),check=True)
 
 def srcds_command():
     args=['./srcds_run','-game','left4dead2','-console','-port',os.getenv('SRCDS_PORT','27015'),'-tickrate',os.getenv('SRCDS_TICKRATE','100'),'+map',os.getenv('SRCDS_MAP','c2m1_highway'),'+mp_gamemode',os.getenv('SRCDS_MODE','coop'),'-maxplayers',os.getenv('SRCDS_MAXPLAYERS','8')]

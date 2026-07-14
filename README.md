@@ -1,46 +1,101 @@
 # L4D2 Control Panel
 
-Single-admin Go + React control plane for persistent Left 4 Dead 2 Docker instances. The current implementation establishes the secure data/API core, restricted container contract, serialized jobs, archive/path/overlay safety, player commands, cron validation, operational dashboard, runtime supervisor contract and single-host Compose boundary.
+Single-host, single-administrator control plane for persistent Left 4 Dead 2 dedicated servers. A Go API owns SQLite state, jobs, content deployment, A2S and a fixed native-console bridge; a React SPA provides instance, player, update, content and Cron operations.
 
-## Local development
+The Panel never mounts `/var/run/docker.sock`. A repository-owned socket proxy exposes only the Docker API paths required for labeled game and maintenance containers. Game instances run unprivileged with host networking and persistent bind mounts.
 
-Requirements: Go 1.24+, Node 22+, npm 10+.
+## Requirements
 
-```sh
-go test ./...
-cd web && npm ci && npm test -- --run && npm run build
-L4D2_PANEL_ADMIN_PASSWORD='use-at-least-12-characters' go run ./cmd/panel
-```
+- Linux x86-64 host with Docker Engine and Docker Compose.
+- At least 12 GiB free before a first game install; a current App 222860 install uses about 9.3 GiB.
+- A TLS reverse proxy on the same host.
+- Go 1.24+ and Node 22+ only for local development.
 
-The panel stores data below `L4D2_PANEL_DATA_ROOT` (default `/srv/l4d2-panel`) and listens on `:8080`. Put HTTPS in front of it; session cookies are intentionally `Secure`, `HttpOnly`, and `SameSite=Strict`.
-
-## Docker deployment
+## Deploy
 
 ```sh
 cp .env.example .env
-# edit .env and use a long random administrator password
-docker compose config
-docker compose --profile images build runtime-image
-docker compose up -d --build
+# Set a long, random L4D2_PANEL_ADMIN_PASSWORD and review the paths/ports.
+docker compose --env-file .env config --quiet
+docker compose --env-file .env --profile images build runtime-image
+docker compose --env-file .env up -d --build
 ```
 
-If Docker Hub is unavailable, build official stages through Public ECR without changing the daemon: `docker compose build --build-arg OFFICIAL_REGISTRY=public.ecr.aws/docker panel`.
+Both control services use host networking but bind loopback only:
 
-The browser endpoint binds to loopback by default for a reverse proxy. Only the socket proxy mounts `/var/run/docker.sock`; the Panel reaches its restricted HTTP API over an internal control network. Game containers created by the lifecycle adapter use host networking and persistent instance directories.
+- Panel: `127.0.0.1:${L4D2_PANEL_HTTP_PORT:-8080}`
+- restricted Docker proxy: `127.0.0.1:${L4D2_PANEL_DOCKER_PROXY_PORT:-23750}`
 
-## Runtime integration smoke checklist
+Put HTTPS in front of the Panel. For example, Caddy can proxy WebSocket and SSE traffic without extra directives:
 
-On a Linux Docker host, verify before exposing the service:
+```caddyfile
+panel.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
 
-1. `docker compose config --quiet` and `docker compose build panel` succeed.
-2. `curl http://127.0.0.1:8080/` returns the SPA through the chosen TLS proxy.
-3. The Panel container has no Docker socket mount and `DOCKER_HOST` targets `socket-proxy:2375`.
-4. A generated game spec contains managed labels, host networking, persistent `game/private` mounts and a read-only shared VPK mount.
-5. `l4d2-supervisor status --json`, `stop`, and `attach` work; any other operation exits 64.
-6. Recreate Panel/game containers and confirm database/game/private/shared data remain.
+Session cookies are `Secure`, `HttpOnly` and `SameSite=Strict`; use the HTTPS origin for normal browser operation. The Panel does not manage firewall rules.
 
-## Current integration boundary
+If registry or Steam downloads require a proxy, set `L4D2_PANEL_DOWNLOAD_PROXY` in `.env`. Digest-pinned `NODE_IMAGE`, `GO_IMAGE`, `ALPINE_IMAGE` and an alternate `STEAMCMD_IMAGE` can also be supplied without changing the Docker daemon.
 
-Real Docker Engine lifecycle calls, A2S UDP queries, browser PTY WebSocket proxying, GitHub Release downloads, resumable VPK HTTP routes, durable audit/job journals, update rollback orchestration and full browser flows remain to be connected to the implemented contracts. They require the Linux L4D2 runtime integration suite described by the approved design before production use.
+## SteamCMD first install
 
-See [the approved design](docs/aegis/specs/2026-07-14-l4d2-control-panel-design.md) and [implementation plan](docs/aegis/plans/2026-07-14-l4d2-control-panel.md).
+Current L4D2 Steam content returns `Missing configuration` when an empty Linux install is requested directly. The runtime uses the established anonymous bootstrap sequence:
+
+1. select the Windows platform and install App 222860;
+2. switch to Linux and run `app_update 222860 validate`;
+3. start `srcds_run` only after both stages succeed.
+
+Later game updates use a fixed Linux-only SteamCMD maintenance container. Optional licensed Steam credentials can be encrypted from System Settings, but anonymous installation is supported and no credentials are written to container logs.
+
+## Persistent data
+
+The default root is `/srv/l4d2-panel`:
+
+```text
+panel/panel.db
+packages/uploads/
+packages/releases/
+instances/<id>/game/
+instances/<id>/private/
+instances/<id>/backups/
+instances/<id>/console/
+shared-vpk/
+```
+
+Rebuilding or deleting a game container preserves these directories unless the administrator explicitly confirms data deletion. Content precedence is `package < shared VPK < private overlay`.
+
+## Runtime and security checks
+
+Before exposing a new host, verify:
+
+```sh
+docker compose --env-file .env ps
+curl --fail http://127.0.0.1:${L4D2_PANEL_HTTP_PORT:-8080}/api/health
+ss -ltn | grep -E '127\.0\.0\.1:(8080|23750)'
+```
+
+Then create an instance from the UI and confirm:
+
+- the game container has `network_mode=host` and the three `io.l4d2-panel.*` labels;
+- game/private/shared paths are persistent mounts and shared VPK is read-only;
+- the container user is UID/GID 10001 and has no Docker socket or privileged mode;
+- `l4d2-supervisor attach`, `status --json` and `stop` work, while other operations are rejected;
+- A2S, players, console reconnect/replay, stop/start and container rebuild work without data loss.
+
+## Development and verification
+
+```sh
+go test -count=1 ./...
+go vet ./...
+cd web
+npm ci
+npm test -- --run
+npm run build
+cd ..
+docker compose --env-file .env.example config --quiet
+```
+
+On Windows, antivirus/file-indexing can transiently lock Go's randomly named test executables under `%TEMP%`. If affected, set `GOTMPDIR` to a dedicated temporary directory and run packages serially with `go test -p 1`; do not weaken product code to accommodate the local test host.
+
+See [the approved design](docs/aegis/specs/2026-07-14-l4d2-control-panel-design.md), [implementation plan](docs/aegis/plans/2026-07-14-l4d2-control-panel.md) and [evidence bundle](docs/aegis/work/2026-07-14-l4d2-control-panel/50-evidence.md).

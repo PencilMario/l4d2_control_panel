@@ -10,12 +10,12 @@
 - [x] Scheduler persistence/execution and online-player policy.
 - [ ] Complete browser contract and E2E coverage (active: content, player and persistent Job surfaces are connected; full private/VPK controls, Job history and browser E2E still need audit).
 - [ ] Complete fault-injection and recovery acceptance (job restart is marked interrupted; update-stage continuation/rollback and Docker/SRCDS interruption matrix still need proof).
-- [ ] Complete fresh-host runtime acceptance (images and isolated stack work; actual App 222860 installation requires a subscribed Steam account).
+- [ ] Complete fresh-host runtime acceptance (anonymous App 222860 dual-platform installation is verified; Panel-managed SRCDS/A2S/PTY start and restart persistence are the active checks).
 - [ ] Production delivery documentation, TLS/reverse-proxy guidance and final branch integration.
 
 ## Active slice
 
-Deploy the latest content/player/Job API and UI slice to the isolated `sirphomesv` smoke stack. Confirm that anonymous Steam installation exits promptly and the persistent Job becomes failed rather than waiting for the long health timeout. Then audit remaining design requirements and implement the next test-first slice.
+Deploy the anonymous first-install fix and expanded content/Job UI to the isolated `sirphomesv` smoke stack. Start the installed SRCDS through the Panel and verify A2S, PTY, Job completion and restart persistence. Then exercise the content/scheduler/audit paths and continue the fault-recovery audit.
 
 ## Completed in the latest slice
 
@@ -25,17 +25,20 @@ Deploy the latest content/player/Job API and UI slice to the isolated `sirphomes
 - Rejected invalid private instance identifiers across every manager operation and stopped history responses leaking absolute host paths.
 - Added nil-manager HTTP guards and prevented private apply after a failed save or without a selected instance.
 - Added backend and React regression coverage for those boundaries.
+- Replaced the incorrect licensed-Steam assumption with a tested anonymous Windows-to-Linux first-install bootstrap.
+- Added the persistent Job/SSE page plus VPK download/rename/delete and private file tree/edit/download/history/delete controls.
+- Bound both host-network control services to loopback and refreshed deployment/TLS documentation.
 
 ## Blocked-on
 
-- Valve currently rejects anonymous App 222860 installation with `Missing configuration`; AppInfo marks the Linux depots subscription-only. Full SRCDS/A2S/PTY acceptance needs credentials for a Steam account subscribed to L4D2. Credentials must be entered through `/api/settings/steam` or the Settings UI and must never be copied into repository artifacts or logs.
+- No current external blocker. Steam Guard remains unverified for the optional licensed-account path, but anonymous installation no longer depends on credentials.
 
 ## Next
 
 1. Commit this verified slice.
 2. Rebuild/recreate the isolated remote Panel and runtime images from the commit.
-3. Run anonymous start and verify fast failed-Job convergence.
-4. Smoke VPK/private/package/scheduler/audit/SSE paths that do not require Steam credentials.
+3. Start the anonymously installed game through the Panel and verify SRCDS/A2S/PTY/Job state.
+4. Smoke VPK/private/package/scheduler/audit/SSE paths.
 5. Continue requirement-by-requirement gap closure and browser E2E work.
 
 ## DriftCheckDraft
@@ -43,4 +46,4 @@ Deploy the latest content/player/Job API and UI slice to the isolated `sirphomes
 - Scope: continues to implement the approved single-host, single-admin design.
 - Compatibility: host networking, fixed Supervisor Exec operations and content precedence are unchanged.
 - New owner/fallback: none; private-path validation remains owned by `PrivateManager`, and Docker authority remains behind the restricted proxy.
-- Decision: `continue`; full acceptance remains blocked only where real App 222860 runtime behavior requires licensed credentials.
+- Decision: `continue`; the licensed-credential assumption was retired after direct dual-platform anonymous-install evidence.

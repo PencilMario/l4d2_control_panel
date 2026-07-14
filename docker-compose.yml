@@ -48,7 +48,7 @@ services:
       socket-proxy:
         condition: service_started
     environment:
-      L4D2_PANEL_LISTEN: :${L4D2_PANEL_HTTP_PORT:-8080}
+      L4D2_PANEL_LISTEN: 127.0.0.1:${L4D2_PANEL_HTTP_PORT:-8080}
       L4D2_PANEL_DATA_ROOT: ${L4D2_PANEL_DATA_ROOT:-/srv/l4d2-panel}
       L4D2_PANEL_ADMIN_PASSWORD: ${L4D2_PANEL_ADMIN_PASSWORD:?set admin password}
       DOCKER_HOST: tcp://127.0.0.1:${L4D2_PANEL_DOCKER_PROXY_PORT:-23750}

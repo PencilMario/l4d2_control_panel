@@ -13,6 +13,8 @@ import {
   CircleStop,
   Database,
   Gauge,
+  History,
+  ListTodo,
   Map,
   Play,
   Plus,
@@ -24,7 +26,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { api, normalizeInstance, type Job } from "../api/client";
+import { api, apiText, normalizeInstance, type Job } from "../api/client";
 import "../styles/app.css";
 export type Instance = {
   id: string;
@@ -42,7 +44,7 @@ type Props = {
   initialInstances?: Instance[];
   onAction?: (id: string, action: string) => void;
 };
-type Page = "overview" | "content" | "schedules" | "settings";
+type Page = "overview" | "content" | "jobs" | "schedules" | "settings";
 
 export function App({ initialInstances, onAction }: Props) {
   const injected = initialInstances !== undefined;
@@ -160,6 +162,13 @@ export function App({ initialInstances, onAction }: Props) {
             内容仓库
           </Nav>
           <Nav
+            active={page === "jobs"}
+            onClick={() => setPage("jobs")}
+            icon={<ListTodo />}
+          >
+            任务
+          </Nav>
+          <Nav
             active={page === "schedules"}
             onClick={() => setPage("schedules")}
             icon={<CalendarClock />}
@@ -192,9 +201,11 @@ export function App({ initialInstances, onAction }: Props) {
                 ? "服务器作战室"
                 : page === "content"
                   ? "内容仓库"
-                  : page === "schedules"
-                    ? "自动维护计划"
-                    : "系统与凭据"}
+                  : page === "jobs"
+                    ? "持久任务流水"
+                    : page === "schedules"
+                      ? "自动维护计划"
+                      : "系统与凭据"}
             </h1>
             <p>管理游戏进程、内容部署与计划维护。</p>
           </div>
@@ -230,6 +241,7 @@ export function App({ initialInstances, onAction }: Props) {
         {page === "content" && (
           <ContentPage instances={instances} queue={queue} />
         )}
+        {page === "jobs" && <JobsPage />}
         {page === "schedules" && <SchedulesPage instances={instances} />}{" "}
         {page === "settings" && <SettingsPage />}{" "}
         {job && <JobStrip job={job} />}
@@ -589,6 +601,90 @@ function Terminal({
     </div>
   );
 }
+
+type JobRecord = Job & {
+  InstanceID: string;
+  Type: string;
+  Message: string;
+  CreatedAt: string;
+  UpdatedAt: string;
+};
+
+function JobsPage() {
+  const [items, setItems] = useState<JobRecord[]>([]);
+  const [jobsError, setJobsError] = useState("");
+  useEffect(() => {
+    let active = true;
+    api<JobRecord[]>("/api/jobs")
+      .then((jobs) => active && setItems(jobs))
+      .catch((reason) => active && setJobsError(String(reason)));
+    if (typeof EventSource === "undefined") {
+      return () => {
+        active = false;
+      };
+    }
+    const events = new EventSource("/api/jobs/events");
+    events.addEventListener("jobs", (event) => {
+      if (!active) return;
+      try {
+        setItems(JSON.parse((event as MessageEvent<string>).data));
+      } catch {
+        setJobsError("任务事件数据无效");
+      }
+    });
+    events.onerror = () => setJobsError("任务实时流已断开，正在由浏览器重连");
+    return () => {
+      active = false;
+      events.close();
+    };
+  }, []);
+  return (
+    <section className="job-feed">
+      <div className="section-head">
+        <div>
+          <p className="eyebrow">DURABLE OPERATIONS</p>
+          <h2>最近任务</h2>
+        </div>
+        <span className="feed-live">SSE / LIVE</span>
+      </div>
+      {jobsError ? (
+        <div className="error" role="alert">
+          {jobsError}
+        </div>
+      ) : null}
+      <div className="job-table" role="list">
+        {items.map((item) => (
+          <article className="job-row" key={item.ID} role="listitem">
+            <div className="job-code">
+              <span>{item.Type}</span>
+              <small>{item.ID.slice(0, 8)}</small>
+            </div>
+            <div className="job-stage">
+              <b>{item.Stage || "queued"}</b>
+              <small>{item.Error || item.Message || "等待后台执行"}</small>
+            </div>
+            <div className="job-progress" aria-label={`进度 ${item.Percent}%`}>
+              <i style={{ width: `${Math.max(0, item.Percent)}%` }} />
+            </div>
+            <span className={`job-state ${item.Status}`}>{item.Status}</span>
+          </article>
+        ))}
+        {items.length === 0 ? <div className="empty">尚无后台任务</div> : null}
+      </div>
+    </section>
+  );
+}
+
+type PrivateFileEntry = {
+  path: string;
+  hash?: string;
+  size: number;
+  updated_at?: string;
+};
+
+const encodeRelativePath = (path: string) =>
+  path.split("/").map(encodeURIComponent).join("/");
+
 function ContentPage({
   instances,
   queue,
@@ -599,6 +695,9 @@ function ContentPage({
   const [vpks, setVpks] = useState<any[]>([]);
   const [packages, setPackages] = useState<any[]>([]);
   const [selected, setSelected] = useState(instances[0]?.id || "");
+  const [privateFiles, setPrivateFiles] = useState<PrivateFileEntry[]>([]);
+  const [privateHistory, setPrivateHistory] = useState<PrivateFileEntry[]>([]);
+  const [historyPath, setHistoryPath] = useState("");
   const [privatePath, setPrivatePath] = useState("cfg/server.cfg");
   const [privateText, setPrivateText] = useState("");
   const [contentError, setContentError] = useState("");
@@ -610,6 +709,27 @@ function ContentPage({
   useEffect(() => {
     load().catch(() => {});
   }, []);
+  useEffect(() => {
+    let active = true;
+    if (!selected) {
+      setPrivateFiles([]);
+      return () => {
+        active = false;
+      };
+    }
+    api<PrivateFileEntry[]>(`/api/instances/${selected}/private`)
+      .then((files) => active && setPrivateFiles(files))
+      .catch((reason) => active && setContentError(String(reason)));
+    return () => {
+      active = false;
+    };
+  }, [selected]);
+  const loadPrivate = async () => {
+    if (!selected) return;
+    setPrivateFiles(
+      await api<PrivateFileEntry[]>(`/api/instances/${selected}/private`),
+    );
+  };
   const uploadVPK = async (file: File) => {
     const hash = await crypto.subtle.digest(
       "SHA-256",
@@ -644,6 +764,55 @@ function ContentPage({
     );
     await load();
   };
+  const renameVPK = async (name: string) => {
+    const next = window.prompt("新的 VPK 文件名", name);
+    if (
+      !next ||
+      next === name ||
+      !window.confirm("重命名可见 VPK？运行中的实例可能需要换图或重启。")
+    ) {
+      return;
+    }
+    await api(`/api/content/vpk/${encodeURIComponent(name)}/rename`, {
+      method: "POST",
+      body: JSON.stringify({ name: next, confirm: true }),
+    });
+    await load();
+  };
+  const deleteVPK = async (name: string) => {
+    if (!window.confirm(`删除 ${name}？运行中的实例可能仍缓存该内容。`)) {
+      return;
+    }
+    await api(`/api/content/vpk/${encodeURIComponent(name)}?confirm=true`, {
+      method: "DELETE",
+    });
+    await load();
+  };
+  const editPrivate = async (path: string) => {
+    if (!selected) return;
+    const text = await apiText(
+      `/api/instances/${selected}/private/file/${encodeRelativePath(path)}`,
+    );
+    setPrivatePath(path);
+    setPrivateText(text);
+  };
+  const showPrivateHistory = async (path: string) => {
+    if (!selected) return;
+    const versions = await api<PrivateFileEntry[]>(
+      `/api/instances/${selected}/private/history/${encodeRelativePath(path)}`,
+    );
+    setHistoryPath(path);
+    setPrivateHistory(versions);
+  };
+  const deletePrivate = async (path: string) => {
+    if (!selected || !window.confirm(`删除私有覆盖 ${path}？`)) return;
+    await api(
+      `/api/instances/${selected}/private/file/${encodeRelativePath(path)}?confirm=true`,
+      { method: "DELETE" },
+    );
+    if (privatePath === path) setPrivateText("");
+    await loadPrivate();
+  };
   const runContentAction = (operation: () => Promise<unknown>) => {
     setContentError("");
     void operation().catch((reason) => setContentError(String(reason)));
@@ -666,13 +835,34 @@ function ContentPage({
         }
       >
         {vpks.map((x) => (
-          <Row
-            key={x.name}
-            name={x.name}
-            meta={`${formatBytes(x.size)} · ${String(x.hash).slice(0, 12)}`}
-          />
+          <div className="data-row" key={x.name}>
+            <div>
+              <b>{x.name}</b>
+              <small>
+                {formatBytes(x.size)} · {String(x.hash).slice(0, 12)}
+              </small>
+            </div>
+            <div className="inline-actions">
+              <a
+                aria-label={`下载 ${x.name}`}
+                download
+                href={`/api/content/vpk/${encodeURIComponent(x.name)}/download`}
+              >
+                下载
+              </a>
+              <button onClick={() => runContentAction(() => renameVPK(x.name))}>
+                重命名
+              </button>
+              <button
+                className="danger"
+                onClick={() => runContentAction(() => deleteVPK(x.name))}
+              >
+                删除
+              </button>
+            </div>
+          </div>
         ))}
-        {!vpks.length && <div className="empty">暂无共享 VPK</div>}
+        {vpks.length === 0 ? <div className="empty">暂无共享 VPK</div> : null}
       </Panel>
       <Panel
         title="插件包"
@@ -730,17 +920,78 @@ function ContentPage({
         ))}
         {!packages.length && <div className="empty">暂无插件包</div>}
       </Panel>
+      <Panel title="私有文件树">
+        {privateFiles.map((file) => (
+          <div className="data-row private-file" key={file.path}>
+            <div>
+              <b>{file.path}</b>
+              <small>
+                {formatBytes(file.size)} · {(file.hash || "").slice(0, 12)}
+              </small>
+            </div>
+            <div className="inline-actions">
+              <button
+                aria-label={`编辑 ${file.path}`}
+                onClick={() => runContentAction(() => editPrivate(file.path))}
+              >
+                编辑
+              </button>
+              <a
+                aria-label={`下载 ${file.path}`}
+                download
+                href={`/api/instances/${selected}/private/file/${encodeRelativePath(file.path)}`}
+              >
+                下载
+              </a>
+              <button
+                aria-label={`历史 ${file.path}`}
+                onClick={() =>
+                  runContentAction(() => showPrivateHistory(file.path))
+                }
+              >
+                <History />
+              </button>
+              <button
+                aria-label={`删除 ${file.path}`}
+                className="danger"
+                onClick={() => runContentAction(() => deletePrivate(file.path))}
+              >
+                删除
+              </button>
+            </div>
+          </div>
+        ))}
+        {privateFiles.length === 0 ? (
+          <div className="empty">该实例没有私有覆盖文件</div>
+        ) : null}
+        {historyPath ? (
+          <div className="version-strip">
+            <b>
+              {historyPath} · 历史版本 {privateHistory.length}
+            </b>
+            {privateHistory.map((version) => (
+              <small key={version.path}>
+                {version.path} · {formatBytes(version.size)}
+              </small>
+            ))}
+          </div>
+        ) : null}
+      </Panel>
       <form
         className="control-form"
         onSubmit={(e) => {
           e.preventDefault();
           runContentAction(async () => {
-            await api(`/api/instances/${selected}/private/${privatePath}`, {
-              method: "PUT",
-              headers: { "Content-Type": "text/plain; charset=utf-8" },
-              body: privateText,
-            });
+            await api(
+              `/api/instances/${selected}/private/${encodeRelativePath(privatePath)}`,
+              {
+                method: "PUT",
+                headers: { "Content-Type": "text/plain; charset=utf-8" },
+                body: privateText,
+              },
+            );
             await queue(`/api/instances/${selected}/private/apply`, {});
+            await loadPrivate();
           });
         }}
       >

@@ -26,6 +26,27 @@ func TestDockerfileReusesSteamCMDUser(t *testing.T) {
 	}
 }
 
+func TestAnonymousFirstInstallBootstrapsWindowsBeforeLinuxValidate(t *testing.T) {
+	raw, err := os.ReadFile("supervisor.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	windows := strings.Index(text, "'+@sSteamCmdForcePlatformType','windows'")
+	linux := strings.Index(text, "'+@sSteamCmdForcePlatformType','linux'")
+	if windows < 0 || linux < 0 || windows >= linux {
+		t.Fatal("anonymous first install must bootstrap the Windows depot before Linux validate")
+	}
+	bootstrap := text[windows:linux]
+	if !strings.Contains(bootstrap, "'+app_update','222860'") {
+		t.Fatal("Windows bootstrap must install App 222860")
+	}
+	validate := text[linux:]
+	if !strings.Contains(validate, "'+app_update','222860','validate'") {
+		t.Fatal("Windows bootstrap must be followed by a Linux validation")
+	}
+}
+
 func TestSupervisorSelfTest(t *testing.T) {
 	raw, err := os.ReadFile("supervisor.py")
 	if err != nil {

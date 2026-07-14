@@ -73,7 +73,11 @@ describe("App", () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const path = String(input);
         calls.push(`${init?.method || "GET"} ${path}`);
-        if (path === "/api/content/vpk" || path === "/api/packages") {
+        if (
+          path === "/api/content/vpk" ||
+          path === "/api/packages" ||
+          path === "/api/instances/1/private"
+        ) {
           return new Response("[]", {
             status: 200,
             headers: { "Content-Type": "application/json" },
@@ -130,6 +134,78 @@ describe("App", () => {
     await waitFor(() =>
       expect(screen.getByText("plugins.zip · v1")).toBeInTheDocument(),
     );
+    vi.unstubAllGlobals();
+  });
+  it("shows persisted jobs on a dedicated operations page", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input) === "/api/jobs") {
+          return new Response(
+            '[{"ID":"job-1","Type":"game_update","Status":"failed","Stage":"steamcmd","Percent":37,"Error":"download interrupted"}]',
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response("[]", {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "任务" }));
+    expect(await screen.findByText("game_update")).toBeInTheDocument();
+    expect(screen.getByText("download interrupted")).toBeInTheDocument();
+    vi.unstubAllGlobals();
+  });
+  it("loads VPK downloads and private files into the editor", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input);
+        if (path === "/api/content/vpk") {
+          return new Response(
+            '[{"name":"maps.vpk","size":1024,"hash":"abcdef"}]',
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (path === "/api/packages") {
+          return new Response("[]", {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (path === "/api/instances/1/private") {
+          return new Response(
+            '[{"path":"cfg/server.cfg","size":14,"hash":"123456"}]',
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (path === "/api/instances/1/private/file/cfg/server.cfg") {
+          return new Response("hostname smoke", {
+            status: 200,
+            headers: { "Content-Type": "text/plain" },
+          });
+        }
+        return new Response("[]", {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
+    const download = await screen.findByRole("link", { name: "下载 maps.vpk" });
+    expect(download).toHaveAttribute(
+      "href",
+      "/api/content/vpk/maps.vpk/download",
+    );
+    await userEvent.click(
+      await screen.findByRole("button", { name: "编辑 cfg/server.cfg" }),
+    );
+    expect(
+      await screen.findByDisplayValue("hostname smoke"),
+    ).toBeInTheDocument();
     vi.unstubAllGlobals();
   });
 });

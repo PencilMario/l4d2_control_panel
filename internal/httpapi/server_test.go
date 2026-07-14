@@ -237,6 +237,9 @@ func TestContentReadRoutesAndJobFeed(t *testing.T) {
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), check.want) {
 			t.Fatalf("%s: status=%d body=%s", check.path, w.Code, w.Body.String())
 		}
+		if check.path == "/api/instances/abc/private" && !strings.Contains(w.Body.String(), `"path":"cfg/server.cfg"`) {
+			t.Fatalf("private list must use stable lower-case fields: %s", w.Body.String())
+		}
 		if strings.Contains(w.Body.String(), root) {
 			t.Fatalf("%s leaked data root in %s", check.path, w.Body.String())
 		}

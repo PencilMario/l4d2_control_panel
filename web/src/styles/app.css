@@ -768,6 +768,14 @@ nav button.active {
   padding: 6px 9px;
   font-size: 10px;
 }
+.inline-actions a {
+  background: #151c19;
+  color: #a8d8c1;
+  border: 1px solid #31473d;
+  padding: 6px 9px;
+  font-size: 10px;
+  text-decoration: none;
+}
 .inline-actions .danger {
   color: #ff8e84;
   border-color: #67342f;
@@ -781,6 +789,92 @@ nav button.active {
   background: none;
   color: #b8c1bd;
 }
+.private-file svg {
+  width: 13px;
+  height: 13px;
+}
+.version-strip {
+  margin: 12px 0 0;
+  padding: 12px;
+  display: grid;
+  gap: 5px;
+  border-left: 2px solid var(--acid);
+  background: #0c110f;
+}
+.version-strip small {
+  color: #7f8c86;
+  overflow-wrap: anywhere;
+}
+.job-feed {
+  border: 1px solid var(--line);
+  background: #111714;
+  padding: 24px;
+}
+.feed-live {
+  color: var(--acid);
+  font: 700 10px/1 monospace;
+  letter-spacing: 0.18em;
+}
+.job-table {
+  display: grid;
+  gap: 1px;
+  background: #2b3530;
+  border: 1px solid #2b3530;
+}
+.job-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.8fr) minmax(220px, 1.6fr) minmax(
+      120px,
+      1fr
+    ) 90px;
+  align-items: center;
+  gap: 18px;
+  padding: 15px 16px;
+  background: #0e1411;
+}
+.job-code,
+.job-stage {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.job-code span {
+  color: #dce7e1;
+  font: 700 12px/1.2 monospace;
+}
+.job-code small,
+.job-stage small {
+  color: #74817b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.job-progress {
+  height: 4px;
+  background: #26302b;
+}
+.job-progress i {
+  display: block;
+  height: 100%;
+  background: var(--acid);
+}
+.job-state {
+  justify-self: end;
+  padding: 5px 7px;
+  color: #9aa59f;
+  border: 1px solid #34413b;
+  font: 700 9px/1 monospace;
+  text-transform: uppercase;
+}
+.job-state.failed,
+.job-state.interrupted {
+  color: #ff8e84;
+  border-color: #67342f;
+}
+.job-state.succeeded {
+  color: var(--acid);
+  border-color: #31543f;
+}
 @media (max-width: 800px) {
   .content-layout,
   .schedule-layout {
@@ -788,5 +882,12 @@ nav button.active {
   }
   .terminal-modal {
     inset: 2vh 2vw 70px;
+  }
+  .job-row {
+    grid-template-columns: 1fr auto;
+  }
+  .job-stage,
+  .job-progress {
+    grid-column: 1 / -1;
   }
 }
