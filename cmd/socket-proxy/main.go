@@ -29,7 +29,11 @@ func main() {
 		}
 		proxy.ServeHTTP(w, r)
 	})
-	server := &http.Server{Addr: ":2375", Handler: handler, ReadHeaderTimeout: 10 * time.Second}
-	log.Print("restricted Docker proxy listening on :2375")
+	listen := os.Getenv("LISTEN_ADDR")
+	if listen == "" {
+		listen = "127.0.0.1:23750"
+	}
+	server := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	log.Printf("restricted Docker proxy listening on %s", listen)
 	log.Fatal(server.ListenAndServe())
 }

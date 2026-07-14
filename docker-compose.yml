@@ -25,8 +25,9 @@ services:
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks: [control]
-    ports: ["127.0.0.1:${L4D2_PANEL_DOCKER_PROXY_PORT:-23750}:2375"]
+    environment:
+      LISTEN_ADDR: 127.0.0.1:${L4D2_PANEL_DOCKER_PROXY_PORT:-23750}
+    network_mode: host
     read_only: true
     user: "0:0"
     cap_drop: [ALL]
@@ -58,6 +59,3 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
-networks:
-  control:
-    internal: true
