@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"os"
@@ -70,16 +71,22 @@ type PortChecker interface{ Available(int) error }
 type HealthChecker interface {
 	Wait(context.Context, domain.Instance) error
 }
+type SpaceChecker interface{ Available(string) (uint64, error) }
 type Service struct {
-	repo     Repository
-	engine   Engine
-	ports    PortChecker
-	dataRoot string
-	health   HealthChecker
+	repo                Repository
+	engine              Engine
+	ports               PortChecker
+	dataRoot            string
+	health              HealthChecker
+	space               SpaceChecker
+	minimumInstallBytes uint64
 }
 type Option func(*Service)
 
 func WithHealth(checker HealthChecker) Option { return func(s *Service) { s.health = checker } }
+func WithSpace(checker SpaceChecker, minimum uint64) Option {
+	return func(s *Service) { s.space = checker; s.minimumInstallBytes = minimum }
+}
 
 func New(repo Repository, engine Engine, ports PortChecker, dataRoot string, options ...Option) *Service {
 	service := &Service{repo: repo, engine: engine, ports: ports, dataRoot: dataRoot}
@@ -92,6 +99,15 @@ func (s *Service) Start(ctx context.Context, id string) error {
 	v, err := s.repo.Instance(ctx, id)
 	if err != nil {
 		return err
+	}
+	if v.ActualState == domain.StateUninstalled && s.space != nil {
+		available, err := s.space.Available(s.dataRoot)
+		if err != nil {
+			return err
+		}
+		if available < s.minimumInstallBytes {
+			return fmt.Errorf("insufficient disk space: have %d bytes, need %d", available, s.minimumInstallBytes)
+		}
 	}
 	if v.ContainerID == "" {
 		if err := s.ports.Available(v.GamePort); err != nil {

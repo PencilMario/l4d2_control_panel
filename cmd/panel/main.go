@@ -7,6 +7,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/automation"
 	"github.com/not0721here/l4d2-control-panel/internal/config"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
+	"github.com/not0721here/l4d2-control-panel/internal/disk"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/health"
 	"github.com/not0721here/l4d2-control-panel/internal/httpapi"
@@ -60,7 +61,7 @@ func main() {
 		gameHost = "127.0.0.1"
 	}
 	healthChecker := health.Checker{Host: gameHost, Query: a2s.Client{}}
-	life := lifecycle.New(db, engine, portChecker, cfg.DataRoot, lifecycle.WithHealth(healthChecker))
+	life := lifecycle.New(db, engine, portChecker, cfg.DataRoot, lifecycle.WithHealth(healthChecker), lifecycle.WithSpace(disk.Checker{}, 12<<30))
 	if unknown, reconcileErr := life.Reconcile(context.Background()); reconcileErr != nil {
 		log.Printf("container reconciliation deferred: %v", reconcileErr)
 	} else if len(unknown) > 0 {

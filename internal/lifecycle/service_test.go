@@ -35,6 +35,10 @@ func (f *fakeEngine) Remove(context.Context, string) error { f.removed = true; r
 type freePorts struct{}
 
 func (freePorts) Available(int) error { return nil }
+
+type fixedSpace uint64
+
+func (s fixedSpace) Available(string) (uint64, error) { return uint64(s), nil }
 func TestStartCreatesContainerPersistsIDAndStarts(t *testing.T) {
 	root := t.TempDir()
 	db, err := store.Open(filepath.Join(root, "panel.db"))
@@ -54,6 +58,18 @@ func TestStartCreatesContainerPersistsIDAndStarts(t *testing.T) {
 	got, _ := db.Instance(context.Background(), "abc")
 	if !engine.created || !engine.started || got.ContainerID != "container-1" || got.ActualState != domain.StateRunning {
 		t.Fatalf("engine=%#v instance=%#v", engine, got)
+	}
+}
+func TestStartRejectsInstallWhenDiskSpaceIsLow(t *testing.T) {
+	root := t.TempDir()
+	db, _ := store.Open(filepath.Join(root, "panel.db"))
+	defer db.Close()
+	v := domain.Instance{ID: "abc", NodeID: "local", Name: "one", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", ActualState: domain.StateUninstalled}
+	_ = db.CreateInstance(context.Background(), v)
+	engine := &fakeEngine{}
+	err := New(db, engine, freePorts{}, root, WithSpace(fixedSpace(10), 100)).Start(context.Background(), "abc")
+	if err == nil || engine.created {
+		t.Fatalf("err=%v engine=%#v", err, engine)
 	}
 }
 func TestStopUsesSupervisorBeforeDocker(t *testing.T) {
