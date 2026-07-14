@@ -26,9 +26,17 @@ type PrivateFile struct {
 func NewPrivateManager(root string, maxBytes int) *PrivateManager {
 	return &PrivateManager{root: root, maxBytes: maxBytes}
 }
+
+func validateInstanceID(instanceID string) error {
+	if filepath.Base(instanceID) != instanceID || instanceID == "" || instanceID == "." || instanceID == ".." {
+		return errors.New("invalid instance id")
+	}
+	return nil
+}
+
 func (m *PrivateManager) Save(_ context.Context, instanceID, name string, data []byte) (PrivateFile, error) {
-	if filepath.Base(instanceID) != instanceID || instanceID == "" {
-		return PrivateFile{}, errors.New("invalid instance id")
+	if err := validateInstanceID(instanceID); err != nil {
+		return PrivateFile{}, err
 	}
 	if len(data) > m.maxBytes {
 		return PrivateFile{}, errors.New("private file exceeds editor limit")
@@ -69,6 +77,9 @@ func (m *PrivateManager) Save(_ context.Context, instanceID, name string, data [
 	return PrivateFile{Path: filepath.ToSlash(name), Hash: hex.EncodeToString(digest[:]), Size: int64(len(data)), UpdatedAt: time.Now().UTC()}, nil
 }
 func (m *PrivateManager) History(_ context.Context, instanceID, name string) ([]PrivateFile, error) {
+	if err := validateInstanceID(instanceID); err != nil {
+		return nil, err
+	}
 	root := filepath.Join(m.root, "instances", instanceID, "backups", "private")
 	prefix, err := safepath.Join(root, name+".")
 	if err != nil {
@@ -88,13 +99,23 @@ func (m *PrivateManager) History(_ context.Context, instanceID, name string) ([]
 		if entry.IsDir() || !strings.HasPrefix(entry.Name(), base) {
 			continue
 		}
-		info, _ := entry.Info()
-		result = append(result, PrivateFile{Path: filepath.Join(directory, entry.Name()), Size: info.Size(), UpdatedAt: info.ModTime()})
+		info, err := entry.Info()
+		if err != nil {
+			return nil, err
+		}
+		path, err := filepath.Rel(root, filepath.Join(directory, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, PrivateFile{Path: filepath.ToSlash(path), Size: info.Size(), UpdatedAt: info.ModTime()})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].UpdatedAt.After(result[j].UpdatedAt) })
 	return result, nil
 }
 func (m *PrivateManager) Apply(_ context.Context, instanceID string) error {
+	if err := validateInstanceID(instanceID); err != nil {
+		return err
+	}
 	source := filepath.Join(m.root, "instances", instanceID, "private")
 	if _, err := os.Stat(source); errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -121,4 +142,70 @@ func rejectSymlinkParents(root, target string) error {
 		}
 	}
 	return nil
+}
+func (m *PrivateManager) Read(_ context.Context, instanceID, name string) ([]byte, error) {
+	if err := validateInstanceID(instanceID); err != nil {
+		return nil, err
+	}
+	root := filepath.Join(m.root, "instances", instanceID, "private")
+	target, err := safepath.Join(root, name)
+	if err != nil {
+		return nil, err
+	}
+	if err := rejectSymlinkParents(root, target); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(target)
+}
+func (m *PrivateManager) List(_ context.Context, instanceID string) ([]PrivateFile, error) {
+	if err := validateInstanceID(instanceID); err != nil {
+		return nil, err
+	}
+	root := filepath.Join(m.root, "instances", instanceID, "private")
+	result := []PrivateFile{}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if errors.Is(walkErr, os.ErrNotExist) {
+			return nil
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return errors.New("symbolic links are forbidden")
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		digest := sha256.Sum256(raw)
+		relative, _ := filepath.Rel(root, path)
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		result = append(result, PrivateFile{Path: filepath.ToSlash(relative), Hash: hex.EncodeToString(digest[:]), Size: info.Size(), UpdatedAt: info.ModTime()})
+		return nil
+	})
+	sort.Slice(result, func(i, j int) bool { return result[i].Path < result[j].Path })
+	return result, err
+}
+func (m *PrivateManager) Delete(ctx context.Context, instanceID, name string) error {
+	if err := validateInstanceID(instanceID); err != nil {
+		return err
+	}
+	root := filepath.Join(m.root, "instances", instanceID, "private")
+	target, err := safepath.Join(root, name)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(target); err != nil {
+		return err
+	}
+	if _, err := m.Save(ctx, instanceID, name, []byte{}); err != nil {
+		return err
+	}
+	return os.Remove(target)
 }

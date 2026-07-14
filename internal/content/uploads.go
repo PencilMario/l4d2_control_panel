@@ -237,3 +237,13 @@ func (m *UploadManager) Delete(name string) error {
 func safeVPKName(name string) bool {
 	return filepath.Base(name) == name && strings.ToLower(filepath.Ext(name)) == ".vpk"
 }
+func (m *UploadManager) Path(name string) (string, error) {
+	if !safeVPKName(name) {
+		return "", errors.New("safe .vpk name required")
+	}
+	path := filepath.Join(m.shared, name)
+	if _, err := os.Stat(path); err != nil {
+		return "", err
+	}
+	return path, nil
+}

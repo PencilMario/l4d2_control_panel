@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { App, type Instance } from "./App";
@@ -33,16 +33,103 @@ describe("App", () => {
     expect(onAction).toHaveBeenCalledWith("1", "stop");
   });
   it("logs in and loads real instances", async () => {
-    const fetchMock=vi.fn()
-      .mockResolvedValueOnce(new Response('{}',{status:401,headers:{'Content-Type':'application/json'}}))
-      .mockResolvedValueOnce(new Response('{"authenticated":true}',{status:200,headers:{'Content-Type':'application/json'}}))
-      .mockResolvedValueOnce(new Response('[]',{status:200,headers:{'Content-Type':'application/json'}}));
-    vi.stubGlobal('fetch',fetchMock);
-    render(<App/>);
-    expect(await screen.findByText('管理员认证')).toBeInTheDocument();
-    await userEvent.type(screen.getByLabelText('管理员密码'),'correct horse battery staple');
-    await userEvent.click(screen.getByRole('button',{name:'进入作战室'}));
-    expect(await screen.findByText('尚无实例。创建第一个 Host 网络服务器。')).toBeInTheDocument();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response("{}", {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response('{"authenticated":true}', {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response("[]", {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    expect(await screen.findByText("管理员认证")).toBeInTheDocument();
+    await userEvent.type(
+      screen.getByLabelText("管理员密码"),
+      "correct horse battery staple",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "进入作战室" }));
+    expect(
+      await screen.findByText("尚无实例。创建第一个 Host 网络服务器。"),
+    ).toBeInTheDocument();
+    vi.unstubAllGlobals();
+  });
+  it("does not apply a private overlay when saving the file fails", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        calls.push(`${init?.method || "GET"} ${path}`);
+        if (path === "/api/content/vpk" || path === "/api/packages") {
+          return new Response("[]", {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (init?.method === "PUT" && path.includes("/private/")) {
+          return new Response(
+            JSON.stringify({ error: { message: "invalid private path" } }),
+            { status: 422, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(
+          JSON.stringify({ ID: "job-1", Status: "pending" }),
+          { status: 202, headers: { "Content-Type": "application/json" } },
+        );
+      }),
+    );
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
+    await screen.findByText("实例私有覆盖");
+    await userEvent.click(
+      screen.getByRole("button", { name: "保存并立即应用" }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "invalid private path",
+    );
+    expect(calls.some((x) => x.includes("/private/apply"))).toBe(false);
+    vi.unstubAllGlobals();
+  });
+  it("disables instance-scoped content actions when no instance exists", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input);
+        const body =
+          path === "/api/packages"
+            ? '[{"id":"pkg-1","filename":"plugins.zip","version":"v1","size":4,"hot_compatible":true}]'
+            : "[]";
+        return new Response(body, {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+    render(<App initialInstances={[]} />);
+    await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
+    expect(
+      await screen.findByRole("button", { name: "热更新" }),
+    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "完整更新" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "保存并立即应用" }),
+    ).toBeDisabled();
+    await waitFor(() =>
+      expect(screen.getByText("plugins.zip · v1")).toBeInTheDocument(),
+    );
     vi.unstubAllGlobals();
   });
 });

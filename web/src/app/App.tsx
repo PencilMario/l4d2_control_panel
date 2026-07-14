@@ -53,6 +53,7 @@ export function App({ initialInstances, onAction }: Props) {
   const [pending, setPending] = useState<Instance | null>(null);
   const [page, setPage] = useState<Page>("overview");
   const [terminal, setTerminal] = useState<Instance | null>(null);
+  const [playersTarget, setPlayersTarget] = useState<Instance | null>(null);
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState("");
   const loadInstances = async () => {
@@ -85,18 +86,24 @@ export function App({ initialInstances, onAction }: Props) {
       })
       .catch(() => setAuth("no"));
   }, []);
+  const queue = async (path: string, body: any) => {
+    const created = await api<Job>(path, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    setJob(created);
+    pollJob(created.ID);
+  };
   const action = async (id: string, kind: string) => {
     if (onAction) {
       onAction(id, kind);
       return;
     }
     try {
-      const created = await api<Job>(`/api/instances/${id}/actions`, {
-        method: "POST",
-        body: JSON.stringify({ action: kind, confirm: kind !== "start" }),
+      await queue(`/api/instances/${id}/actions`, {
+        action: kind,
+        confirm: kind !== "start",
       });
-      setJob(created);
-      pollJob(created.ID);
     } catch (e) {
       setError(String(e));
     }
@@ -215,10 +222,14 @@ export function App({ initialInstances, onAction }: Props) {
             setPending={setPending}
             action={action}
             setTerminal={setTerminal}
+            setPlayers={setPlayersTarget}
+            queue={queue}
             reload={loadInstances}
           />
         )}{" "}
-        {page === "content" && <ContentPage />}
+        {page === "content" && (
+          <ContentPage instances={instances} queue={queue} />
+        )}
         {page === "schedules" && <SchedulesPage instances={instances} />}{" "}
         {page === "settings" && <SettingsPage />}{" "}
         {job && <JobStrip job={job} />}
@@ -235,6 +246,13 @@ export function App({ initialInstances, onAction }: Props) {
       )}
       {terminal && (
         <Terminal instance={terminal} close={() => setTerminal(null)} />
+      )}
+      {playersTarget && (
+        <PlayersModal
+          instance={playersTarget}
+          close={() => setPlayersTarget(null)}
+          queue={queue}
+        />
       )}
     </div>
   );
@@ -303,6 +321,8 @@ function Overview({
   setPending,
   action,
   setTerminal,
+  setPlayers,
+  queue,
   reload,
 }: {
   instances: Instance[];
@@ -310,6 +330,8 @@ function Overview({
   setPending: (v: Instance) => void;
   action: (id: string, a: string) => void;
   setTerminal: (v: Instance) => void;
+  setPlayers: (v: Instance) => void;
+  queue: (path: string, body: any) => Promise<void>;
   reload: () => void;
 }) {
   const [creating, setCreating] = useState(false);
@@ -415,6 +437,20 @@ function Overview({
                 <button onClick={() => setTerminal(x)}>
                   <TerminalSquare />
                   控制台
+                </button>
+                <button onClick={() => setPlayers(x)}>
+                  <Users />
+                  玩家
+                </button>
+                <button
+                  onClick={() =>
+                    queue(`/api/instances/${x.id}/game-update`, {
+                      confirm: true,
+                    })
+                  }
+                >
+                  <RefreshCw />
+                  更新
                 </button>
               </div>
             </article>
@@ -553,9 +589,19 @@ function Terminal({
     </div>
   );
 }
-function ContentPage() {
+function ContentPage({
+  instances,
+  queue,
+}: {
+  instances: Instance[];
+  queue: (path: string, body: any) => Promise<void>;
+}) {
   const [vpks, setVpks] = useState<any[]>([]);
   const [packages, setPackages] = useState<any[]>([]);
+  const [selected, setSelected] = useState(instances[0]?.id || "");
+  const [privatePath, setPrivatePath] = useState("cfg/server.cfg");
+  const [privateText, setPrivateText] = useState("");
+  const [contentError, setContentError] = useState("");
   const load = () =>
     Promise.all([
       api<any[]>("/api/content/vpk").then(setVpks),
@@ -576,29 +622,47 @@ function ContentPage() {
       method: "POST",
       body: JSON.stringify({ name: file.name, size: file.size, sha256: sha }),
     });
-    await fetch(
-      `/api/content/vpk/uploads/${session.id ?? session.ID}?offset=0`,
-      { method: "PATCH", credentials: "same-origin", body: file },
-    );
+    await api(`/api/content/vpk/uploads/${session.id ?? session.ID}?offset=0`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: file,
+    });
     await api(`/api/content/vpk/uploads/${session.id ?? session.ID}/complete`, {
       method: "POST",
       body: "{}",
     });
-    load();
+    await load();
   };
   const uploadPackage = async (file: File) => {
-    await fetch(
+    await api(
       `/api/packages/uploads?filename=${encodeURIComponent(file.name)}&version=${encodeURIComponent(file.name)}`,
-      { method: "POST", credentials: "same-origin", body: file },
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/zip" },
+        body: file,
+      },
     );
-    load();
+    await load();
+  };
+  const runContentAction = (operation: () => Promise<unknown>) => {
+    setContentError("");
+    void operation().catch((reason) => setContentError(String(reason)));
   };
   return (
     <div className="content-layout">
+      {contentError && (
+        <div className="error" role="alert">
+          {contentError}
+        </div>
+      )}
       <Panel
         title="共享 VPK"
         action={
-          <FileButton label="上传 VPK" accept=".vpk" onFile={uploadVPK} />
+          <FileButton
+            label="上传 VPK"
+            accept=".vpk"
+            onFile={(file) => runContentAction(() => uploadVPK(file))}
+          />
         }
       >
         {vpks.map((x) => (
@@ -613,18 +677,107 @@ function ContentPage() {
       <Panel
         title="插件包"
         action={
-          <FileButton label="上传 ZIP" accept=".zip" onFile={uploadPackage} />
+          <FileButton
+            label="上传 ZIP"
+            accept=".zip"
+            onFile={(file) => runContentAction(() => uploadPackage(file))}
+          />
         }
       >
         {packages.map((x) => (
-          <Row
-            key={x.id}
-            name={`${x.filename} · ${x.version}`}
-            meta={`${formatBytes(x.size)} · ${x.hot_compatible ? "支持热更新" : "需要完整更新"}`}
-          />
+          <div className="data-row" key={x.id}>
+            <div>
+              <b>
+                {x.filename} · {x.version}
+              </b>
+              <small>
+                {formatBytes(x.size)} ·{" "}
+                {x.hot_compatible ? "支持热更新" : "需要完整更新"}
+              </small>
+            </div>
+            <div className="inline-actions">
+              {x.hot_compatible && (
+                <button
+                  disabled={!selected}
+                  onClick={() =>
+                    runContentAction(() =>
+                      queue(`/api/instances/${selected}/updates`, {
+                        package_id: x.id,
+                        mode: "hot",
+                      }),
+                    )
+                  }
+                >
+                  热更新
+                </button>
+              )}
+              <button
+                disabled={!selected}
+                onClick={() =>
+                  runContentAction(() =>
+                    queue(`/api/instances/${selected}/updates`, {
+                      package_id: x.id,
+                      mode: "full",
+                      confirm: true,
+                    }),
+                  )
+                }
+              >
+                完整更新
+              </button>
+            </div>
+          </div>
         ))}
         {!packages.length && <div className="empty">暂无插件包</div>}
       </Panel>
+      <form
+        className="control-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          runContentAction(async () => {
+            await api(`/api/instances/${selected}/private/${privatePath}`, {
+              method: "PUT",
+              headers: { "Content-Type": "text/plain; charset=utf-8" },
+              body: privateText,
+            });
+            await queue(`/api/instances/${selected}/private/apply`, {});
+          });
+        }}
+      >
+        <p className="eyebrow">PRIVATE OVERLAY</p>
+        <h2>实例私有覆盖</h2>
+        <label>
+          目标实例
+          <select
+            value={selected}
+            onChange={(e) => setSelected(e.target.value)}
+          >
+            {instances.map((x) => (
+              <option key={x.id} value={x.id}>
+                {x.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          相对路径
+          <input
+            value={privatePath}
+            onChange={(e) => setPrivatePath(e.target.value)}
+          />
+        </label>
+        <label>
+          文本内容
+          <textarea
+            rows={10}
+            value={privateText}
+            onChange={(e) => setPrivateText(e.target.value)}
+          />
+        </label>
+        <button className="create" disabled={!selected}>
+          保存并立即应用
+        </button>
+      </form>
     </div>
   );
 }
@@ -700,6 +853,76 @@ function SchedulesPage({ instances }: { instances: Instance[] }) {
     </div>
   );
 }
+function PlayersModal({
+  instance,
+  close,
+  queue,
+}: {
+  instance: Instance;
+  close: () => void;
+  queue: (path: string, body: any) => Promise<void>;
+}) {
+  const [snapshot, setSnapshot] = useState<any>(null);
+  useEffect(() => {
+    api(`/api/instances/${instance.id}/players`)
+      .then(setSnapshot)
+      .catch(() => setSnapshot({ players: [] }));
+  }, [instance.id]);
+  return (
+    <div className="modal-wrap">
+      <div className="modal players-modal">
+        <div className="section-head">
+          <div>
+            <p className="eyebrow">ONLINE PLAYERS</p>
+            <h2>{instance.name}</h2>
+          </div>
+          <button onClick={close}>
+            <X />
+          </button>
+        </div>
+        {snapshot?.players?.map((player: any) => (
+          <div className="data-row" key={`${player.name}-${player.user_id}`}>
+            <div>
+              <b>{player.name}</b>
+              <small>
+                UserID {player.user_id || "未映射"} · 分数 {player.score}
+              </small>
+            </div>
+            {player.user_id > 0 && (
+              <div className="inline-actions">
+                <button
+                  onClick={() =>
+                    queue(
+                      `/api/instances/${instance.id}/players/${player.user_id}/actions`,
+                      { action: "kick", confirm: true },
+                    )
+                  }
+                >
+                  踢出
+                </button>
+                <button
+                  className="danger"
+                  onClick={() =>
+                    queue(
+                      `/api/instances/${instance.id}/players/${player.user_id}/actions`,
+                      { action: "ban", minutes: 0, confirm: true },
+                    )
+                  }
+                >
+                  永久封禁
+                </button>
+              </div>
+            )}
+          </div>
+        ))}
+        {snapshot && !snapshot.players?.length && (
+          <div className="empty">当前没有在线玩家</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function SettingsPage() {
   const [steam, setSteam] = useState(false);
   const [github, setGithub] = useState(false);

@@ -148,6 +148,28 @@ func (s *Store) RecoverJobs() error {
 	_, err := s.db.Exec(`UPDATE jobs SET status='interrupted',error='Panel restarted while this job was active; inspect the managed container and retry or roll back',updated_at=? WHERE status IN ('pending','running')`, time.Now().UTC().Format(time.RFC3339Nano))
 	return err
 }
+func (s *Store) Jobs(ctx context.Context, limit int) ([]domain.JobRecord, error) {
+	if limit < 1 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,instance_id,type,status,stage,percent,message,error,created_at,updated_at FROM jobs ORDER BY created_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []domain.JobRecord{}
+	for rows.Next() {
+		var v domain.JobRecord
+		var created, updated string
+		if err := rows.Scan(&v.ID, &v.InstanceID, &v.Type, &v.Status, &v.Stage, &v.Percent, &v.Message, &v.Error, &created, &updated); err != nil {
+			return nil, err
+		}
+		v.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		v.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+		result = append(result, v)
+	}
+	return result, rows.Err()
+}
 func (s *Store) RecordAudit(ctx context.Context, v domain.AuditRecord) error {
 	if v.CreatedAt.IsZero() {
 		v.CreatedAt = time.Now().UTC()

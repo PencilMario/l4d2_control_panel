@@ -744,6 +744,43 @@ nav button.active {
 .file-button svg {
   width: 15px;
 }
+.actions {
+  flex-wrap: wrap;
+}
+.actions button {
+  min-width: 42%;
+}
+.control-form textarea {
+  resize: vertical;
+  background: #090c0b;
+  color: #eef3ef;
+  border: 1px solid #36413d;
+  padding: 11px;
+}
+.inline-actions {
+  display: flex !important;
+  gap: 6px;
+}
+.inline-actions button {
+  background: #202a26;
+  color: #e7ece9;
+  border: 1px solid #3a4741;
+  padding: 6px 9px;
+  font-size: 10px;
+}
+.inline-actions .danger {
+  color: #ff8e84;
+  border-color: #67342f;
+}
+.players-modal {
+  max-width: 720px;
+  width: calc(100% - 32px);
+}
+.players-modal > .section-head > button {
+  border: 0;
+  background: none;
+  color: #b8c1bd;
+}
 @media (max-width: 800px) {
   .content-layout,
   .schedule-layout {

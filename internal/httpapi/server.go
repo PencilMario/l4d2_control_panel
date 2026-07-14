@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -127,18 +130,25 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Delete("/api/instances/{id}", s.deleteInstance)
 		r.Post("/api/instances/{id}/actions", s.instanceAction)
 		r.Get("/api/jobs/{id}", s.getJob)
+		r.Get("/api/jobs", s.listJobs)
+		r.Get("/api/jobs/events", s.jobEvents)
 		r.Get("/api/instances/{id}/console", s.consoleSocket)
 		r.Get("/api/instances/{id}/players", s.onlinePlayers)
 		r.Get("/api/instances/{id}/resources", s.instanceResources)
 		r.Post("/api/instances/{id}/players/{userID}/actions", s.playerAction)
 		r.Get("/api/audit", s.auditEvents)
 		r.Get("/api/content/vpk", s.listVPK)
+		r.Get("/api/content/vpk/{name}/download", s.downloadVPK)
 		r.Post("/api/content/vpk/uploads", s.beginVPK)
 		r.Patch("/api/content/vpk/uploads/{id}", s.writeVPK)
 		r.Post("/api/content/vpk/uploads/{id}/complete", s.completeVPK)
 		r.Post("/api/content/vpk/{name}/rename", s.renameVPK)
 		r.Delete("/api/content/vpk/{name}", s.deleteVPK)
 		r.Put("/api/instances/{id}/private/*", s.savePrivate)
+		r.Get("/api/instances/{id}/private", s.listPrivate)
+		r.Get("/api/instances/{id}/private/history/*", s.privateHistory)
+		r.Get("/api/instances/{id}/private/file/*", s.downloadPrivate)
+		r.Delete("/api/instances/{id}/private/file/*", s.deletePrivate)
 		r.Post("/api/instances/{id}/private/apply", s.applyPrivate)
 		r.Get("/api/packages", s.listPackages)
 		r.Post("/api/packages/uploads", s.uploadPackage)
@@ -158,6 +168,115 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 	})
 	s.router = r
 	return s
+}
+
+func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
+	items, err := s.store.Jobs(r.Context(), 100)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "jobs_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "sse_unavailable", "streaming unavailable")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		items, err := s.store.Jobs(r.Context(), 50)
+		if err != nil {
+			return
+		}
+		raw, err := json.Marshal(items)
+		if err != nil {
+			return
+		}
+		_, _ = fmt.Fprintf(w, "event: jobs\ndata: %s\n\n", raw)
+		flusher.Flush()
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Server) downloadVPK(w http.ResponseWriter, r *http.Request) {
+	if s.uploads == nil {
+		writeError(w, http.StatusServiceUnavailable, "content_unavailable", "content manager unavailable")
+		return
+	}
+	path, err := s.uploads.Path(chi.URLParam(r, "name"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "vpk_not_found", err.Error())
+		return
+	}
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filepath.Base(path)+`"`)
+	http.ServeFile(w, r, path)
+}
+
+func (s *Server) listPrivate(w http.ResponseWriter, r *http.Request) {
+	if s.private == nil {
+		writeError(w, http.StatusServiceUnavailable, "content_unavailable", "private manager unavailable")
+		return
+	}
+	items, err := s.private.List(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "private_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) privateHistory(w http.ResponseWriter, r *http.Request) {
+	if s.private == nil {
+		writeError(w, http.StatusServiceUnavailable, "content_unavailable", "private manager unavailable")
+		return
+	}
+	items, err := s.private.History(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "*"))
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "private_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) downloadPrivate(w http.ResponseWriter, r *http.Request) {
+	if s.private == nil {
+		writeError(w, http.StatusServiceUnavailable, "content_unavailable", "private manager unavailable")
+		return
+	}
+	raw, err := s.private.Read(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "*"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "private_not_found", err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	_, _ = w.Write(raw)
+}
+
+func (s *Server) deletePrivate(w http.ResponseWriter, r *http.Request) {
+	if s.private == nil {
+		writeError(w, http.StatusServiceUnavailable, "content_unavailable", "private manager unavailable")
+		return
+	}
+	if r.URL.Query().Get("confirm") != "true" {
+		writeError(w, http.StatusPreconditionRequired, "confirmation_required", "private file deletion requires confirmation")
+		return
+	}
+	if err := s.private.Delete(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "*")); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "private_error", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) steamCredentialStatus(w http.ResponseWriter, r *http.Request) {

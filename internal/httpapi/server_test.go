@@ -1,8 +1,11 @@
 package httpapi
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net"
@@ -15,6 +18,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
+	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
@@ -162,6 +166,126 @@ func TestStopActionRequiresConfirmation(t *testing.T) {
 	s.Handler().ServeHTTP(w, r)
 	if w.Code != http.StatusPreconditionRequired {
 		t.Fatalf("status=%d", w.Code)
+	}
+}
+
+func TestContentReadRoutesReturnUnavailableWithoutManagers(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	cookie := loginCookie(t, s)
+	for _, path := range []string{
+		"/api/content/vpk/missing.vpk/download",
+		"/api/instances/abc/private",
+		"/api/instances/abc/private/history/cfg/server.cfg",
+		"/api/instances/abc/private/file/cfg/server.cfg",
+	} {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r.AddCookie(cookie)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s: status=%d body=%s", path, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestContentReadRoutesAndJobFeed(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	root := t.TempDir()
+	uploads, err := content.NewUploadManager(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	private := content.NewPrivateManager(root, 1024)
+	s = New(db, s.auth, WithContent(uploads, private, nil, nil, nil))
+	cookie := loginCookie(t, s)
+
+	if _, err := private.Save(context.Background(), "abc", "cfg/server.cfg", []byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := private.Save(context.Background(), "abc", "cfg/server.cfg", []byte("second")); err != nil {
+		t.Fatal(err)
+	}
+	vpk := []byte("vpk-content")
+	digest := sha256.Sum256(vpk)
+	session, err := uploads.Begin("maps.vpk", int64(len(vpk)), hex.EncodeToString(digest[:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := uploads.Write(session.ID, 0, bytes.NewReader(vpk)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := uploads.Complete(session.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	checks := []struct {
+		path string
+		want string
+	}{
+		{"/api/content/vpk/maps.vpk/download", "vpk-content"},
+		{"/api/instances/abc/private", "cfg/server.cfg"},
+		{"/api/instances/abc/private/file/cfg/server.cfg", "second"},
+		{"/api/instances/abc/private/history/cfg/server.cfg", "cfg/server.cfg."},
+	}
+	for _, check := range checks {
+		r := httptest.NewRequest(http.MethodGet, check.path, nil)
+		r.AddCookie(cookie)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), check.want) {
+			t.Fatalf("%s: status=%d body=%s", check.path, w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), root) {
+			t.Fatalf("%s leaked data root in %s", check.path, w.Body.String())
+		}
+	}
+
+	now := time.Now().UTC()
+	if err := db.SaveJob(domain.JobRecord{ID: "job-1", InstanceID: "abc", Type: "update", Status: "running", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodGet, "/api/jobs", nil)
+	r.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "job-1") {
+		t.Fatalf("jobs: status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	token, err := s.auth.Login("correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := httptest.NewServer(s.Handler())
+	defer remote.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, remote.URL+"/api/jobs/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	response, err := remote.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(response.Body)
+	var event strings.Builder
+	for event.Len() < 4096 {
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		event.WriteString(line)
+		if line == "\n" {
+			break
+		}
+	}
+	cancel()
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK || !strings.Contains(event.String(), "event: jobs") || !strings.Contains(event.String(), "job-1") {
+		t.Fatalf("SSE status=%d event=%q", response.StatusCode, event.String())
 	}
 }
 
