@@ -95,9 +95,14 @@ cd web
 npm ci
 npm test -- --run
 npm run build
+npm run e2e
 cd ..
 docker compose --env-file .env.example config --quiet
 ```
+
+Playwright starts an `e2e`-tagged Go fixture on `127.0.0.1:18082`. The fixture uses real HTTP, Secure cookies, SQLite, jobs, SSE, WebSocket, content and update routes while replacing Docker, SRCDS, A2S, Steam and GitHub boundaries. It is excluded from production builds. Local loopback is added to `NO_PROXY`, so the browser suite remains local when download proxies are configured.
+
+The Linux fault-injection acceptance uses disposable, unlabelled containers and a temporary data root. It covers hard Panel interruption, VPK part/metadata divergence, package interruption before journal commit and bounded SRCDS crash restart. Verify the managed game container ID and Docker daemon start signature before and after, then remove every fixture artifact. Docker-daemon restart and ENOSPC injection require a dedicated disposable host; do not run them on a shared Docker host.
 
 On Windows, antivirus/file-indexing can transiently lock Go's randomly named test executables under `%TEMP%`. If affected, set `GOTMPDIR` to a dedicated temporary directory and run packages serially with `go test -p 1`; do not weaken product code to accommodate the local test host.
 

@@ -1,0 +1,211 @@
+import { expect, test, type Page } from "@playwright/test";
+
+const packageZip = Buffer.from(
+  "UEsDBBQAAAAIAIQg71zL9TlxGQAAABEAAAAOAAAAY2ZnL3BsdWdpbi5jZmcqzo1PLkssUkjLrCgpLUpVMAQAAAD//wMAUEsBAhQAFAAAAAgAhCDvXMv1OXEZAAAAEQAAAA4AAAAAAAAAAAAAAAAAAAAAAGNmZy9wbHVnaW4uY2ZnUEsFBgAAAAABAAEAPAAAAEUAAAAAAA==",
+  "base64",
+);
+
+type FixtureJob = { ID: string; Status: string };
+
+async function captureJob(
+  page: Page,
+  path: string,
+  action: () => Promise<void>,
+): Promise<FixtureJob> {
+  const response = page.waitForResponse((candidate) => {
+    const request = candidate.request();
+    return (
+      request.method() === "POST" &&
+      new URL(candidate.url()).pathname.includes(path) &&
+      candidate.status() === 202
+    );
+  });
+  await action();
+  return (await response).json();
+}
+
+async function jobStatus(page: Page, id: string): Promise<string> {
+  return page.evaluate(async (jobID) => {
+    const response = await fetch(`/api/jobs/${jobID}`);
+    if (!response.ok) {
+      throw new Error(`job request failed with HTTP ${response.status}`);
+    }
+    return ((await response.json()) as FixtureJob).Status;
+  }, id);
+}
+
+async function waitForJob(page: Page, id: string) {
+  await expect.poll(() => jobStatus(page, id)).toBe("succeeded");
+}
+
+test("real HTTP administration journey survives refresh and streams recovery state", async ({
+  page,
+}, testInfo) => {
+  const mobile = testInfo.project.name === "mobile";
+  const suffix = mobile ? "Mobile" : "Desktop";
+  const instanceName = `E2E ${suffix}`;
+  const port = mobile ? 27115 : 27015;
+  let vpkChunks = 0;
+  page.on("request", (request) => {
+    if (
+      request.method() === "PATCH" &&
+      request.url().includes("/api/content/vpk/uploads/")
+    ) {
+      vpkChunks += 1;
+    }
+  });
+
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "管理员认证" })).toBeVisible();
+  await page.getByLabel("管理员密码").fill("correct horse battery staple");
+  await page.getByRole("button", { name: "进入作战室" }).click();
+  await expect(page.getByRole("heading", { name: "服务器作战室" })).toBeVisible();
+
+  await page.getByRole("button", { name: "创建实例" }).click();
+  await page.getByLabel("名称").fill(instanceName);
+  await page.getByLabel("游戏端口").fill(String(port));
+  await page.getByLabel("SourceTV 端口").fill(String(port + 5));
+  await page.getByLabel("插件端口").fill(`${port + 6}, ${port + 7}`);
+  await page.getByRole("button", { name: "创建", exact: true }).click();
+
+  let card = page.locator("article.card").filter({ hasText: instanceName });
+  await expect(card).toContainText("未安装");
+  const startJob = await captureJob(page, "/actions", () =>
+    card.getByRole("button", { name: "启动" }).click(),
+  );
+  await expect.poll(() => jobStatus(page, startJob.ID)).toBe("running");
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "服务器作战室" })).toBeVisible();
+  await waitForJob(page, startJob.ID);
+  await page.reload();
+  card = page.locator("article.card").filter({ hasText: instanceName });
+  await expect(card).toContainText("运行中");
+
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "服务器作战室" })).toBeVisible();
+  card = page.locator("article.card").filter({ hasText: instanceName });
+  await expect(card).toContainText("运行中");
+
+  await card.getByRole("button", { name: "控制台" }).click();
+  await expect(page.locator(".terminal-modal pre")).toContainText("fixture console ready");
+  await page.locator(".terminal-modal input").fill("status");
+  await page.locator(".terminal-modal").getByRole("button", { name: "发送" }).click();
+  await expect(page.locator(".terminal-modal pre")).toContainText("echo:status");
+  await page.locator(".terminal-head button").click();
+  await card.getByRole("button", { name: "控制台" }).click();
+  await expect(page.locator(".terminal-modal pre")).toContainText("fixture console ready");
+  await page.locator(".terminal-head button").click();
+
+  await card.getByRole("button", { name: "玩家" }).click();
+  await expect(page.getByText("Fixture Player")).toBeVisible();
+  await page.getByRole("button", { name: "踢出" }).click();
+  const confirmKick = page.getByRole("button", { name: "确认踢出" });
+  const cancel = page.getByRole("button", { name: "取消" });
+  await expect(confirmKick).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(confirmKick).toBeFocused();
+  const playerJob = await captureJob(page, "/players/7/actions", () =>
+    confirmKick.click(),
+  );
+  await waitForJob(page, playerJob.ID);
+  await page.getByRole("button", { name: "关闭玩家列表" }).click();
+
+  await page.getByRole("button", { name: "内容仓库" }).click();
+  const vpk = Buffer.alloc(9 * 1024 * 1024, mobile ? 0x4d : 0x44);
+  await page.locator('input[accept=".vpk"]').setInputFiles({
+    name: `fixture-${suffix.toLowerCase()}.vpk`,
+    mimeType: "application/octet-stream",
+    buffer: vpk,
+  });
+  await expect(page.getByRole("status")).toContainText("VPK 上传完成");
+  expect(vpkChunks).toBe(2);
+
+  await page.locator('input[accept=".zip"]').setInputFiles({
+    name: `fixture-${suffix.toLowerCase()}.zip`,
+    mimeType: "application/zip",
+    buffer: packageZip,
+  });
+  await expect(page.getByText(new RegExp(`fixture-${suffix.toLowerCase()}\\.zip`))).toBeVisible();
+
+  await page.getByLabel("相对路径").fill(`cfg/${suffix.toLowerCase()}.cfg`);
+  await page.getByLabel("文本内容").fill("sm_cvar fixture 1");
+  const privateJob = await captureJob(page, "/private/apply", () =>
+    page.getByRole("button", { name: "保存并立即应用" }).click(),
+  );
+  await waitForJob(page, privateJob.ID);
+  await expect(page.getByText(`cfg/${suffix.toLowerCase()}.cfg`, { exact: true })).toBeVisible();
+
+  const packageRow = page
+    .locator(".data-row")
+    .filter({ hasText: `fixture-${suffix.toLowerCase()}.zip` });
+  await packageRow.getByRole("button", { name: "完整更新" }).click();
+  const confirmFull = page.getByRole("button", { name: "确认完整更新" });
+  await expect(confirmFull).toBeFocused();
+  const fullJob = await captureJob(page, "/updates", () => confirmFull.click());
+  await waitForJob(page, fullJob.ID);
+
+  await page.getByRole("button", { name: "计划任务" }).click();
+  await page.getByLabel("Cron").fill(mobile ? "15 4 * * *" : "0 4 * * *");
+  await page.getByRole("button", { name: "保存计划" }).click();
+  await expect(page.getByRole("status")).toContainText("计划已保存");
+  await expect(page.getByText(mobile ? "15 4 * * *" : "0 4 * * *")).toBeVisible();
+
+  await page.getByRole("button", { name: "任务", exact: true }).click();
+  await expect(page.getByText("SSE / LIVE")).toBeVisible();
+  await expect(page.getByText("interrupted", { exact: true })).toBeVisible();
+  await expect(
+    page.locator(".job-row").filter({ hasText: "fixture_success" }),
+  ).toContainText("succeeded");
+  await expect(
+    page.locator(".job-row").filter({ hasText: "fixture_failure" }),
+  ).toContainText("deterministic fixture failure");
+  await expect(
+    page.locator(".job-row").filter({ hasText: "fixture_slow" }),
+  ).toContainText("deterministic slow job");
+  await expect(
+    page.locator(".job-row").filter({ hasText: "fixture_recovery" }),
+  ).toContainText("recovered after fixture restart");
+  await expect(
+    page.locator(".job-row").filter({ hasText: fullJob.ID.slice(0, 8) }),
+  ).toContainText("succeeded");
+  await expect(page.locator(".job-row").first()).toBeVisible();
+
+  const latestJob = page.locator(".activity");
+  await expect.soft(latestJob).toContainText("任务已成功完成");
+  await expect.soft(latestJob).not.toContainText("后台任务持久化执行中");
+
+  if (mobile) {
+    const layout = await page.evaluate(() => {
+      const main = document.querySelector("main")!.getBoundingClientRect();
+      const navigation = document.querySelector("aside")!.getBoundingClientRect();
+      const mainElement = document.querySelector("main")!;
+      return {
+        mainBottom: main.bottom,
+        navigationTop: navigation.top,
+        mainClientHeight: mainElement.clientHeight,
+        mainScrollHeight: mainElement.scrollHeight,
+      };
+    });
+    expect.soft(layout.mainBottom).toBeLessThanOrEqual(layout.navigationTop + 1);
+    expect.soft(layout.mainScrollHeight).toBeGreaterThan(layout.mainClientHeight);
+    const navigationFits = await page.locator("nav button").evaluateAll((buttons) =>
+      buttons.every(
+        (button) =>
+          button.scrollWidth <= button.clientWidth &&
+          button.scrollHeight <= button.clientHeight,
+      ),
+    );
+    expect.soft(navigationFits).toBe(true);
+  }
+
+  const fitsViewport = await page.evaluate(
+    () => document.documentElement.scrollWidth <= window.innerWidth,
+  );
+  expect(fitsViewport).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath(`${testInfo.project.name}-journey.png`),
+    fullPage: true,
+  });
+});

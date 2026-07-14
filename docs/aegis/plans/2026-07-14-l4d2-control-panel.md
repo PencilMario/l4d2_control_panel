@@ -202,9 +202,9 @@
 
 **Verification:** `cd web && npm test -- --run && npm run build && npm run e2e`; complete Go tests; Linux Docker smoke matrix recorded in evidence.
 
-- [ ] Install pinned Playwright test tooling and add a Chromium webServer configuration.
-- [ ] Build a per-worker temporary Go fixture with deterministic success, failure, slow and interrupted Jobs.
-- [ ] Cover login/create/refresh/Job recovery, console reconnect, player confirmations, multi-chunk VPK/private/package flows and Cron persistence.
-- [ ] Run desktop and 390x844 mobile keyboard journeys; verify dialog focus and visible error states.
-- [ ] Run safe Panel/VPK/package/SRCDS interruption smokes on `sirphomesv`; document Docker-daemon restart and ENOSPC as isolated-host-only if not executed.
-- [ ] Run the complete release bundle and request final specification/code review.
+- [x] Install pinned Playwright test tooling and add a Chromium webServer configuration.
+- [x] Build a per-worker temporary Go fixture with deterministic success, failure, slow and interrupted Jobs.
+- [x] Cover login/create/refresh/Job recovery, console reconnect, player confirmations, multi-chunk VPK/private/package flows and Cron persistence.
+- [x] Run desktop and 390x844 mobile keyboard journeys; verify dialog focus and visible error states.
+- [x] Run safe Panel/VPK/package/SRCDS interruption smokes on `sirphomesv`; document Docker-daemon restart and ENOSPC as isolated-host-only if not executed.
+- [x] Run the complete release bundle and request final specification/code review.

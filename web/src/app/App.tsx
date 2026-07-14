@@ -1580,9 +1580,29 @@ function ConfirmationDialog({
   close: () => void;
   onConfirm: () => void;
 }) {
+  const dialog = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
+      if (event.key === "Escape") {
+        close();
+        return;
+      }
+      if (event.key !== "Tab" || !dialog.current) return;
+      const focusable = Array.from(
+        dialog.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
@@ -1590,6 +1610,7 @@ function ConfirmationDialog({
   return (
     <div className="modal-wrap">
       <div
+        ref={dialog}
         className="modal"
         role="dialog"
         aria-modal="true"
@@ -1617,12 +1638,22 @@ function ConfirmationDialog({
   );
 }
 function JobStrip({ job }: { job: Job }) {
+  const terminal = ["succeeded", "failed", "interrupted"].includes(job.Status);
+  const description =
+    job.Error ||
+    (job.Status === "succeeded"
+      ? "任务已成功完成"
+      : job.Status === "failed"
+        ? "任务执行失败"
+        : job.Status === "interrupted"
+          ? "任务已中断，请查看任务记录"
+          : "后台任务持久化执行中");
   return (
     <section className="activity">
       <div>
-        <p className="eyebrow">LIVE JOB</p>
+        <p className="eyebrow">{terminal ? "JOB RESULT" : "LIVE JOB"}</p>
         <h2>{job.Stage || job.Status}</h2>
-        <p>{job.Error || "后台任务持久化执行中"}</p>
+        <p>{description}</p>
       </div>
       <strong>{job.Percent || 0}%</strong>
       <div className="jobbar">

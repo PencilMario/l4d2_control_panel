@@ -8,19 +8,19 @@
 - [x] A2S query, status-to-UserID mapping, kick/ban commands and resource stats.
 - [x] Chunked VPK storage, private overlay manager, protected ZIP/package ingestion, GitHub Release acquisition, hot/full/game update coordinators, backup and cleanup primitives.
 - [x] Scheduler persistence/execution and online-player policy.
-- [ ] Complete browser contract and E2E coverage (browser/API contract regressions are repaired; real HTTP Playwright coverage remains).
-- [ ] Complete fault-injection and recovery acceptance (job restart is marked interrupted; update-stage continuation/rollback and Docker/SRCDS interruption matrix still need proof).
+- [x] Complete browser contract and E2E coverage with real HTTP desktop/mobile Playwright journeys.
+- [x] Complete the safe shared-host fault-injection and recovery matrix; Docker-daemon restart and ENOSPC remain dedicated-host-only acceptance.
 - [ ] Complete fresh-host runtime acceptance (anonymous install and Panel-managed SRCDS/A2S/PTY/lifecycle persistence are verified; game-update maintenance remains).
 - [ ] Production delivery documentation, TLS/reverse-proxy guidance and final branch integration.
 - [x] Repair browser/API contracts, destructive confirmations, large VPK chunking and truthful loading/error/health states.
 - [x] Declare, persist and reserve SourceTV/plugin ports across API, lifecycle, runtime and UI.
 - [x] Add durable package-update journal recovery and bounded Panel shutdown/Job drain.
 - [x] Reconcile maintenance writers and recover interrupted uploads/backups/game updates.
-- [ ] Add real-HTTP Playwright acceptance and the safe Linux fault-injection matrix.
+- [x] Add real-HTTP Playwright acceptance and the safe Linux fault-injection matrix.
 
 ## Active slice
 
-Add real-HTTP Playwright acceptance and complete the safe fault-injection matrix in Task 12.
+No active implementation slice. Task 12 is verified; branch integration awaits the user's choice.
 
 ## Completed in the latest slice
 
@@ -59,6 +59,12 @@ Add real-HTTP Playwright acceptance and complete the safe fault-injection matrix
 - Persisted the pre-update desired-running intent and made game-update fault writes merge against the latest instance record.
 - Recovered VPK offsets from `.part` length, staged Release downloads below managed package storage and published backups only after close/fsync plus atomic rename.
 - Verified writer retention and adoption against Docker 29.6.1 on `sirphomesv`; the existing game container remained unchanged and no maintenance container was left behind.
+- Added a build-tagged Go/SQLite fixture and pinned Playwright 1.61.1 desktop/mobile journeys over real HTTP, Secure cookies, SSE and WebSocket.
+- Covered login, instance creation, refresh recovery, console reconnect, confirmation focus trapping, a 9 MiB two-chunk VPK, package/private updates, Cron persistence and deterministic succeeded/failed/running/interrupted Jobs.
+- Corrected mobile Job status truthfulness, isolated scrolling above the fixed navigation and icon-only navigation overflow with red/green browser geometry assertions.
+- Made the local Playwright fixture bypass configured download proxies while keeping the browser journey on the loopback origin.
+- Added fixture startup package-journal recovery and proved hard Panel, VPK metadata divergence, deployed package and bounded fake-SRCDS interruption on `sirphomesv`.
+- Verified the remote matrix removed every Task 12 artifact, preserved game container `f66b76805fab` and left the Docker daemon signature unchanged.
 
 ## Blocked-on
 
@@ -66,12 +72,12 @@ Add real-HTTP Playwright acceptance and complete the safe fault-injection matrix
 
 ## Next
 
-1. Add real HTTP Playwright coverage.
-2. Run the remaining safe fault-injection matrix and final release bundle.
+1. Commit the verified Task 12 slice.
+2. Choose the branch integration path.
 
 ## DriftCheckDraft
 
 - Scope: continues to implement the approved single-host, single-admin design.
 - Compatibility: host networking, fixed Supervisor Exec operations and content precedence are unchanged.
-- New owner/fallback: Docker maintenance labels own writer adoption; `.part` size owns recoverable VPK offsets; `PackageManager` owns Release staging; backup final names only identify fully synced archives. The game-only scan, stale JSON offset, global Release temp and direct final backup write are retired without fallback.
-- Decision: `continue`; Task 11 preserves fixed SteamCMD commands, anonymous authentication, desired state, package precedence and the existing game container.
+- New owner/fallback: Playwright owns real-browser acceptance; its build-tagged fixture reuses production HTTP/auth/store/content/update owners and replaces only external Docker/SRCDS/A2S/Steam/GitHub boundaries. No production fallback was added.
+- Decision: `continue`; Task 12 is verified inside the approved API, authentication, content precedence and fixed Supervisor boundaries. Docker restart, ENOSPC and optional Steam Guard remain explicit external acceptance gaps rather than implementation fallbacks.
