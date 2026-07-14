@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 )
 
@@ -52,6 +53,24 @@ func TestPersistentManagerReloadsCompletedJob(t *testing.T) {
 	reloaded, ok := NewPersistentManager(db).Get(job.ID)
 	if !ok || reloaded.Status != Succeeded || reloaded.Stage != "steamcmd" || reloaded.Percent != 100 {
 		t.Fatalf("reloaded=%#v ok=%v", reloaded, ok)
+	}
+}
+
+func TestPersistentManagerMarksStaleRunningJobInterrupted(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now().UTC()
+	record := domain.JobRecord{ID: "stale", InstanceID: "abc", Type: "install", Status: "running", CreatedAt: now, UpdatedAt: now}
+	if err := db.SaveJob(record); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewPersistentManager(db)
+	job, ok := manager.Get("stale")
+	if !ok || job.Status != Interrupted || job.Error == "" {
+		t.Fatalf("job=%#v ok=%v", job, ok)
 	}
 }
 func TestReporterPersistsProgress(t *testing.T) {

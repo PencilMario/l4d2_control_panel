@@ -24,9 +24,20 @@ import (
 const apiVersion = "/v1.44"
 
 type Engine struct {
-	base string
-	http *http.Client
+	base     string
+	http     *http.Client
+	extraEnv []string
 }
+type EngineOption func(*Engine)
+
+func WithDownloadProxy(proxy string) EngineOption {
+	return func(e *Engine) {
+		if proxy != "" {
+			e.extraEnv = []string{"HTTP_PROXY=" + proxy, "HTTPS_PROXY=" + proxy}
+		}
+	}
+}
+
 type Container struct {
 	ID     string            `json:"Id"`
 	Names  []string          `json:"Names"`
@@ -112,7 +123,7 @@ type createRequest struct {
 }
 
 func (e *Engine) UpdateGame(ctx context.Context, dataRoot string, instance domain.Instance) error {
-	body := createRequest{Image: instance.RuntimeImage, Cmd: []string{"steamcmd", "+force_install_dir", "/opt/l4d2/game", "+login", "anonymous", "+app_update", "222860", "validate", "+quit"}, User: "steam", Labels: map[string]string{ManagedLabel: "true", InstanceLabel: instance.ID, RoleLabel: "maintenance"}, HostConfig: hostConfig{Binds: []string{filepath.Join(dataRoot, "instances", instance.ID, "game") + ":/opt/l4d2/game"}, NetworkMode: "bridge", SecurityOpt: []string{"no-new-privileges"}}}
+	body := createRequest{Image: instance.RuntimeImage, Env: append([]string{}, e.extraEnv...), Cmd: []string{"steamcmd", "+force_install_dir", "/opt/l4d2/game", "+login", "anonymous", "+app_update", "222860", "validate", "+quit"}, User: "steam", Labels: map[string]string{ManagedLabel: "true", InstanceLabel: instance.ID, RoleLabel: "maintenance"}, HostConfig: hostConfig{Binds: []string{filepath.Join(dataRoot, "instances", instance.ID, "game") + ":/opt/l4d2/game"}, NetworkMode: "bridge", SecurityOpt: []string{"no-new-privileges"}}}
 	var created struct {
 		ID string `json:"Id"`
 	}
@@ -138,10 +149,14 @@ func (e *Engine) UpdateGame(ctx context.Context, dataRoot string, instance domai
 	return nil
 }
 
-func NewEngine(host string) *Engine {
+func NewEngine(host string, options ...EngineOption) *Engine {
 	host = strings.TrimRight(host, "/")
 	host = strings.Replace(host, "tcp://", "http://", 1)
-	return &Engine{base: host, http: &http.Client{}}
+	engine := &Engine{base: host, http: &http.Client{}}
+	for _, option := range options {
+		option(engine)
+	}
+	return engine
 }
 func (e *Engine) do(ctx context.Context, method, path string, query url.Values, body any, out any) error {
 	var reader io.Reader
@@ -181,7 +196,7 @@ func (e *Engine) Create(ctx context.Context, spec ContainerSpec) (string, error)
 	var result struct {
 		ID string `json:"Id"`
 	}
-	request := createRequest{Image: spec.Image, Env: spec.Env, Labels: spec.Labels, HostConfig: hostConfig{Binds: spec.Mounts, NetworkMode: spec.NetworkMode, Privileged: false, ReadonlyRootfs: false, SecurityOpt: []string{"no-new-privileges"}}}
+	request := createRequest{Image: spec.Image, Env: append(append([]string{}, spec.Env...), e.extraEnv...), Labels: spec.Labels, HostConfig: hostConfig{Binds: spec.Mounts, NetworkMode: spec.NetworkMode, Privileged: false, ReadonlyRootfs: false, SecurityOpt: []string{"no-new-privileges"}}}
 	err := e.do(ctx, http.MethodPost, "/containers/create", url.Values{"name": []string{spec.Name}}, request, &result)
 	return result.ID, err
 }

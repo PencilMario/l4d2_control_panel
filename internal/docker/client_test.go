@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -27,13 +28,16 @@ func TestEngineCreatesRestrictedManagedContainer(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"Id": "container-1"})
 	}))
 	defer server.Close()
-	client := NewEngine(server.URL)
+	client := NewEngine(server.URL, WithDownloadProxy("http://proxy:7890"))
 	id, err := client.Create(context.Background(), BuildContainerSpec("/srv/l4d2-panel", domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if id != "container-1" || got.HostConfig.NetworkMode != "host" || got.Labels[ManagedLabel] != "true" || got.HostConfig.Privileged {
 		t.Fatalf("unsafe request: %#v", got)
+	}
+	if !slices.Contains(got.Env, "HTTPS_PROXY=http://proxy:7890") {
+		t.Fatalf("env=%v", got.Env)
 	}
 }
 

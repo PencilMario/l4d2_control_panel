@@ -144,6 +144,10 @@ func (s *Store) LoadJob(id string) (domain.JobRecord, bool, error) {
 	v.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
 	return v, true, nil
 }
+func (s *Store) RecoverJobs() error {
+	_, err := s.db.Exec(`UPDATE jobs SET status='interrupted',error='Panel restarted while this job was active; inspect the managed container and retry or roll back',updated_at=? WHERE status IN ('pending','running')`, time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
 func (s *Store) RecordAudit(ctx context.Context, v domain.AuditRecord) error {
 	if v.CreatedAt.IsZero() {
 		v.CreatedAt = time.Now().UTC()

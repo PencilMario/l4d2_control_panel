@@ -11,10 +11,11 @@ import (
 type Status string
 
 const (
-	Pending   Status = "pending"
-	Running   Status = "running"
-	Succeeded Status = "succeeded"
-	Failed    Status = "failed"
+	Pending     Status = "pending"
+	Running     Status = "running"
+	Succeeded   Status = "succeeded"
+	Failed      Status = "failed"
+	Interrupted Status = "interrupted"
 )
 
 type Job struct {
@@ -55,8 +56,15 @@ type Repository interface {
 	LoadJob(string) (domain.JobRecord, bool, error)
 }
 
-func NewManager() *Manager                          { return &Manager{jobs: map[string]Job{}, locks: map[string]*sync.Mutex{}} }
-func NewPersistentManager(repo Repository) *Manager { m := NewManager(); m.repo = repo; return m }
+func NewManager() *Manager { return &Manager{jobs: map[string]Job{}, locks: map[string]*sync.Mutex{}} }
+func NewPersistentManager(repo Repository) *Manager {
+	m := NewManager()
+	m.repo = repo
+	if recovery, ok := repo.(interface{ RecoverJobs() error }); ok {
+		_ = recovery.RecoverJobs()
+	}
+	return m
+}
 func (m *Manager) Start(ctx context.Context, instanceID, kind string, fn func(context.Context, Reporter) error) Job {
 	now := time.Now().UTC()
 	j := Job{ID: uuid.NewString(), InstanceID: instanceID, Type: kind, Status: Pending, CreatedAt: now, UpdatedAt: now}

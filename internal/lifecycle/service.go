@@ -44,12 +44,27 @@ func (s *Service) Reconcile(ctx context.Context) ([]docker.Container, error) {
 		if container, ok := byID[instance.ID]; ok {
 			instance.ContainerID = container.ID
 			if container.State == "running" {
-				instance.ActualState = domain.StateRunning
+				if s.health == nil {
+					instance.ActualState = domain.StateRunning
+				} else {
+					instance.ActualState = domain.StateStarting
+				}
 			} else {
 				instance.ActualState = domain.StateStopped
 			}
 			if err := s.repo.UpdateInstance(ctx, instance); err != nil {
 				return nil, err
+			}
+			if container.State == "running" && s.health != nil {
+				candidate := instance
+				go func() {
+					if err := s.health.Wait(context.Background(), candidate); err != nil {
+						_ = s.fault(context.Background(), candidate, err)
+						return
+					}
+					candidate.ActualState = domain.StateRunning
+					_ = s.repo.UpdateInstance(context.Background(), candidate)
+				}()
 			}
 		} else if instance.ActualState == domain.StateRunning || instance.DesiredState == domain.StateRunning {
 			instance.ActualState = domain.StateOrphaned

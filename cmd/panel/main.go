@@ -54,7 +54,7 @@ func main() {
 	if dockerHost == "" {
 		dockerHost = "http://127.0.0.1:23750"
 	}
-	engine := docker.NewEngine(dockerHost)
+	engine := docker.NewEngine(dockerHost, docker.WithDownloadProxy(os.Getenv("L4D2_PANEL_DOWNLOAD_PROXY")))
 	portChecker := ports.Checker{Configured: func() []int { return nil }, Listening: ports.IsListening}
 	gameHost := os.Getenv("L4D2_PANEL_GAME_HOST")
 	if gameHost == "" {
