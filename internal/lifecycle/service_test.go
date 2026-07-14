@@ -115,7 +115,7 @@ func TestRebuildReplacesContainerButKeepsPersistentData(t *testing.T) {
 	root := t.TempDir()
 	db, _ := store.Open(filepath.Join(root, "panel.db"))
 	defer db.Close()
-	v := domain.Instance{ID: "abc", NodeID: "local", Name: "one", ContainerID: "old", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}
+	v := domain.Instance{ID: "abc", NodeID: "local", Name: "one", ContainerID: "old", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateStarting}
 	_ = db.CreateInstance(context.Background(), v)
 	game := filepath.Join(root, "instances", "abc", "game")
 	_ = os.MkdirAll(game, 0750)

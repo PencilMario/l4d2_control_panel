@@ -188,7 +188,7 @@ func (s *Service) Rebuild(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	wasRunning := instance.ActualState == domain.StateRunning
+	wasRunning := instance.DesiredState == domain.StateRunning || instance.ActualState == domain.StateRunning || instance.ActualState == domain.StateStarting || instance.ActualState == domain.StateInstalling
 	if wasRunning {
 		if err := s.Stop(ctx, id); err != nil {
 			return err
