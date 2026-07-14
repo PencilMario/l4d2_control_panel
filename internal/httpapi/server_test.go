@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
+	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 )
@@ -20,6 +25,14 @@ type fakeLifecycle struct{ action string }
 func (f *fakeLifecycle) Start(context.Context, string) error   { f.action = "start"; return nil }
 func (f *fakeLifecycle) Stop(context.Context, string) error    { f.action = "stop"; return nil }
 func (f *fakeLifecycle) Restart(context.Context, string) error { f.action = "restart"; return nil }
+
+type fakeAttacher struct{ peer net.Conn }
+
+func (f *fakeAttacher) AttachSupervisor(context.Context, string) (io.ReadWriteCloser, error) {
+	client, peer := net.Pipe()
+	f.peer = peer
+	return client, nil
+}
 
 func testServer(t *testing.T) (*Server, *store.Store) {
 	t.Helper()
@@ -144,4 +157,46 @@ func TestStopActionRequiresConfirmation(t *testing.T) {
 	if w.Code != http.StatusPreconditionRequired {
 		t.Fatalf("status=%d", w.Code)
 	}
+}
+
+func TestConsoleWebSocketProxiesSupervisorAttach(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	v := domain.Instance{ID: "abc", NodeID: "local", Name: "one", ContainerID: "container-1", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}
+	if err := db.CreateInstance(context.Background(), v); err != nil {
+		t.Fatal(err)
+	}
+	attacher := &fakeAttacher{}
+	s = New(db, s.auth, WithConsole(attacher))
+	token, err := s.auth.Login("correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(s.Handler())
+	defer server.Close()
+	header := http.Header{"Cookie": []string{sessionCookie + "=" + token}}
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/api/instances/abc/console", header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer attacher.peer.Close()
+		raw := make([]byte, 7)
+		_, _ = io.ReadFull(attacher.peer, raw)
+		_, _ = attacher.peer.Write([]byte("console output"))
+	}()
+	if err := conn.WriteMessage(websocket.TextMessage, []byte("status\n")); err != nil {
+		t.Fatal(err)
+	}
+	_, raw, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "console output" {
+		t.Fatalf("got %q", raw)
+	}
+	<-done
 }

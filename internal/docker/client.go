@@ -1,11 +1,14 @@
 package docker
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -116,6 +119,61 @@ func (e *Engine) RunSupervisor(ctx context.Context, containerID, operation strin
 		return err
 	}
 	return e.do(ctx, http.MethodPost, "/exec/"+url.PathEscape(id)+"/start", nil, map[string]any{"Detach": true, "Tty": true}, nil)
+}
+
+type attachStream struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (s *attachStream) Read(p []byte) (int, error) { return s.reader.Read(p) }
+func (e *Engine) AttachSupervisor(ctx context.Context, containerID string) (io.ReadWriteCloser, error) {
+	execID, err := e.CreateSupervisorExec(ctx, containerID, "attach")
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := url.Parse(e.base)
+	if err != nil {
+		return nil, err
+	}
+	if parsed.Scheme != "http" {
+		return nil, errors.New("docker attach requires an http socket proxy")
+	}
+	address := parsed.Host
+	if !strings.Contains(address, ":") {
+		address += ":80"
+	}
+	dialer := net.Dialer{}
+	conn, err := dialer.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	body := strings.NewReader(`{"Detach":false,"Tty":true}`)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, e.base+apiVersion+"/exec/"+url.PathEscape(execID)+"/start", body)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Connection", "Upgrade")
+	request.Header.Set("Upgrade", "tcp")
+	if err := request.Write(conn); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	reader := bufio.NewReader(conn)
+	response, err := http.ReadResponse(reader, request)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	if response.StatusCode != http.StatusSwitchingProtocols {
+		raw, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		response.Body.Close()
+		conn.Close()
+		return nil, fmt.Errorf("docker attach: %s: %s", response.Status, string(raw))
+	}
+	return &attachStream{Conn: conn, reader: reader}, nil
 }
 func (e *Engine) ListManaged(ctx context.Context) ([]Container, error) {
 	filters, _ := json.Marshal(map[string][]string{"label": {ManagedLabel + "=true", RoleLabel + "=game"}})

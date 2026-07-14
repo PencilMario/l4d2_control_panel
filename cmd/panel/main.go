@@ -52,7 +52,7 @@ func main() {
 		log.Printf("found %d unclaimed managed containers", len(unknown))
 	}
 	jobManager := jobs.NewPersistentManager(db)
-	api := httpapi.New(db, sessions, httpapi.WithOperations(life, jobManager))
+	api := httpapi.New(db, sessions, httpapi.WithOperations(life, jobManager), httpapi.WithConsole(engine))
 	mux := http.NewServeMux()
 	mux.Handle("/api/", api.Handler())
 	web := os.Getenv("L4D2_PANEL_WEB_ROOT")

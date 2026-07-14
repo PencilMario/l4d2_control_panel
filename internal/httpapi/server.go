@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"net/url"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
@@ -22,6 +25,7 @@ type Server struct {
 	router    http.Handler
 	lifecycle Lifecycle
 	jobs      *jobs.Manager
+	console   ConsoleAttacher
 }
 
 type Lifecycle interface {
@@ -34,6 +38,12 @@ type Option func(*Server)
 func WithOperations(lifecycle Lifecycle, manager *jobs.Manager) Option {
 	return func(s *Server) { s.lifecycle = lifecycle; s.jobs = manager }
 }
+
+type ConsoleAttacher interface {
+	AttachSupervisor(context.Context, string) (io.ReadWriteCloser, error)
+}
+
+func WithConsole(attacher ConsoleAttacher) Option { return func(s *Server) { s.console = attacher } }
 
 func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 	s := &Server{store: db, auth: a}
@@ -52,9 +62,75 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Post("/api/instances", s.createInstance)
 		r.Post("/api/instances/{id}/actions", s.instanceAction)
 		r.Get("/api/jobs/{id}", s.getJob)
+		r.Get("/api/instances/{id}/console", s.consoleSocket)
 	})
 	s.router = r
 	return s
+}
+
+var consoleUpgrader = websocket.Upgrader{ReadBufferSize: 4096, WriteBufferSize: 4096, CheckOrigin: func(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	return err == nil && parsed.Host == r.Host
+}}
+
+func (s *Server) consoleSocket(w http.ResponseWriter, r *http.Request) {
+	if s.console == nil {
+		writeError(w, 503, "console_unavailable", "console adapter unavailable")
+		return
+	}
+	instance, err := s.store.Instance(r.Context(), chi.URLParam(r, "id"))
+	if err != nil || instance.ContainerID == "" {
+		writeError(w, 404, "instance_not_running", "instance container unavailable")
+		return
+	}
+	stream, err := s.console.AttachSupervisor(r.Context(), instance.ContainerID)
+	if err != nil {
+		writeError(w, 502, "console_attach_failed", err.Error())
+		return
+	}
+	defer stream.Close()
+	socket, err := consoleUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer socket.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buffer := make([]byte, 16*1024)
+		for {
+			n, readErr := stream.Read(buffer)
+			if n > 0 {
+				if writeErr := socket.WriteMessage(websocket.BinaryMessage, buffer[:n]); writeErr != nil {
+					return
+				}
+			}
+			if readErr != nil {
+				return
+			}
+		}
+	}()
+	for {
+		messageType, payload, readErr := socket.ReadMessage()
+		if readErr != nil {
+			break
+		}
+		if messageType != websocket.TextMessage && messageType != websocket.BinaryMessage {
+			continue
+		}
+		if len(payload) > 64*1024 {
+			break
+		}
+		if _, err := stream.Write(payload); err != nil {
+			break
+		}
+	}
+	_ = stream.Close()
+	<-done
 }
 
 func (s *Server) instanceAction(w http.ResponseWriter, r *http.Request) {

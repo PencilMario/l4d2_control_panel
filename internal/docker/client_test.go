@@ -1,9 +1,11 @@
 package docker
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,6 +34,44 @@ func TestEngineCreatesRestrictedManagedContainer(t *testing.T) {
 	}
 	if id != "container-1" || got.HostConfig.NetworkMode != "host" || got.Labels[ManagedLabel] != "true" || got.HostConfig.Privileged {
 		t.Fatalf("unsafe request: %#v", got)
+	}
+}
+
+func TestAttachSupervisorHijacksFixedExecStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/exec") {
+			_ = json.NewEncoder(w).Encode(map[string]string{"Id": "exec-attach"})
+			return
+		}
+		if r.URL.Path != "/v1.44/exec/exec-attach/start" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		hijacker := w.(http.Hijacker)
+		conn, rw, err := hijacker.Hijack()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = rw.WriteString("HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+		_ = rw.Flush()
+		go func() {
+			defer conn.Close()
+			line, _ := bufio.NewReader(conn).ReadString('\n')
+			_, _ = io.WriteString(conn, "echo:"+line)
+		}()
+	}))
+	defer server.Close()
+	stream, err := NewEngine(server.URL).AttachSupervisor(context.Background(), "container-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	_, _ = io.WriteString(stream, "status\n")
+	raw := make([]byte, len("echo:status\n"))
+	if _, err := io.ReadFull(stream, raw); err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "echo:status\n" {
+		t.Fatalf("got %q", raw)
 	}
 }
 

@@ -2,6 +2,8 @@ package runtimeimage
 
 import (
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -14,5 +16,22 @@ func TestDockerfileReusesSteamCMDUser(t *testing.T) {
 	text := string(raw)
 	if strings.Contains(text, "&& useradd -m -u 10001 steam") || !strings.Contains(text, "id -u steam") {
 		t.Fatal("Dockerfile must reuse the SteamCMD image's steam user")
+	}
+}
+
+func TestSupervisorSelfTest(t *testing.T) {
+	raw, err := os.ReadFile("supervisor.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "def selftest") {
+		t.Fatal("supervisor has no PTY self-test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("PTY integration requires POSIX")
+	}
+	command := exec.Command("python3", "supervisor.py", "selftest")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("selftest failed: %v\n%s", err, output)
 	}
 }
