@@ -25,6 +25,8 @@ type fakeLifecycle struct{ action string }
 func (f *fakeLifecycle) Start(context.Context, string) error   { f.action = "start"; return nil }
 func (f *fakeLifecycle) Stop(context.Context, string) error    { f.action = "stop"; return nil }
 func (f *fakeLifecycle) Restart(context.Context, string) error { f.action = "restart"; return nil }
+func (f *fakeLifecycle) Rebuild(context.Context, string) error { f.action = "rebuild"; return nil }
+func (f *fakeLifecycle) Delete(context.Context, string,bool) error { f.action = "delete"; return nil }
 
 type fakeAttacher struct{ peer net.Conn }
 

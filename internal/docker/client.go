@@ -35,6 +35,52 @@ type Container struct {
 	Status string            `json:"Status"`
 	Labels map[string]string `json:"Labels"`
 }
+type ResourceStats struct {
+	CPUPercent  float64 `json:"cpu_percent"`
+	MemoryBytes uint64  `json:"memory_bytes"`
+}
+type statsResponse struct {
+	CPUStats struct {
+		CPUUsage struct {
+			Total  uint64   `json:"total_usage"`
+			PerCPU []uint64 `json:"percpu_usage"`
+		} `json:"cpu_usage"`
+		System uint64 `json:"system_cpu_usage"`
+		Online int    `json:"online_cpus"`
+	} `json:"cpu_stats"`
+	PreCPUStats struct {
+		CPUUsage struct {
+			Total uint64 `json:"total_usage"`
+		} `json:"cpu_usage"`
+		System uint64 `json:"system_cpu_usage"`
+	} `json:"precpu_stats"`
+	Memory struct {
+		Usage uint64            `json:"usage"`
+		Stats map[string]uint64 `json:"stats"`
+	} `json:"memory_stats"`
+}
+
+func (e *Engine) Stats(ctx context.Context, containerID string) (ResourceStats, error) {
+	var raw statsResponse
+	if err := e.do(ctx, http.MethodGet, "/containers/"+url.PathEscape(containerID)+"/stats", url.Values{"stream": []string{"false"}, "one-shot": []string{"true"}}, nil, &raw); err != nil {
+		return ResourceStats{}, err
+	}
+	cpuDelta := raw.CPUStats.CPUUsage.Total - raw.PreCPUStats.CPUUsage.Total
+	systemDelta := raw.CPUStats.System - raw.PreCPUStats.System
+	cpus := raw.CPUStats.Online
+	if cpus == 0 {
+		cpus = len(raw.CPUStats.CPUUsage.PerCPU)
+	}
+	percent := 0.0
+	if systemDelta > 0 && cpuDelta > 0 {
+		percent = float64(cpuDelta) / float64(systemDelta) * float64(cpus) * 100
+	}
+	memory := raw.Memory.Usage
+	if cache := raw.Memory.Stats["cache"]; cache < memory {
+		memory -= cache
+	}
+	return ResourceStats{CPUPercent: percent, MemoryBytes: memory}, nil
+}
 
 func (c Container) InstanceID() string { return c.Labels[InstanceLabel] }
 
@@ -49,6 +95,7 @@ type createRequest struct {
 	Image      string            `json:"Image"`
 	Cmd        []string          `json:"Cmd,omitempty"`
 	User       string            `json:"User,omitempty"`
+	Env        []string          `json:"Env,omitempty"`
 	Labels     map[string]string `json:"Labels"`
 	HostConfig hostConfig        `json:"HostConfig"`
 }
@@ -123,7 +170,7 @@ func (e *Engine) Create(ctx context.Context, spec ContainerSpec) (string, error)
 	var result struct {
 		ID string `json:"Id"`
 	}
-	request := createRequest{Image: spec.Image, Labels: spec.Labels, HostConfig: hostConfig{Binds: spec.Mounts, NetworkMode: spec.NetworkMode, Privileged: false, ReadonlyRootfs: false, SecurityOpt: []string{"no-new-privileges"}}}
+	request := createRequest{Image: spec.Image, Env: spec.Env, Labels: spec.Labels, HostConfig: hostConfig{Binds: spec.Mounts, NetworkMode: spec.NetworkMode, Privileged: false, ReadonlyRootfs: false, SecurityOpt: []string{"no-new-privileges"}}}
 	err := e.do(ctx, http.MethodPost, "/containers/create", url.Values{"name": []string{spec.Name}}, request, &result)
 	return result.ID, err
 }

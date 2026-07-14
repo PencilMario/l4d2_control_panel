@@ -31,5 +31,6 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
  timezone TEXT NOT NULL, online_policy TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}',
  enabled INTEGER NOT NULL, last_run TEXT NOT NULL DEFAULT '', next_run TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS secrets (name TEXT PRIMARY KEY, ciphertext BLOB NOT NULL, updated_at TEXT NOT NULL);
 INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, CURRENT_TIMESTAMP);
 `

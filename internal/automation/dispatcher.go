@@ -22,6 +22,9 @@ type Dispatcher struct {
 	GameUpdate     *updates.GameCoordinator
 	Releases       releases.Client
 	Maintenance    *maintenance.Manager
+	Secrets        interface {
+		Get(context.Context, string) (string, bool, error)
+	}
 }
 
 func (d Dispatcher) Dispatch(ctx context.Context, task domain.ScheduledTask) error {
@@ -49,7 +52,6 @@ func (d Dispatcher) Dispatch(ctx context.Context, task domain.ScheduledTask) err
 			PackageID     string `json:"package_id"`
 			Repository    string `json:"repository"`
 			AssetPattern  string `json:"asset_pattern"`
-			Token         string `json:"token"`
 			RetentionDays int    `json:"retention_days"`
 		}
 		if task.Payload != "" {
@@ -71,7 +73,11 @@ func (d Dispatcher) Dispatch(ctx context.Context, task domain.ScheduledTask) err
 			}
 			return d.PackagesUpdate.ApplyPackage(run, task.InstanceID, item, mode)
 		case "release_check":
-			_, err := d.Releases.FetchLatest(run, input.Repository, input.AssetPattern, input.Token, d.Packages)
+			token := ""
+			if d.Secrets != nil {
+				token, _, _ = d.Secrets.Get(run, "github_token")
+			}
+			_, err := d.Releases.FetchLatest(run, input.Repository, input.AssetPattern, token, d.Packages)
 			return err
 		case "backup":
 			_, err := d.Maintenance.Backup(run, task.InstanceID)

@@ -9,8 +9,10 @@ import (
 )
 
 type Limits struct {
-	MaxFiles int
-	MaxBytes uint64
+	MaxFiles            int
+	MaxBytes            uint64
+	MaxFileBytes        uint64
+	MaxCompressionRatio float64
 }
 type Entry struct {
 	Path string
@@ -31,10 +33,19 @@ func InspectZip(path string, limits Limits) (Manifest, error) {
 	}
 	defer r.Close()
 	m := Manifest{HotCompatible: true}
+	if limits.MaxFileBytes == 0 {
+		limits.MaxFileBytes = 2 << 30
+	}
+	if limits.MaxCompressionRatio == 0 {
+		limits.MaxCompressionRatio = 200
+	}
 	if len(r.File) > limits.MaxFiles {
 		return m, errors.New("archive file count limit exceeded")
 	}
 	for _, f := range r.File {
+		if f.Flags&1 != 0 {
+			return m, errors.New("encrypted archive entries are forbidden")
+		}
 		if f.Mode()&fs.ModeSymlink != 0 {
 			return m, errors.New("archive symlinks are forbidden")
 		}
@@ -43,6 +54,16 @@ func InspectZip(path string, limits Limits) (Manifest, error) {
 		}
 		if f.FileInfo().IsDir() {
 			continue
+		}
+		if f.UncompressedSize64 > limits.MaxFileBytes {
+			return m, errors.New("archive single-file size limit exceeded")
+		}
+		compressed := f.CompressedSize64
+		if compressed == 0 {
+			compressed = 1
+		}
+		if float64(f.UncompressedSize64)/float64(compressed) > limits.MaxCompressionRatio {
+			return m, errors.New("archive compression ratio limit exceeded")
 		}
 		m.TotalBytes += f.UncompressedSize64
 		if m.TotalBytes > limits.MaxBytes {

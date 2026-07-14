@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -24,6 +25,16 @@ func TestInspectZipRejectsTraversalAndDisallowedHotPath(t *testing.T) {
 	m, err = InspectZip(hot, Limits{MaxFiles: 10, MaxBytes: 100})
 	if err != nil || !m.HotCompatible {
 		t.Fatalf("manifest=%#v err=%v", m, err)
+	}
+}
+
+func TestInspectZipRejectsSingleFileAndCompressionBomb(t *testing.T) {
+	archive := makeZip(t, map[string]string{"cfg/huge.cfg": strings.Repeat("a", 4096)})
+	if _, err := InspectZip(archive, Limits{MaxFiles: 10, MaxBytes: 10000, MaxFileBytes: 1024, MaxCompressionRatio: 1000}); err == nil {
+		t.Fatal("oversized file accepted")
+	}
+	if _, err := InspectZip(archive, Limits{MaxFiles: 10, MaxBytes: 10000, MaxFileBytes: 10000, MaxCompressionRatio: 2}); err == nil {
+		t.Fatal("compression bomb accepted")
 	}
 }
 func makeZip(t *testing.T, files map[string]string) string {

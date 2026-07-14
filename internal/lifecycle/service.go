@@ -13,6 +13,7 @@ type Repository interface {
 	Instance(context.Context, string) (domain.Instance, error)
 	Instances(context.Context) ([]domain.Instance, error)
 	UpdateInstance(context.Context, domain.Instance) error
+	DeleteInstance(context.Context, string) error
 }
 type Engine interface {
 	Create(context.Context, docker.ContainerSpec) (string, error)
@@ -20,6 +21,7 @@ type Engine interface {
 	RunSupervisor(context.Context, string, string) error
 	Stop(context.Context, string, int) error
 	ListManaged(context.Context) ([]docker.Container, error)
+	Remove(context.Context, string) error
 }
 
 func (s *Service) Reconcile(ctx context.Context) ([]docker.Container, error) {
@@ -65,15 +67,26 @@ func (s *Service) Reconcile(ctx context.Context) ([]docker.Container, error) {
 }
 
 type PortChecker interface{ Available(int) error }
+type HealthChecker interface {
+	Wait(context.Context, domain.Instance) error
+}
 type Service struct {
 	repo     Repository
 	engine   Engine
 	ports    PortChecker
 	dataRoot string
+	health   HealthChecker
 }
+type Option func(*Service)
 
-func New(repo Repository, engine Engine, ports PortChecker, dataRoot string) *Service {
-	return &Service{repo: repo, engine: engine, ports: ports, dataRoot: dataRoot}
+func WithHealth(checker HealthChecker) Option { return func(s *Service) { s.health = checker } }
+
+func New(repo Repository, engine Engine, ports PortChecker, dataRoot string, options ...Option) *Service {
+	service := &Service{repo: repo, engine: engine, ports: ports, dataRoot: dataRoot}
+	for _, option := range options {
+		option(service)
+	}
+	return service
 }
 func (s *Service) Start(ctx context.Context, id string) error {
 	v, err := s.repo.Instance(ctx, id)
@@ -90,7 +103,11 @@ func (s *Service) Start(ctx context.Context, id string) error {
 				return err
 			}
 		}
-		v.ActualState = domain.StateStarting
+		if v.ActualState == domain.StateUninstalled {
+			v.ActualState = domain.StateInstalling
+		} else {
+			v.ActualState = domain.StateStarting
+		}
 		if err := s.repo.UpdateInstance(ctx, v); err != nil {
 			return err
 		}
@@ -105,6 +122,11 @@ func (s *Service) Start(ctx context.Context, id string) error {
 	}
 	if err := s.engine.Start(ctx, v.ContainerID); err != nil {
 		return s.fault(ctx, v, err)
+	}
+	if s.health != nil {
+		if err := s.health.Wait(ctx, v); err != nil {
+			return s.fault(ctx, v, err)
+		}
 	}
 	v.DesiredState, v.ActualState = domain.StateRunning, domain.StateRunning
 	return s.repo.UpdateInstance(ctx, v)
@@ -129,6 +151,69 @@ func (s *Service) Restart(ctx context.Context, id string) error {
 		return err
 	}
 	return s.Start(ctx, id)
+}
+func (s *Service) Rebuild(ctx context.Context, id string) error {
+	instance, err := s.repo.Instance(ctx, id)
+	if err != nil {
+		return err
+	}
+	wasRunning := instance.ActualState == domain.StateRunning
+	if wasRunning {
+		if err := s.Stop(ctx, id); err != nil {
+			return err
+		}
+		instance, err = s.repo.Instance(ctx, id)
+		if err != nil {
+			return err
+		}
+	}
+	if instance.ContainerID != "" {
+		if err := s.engine.Remove(ctx, instance.ContainerID); err != nil {
+			return err
+		}
+	}
+	instance.ContainerID = ""
+	instance.ActualState = domain.StateStopped
+	if wasRunning {
+		instance.DesiredState = domain.StateRunning
+	}
+	if err := s.repo.UpdateInstance(ctx, instance); err != nil {
+		return err
+	}
+	if wasRunning {
+		return s.Start(ctx, id)
+	}
+	return nil
+}
+func (s *Service) Delete(ctx context.Context, id string, deleteData bool) error {
+	instance, err := s.repo.Instance(ctx, id)
+	if err != nil {
+		return err
+	}
+	if instance.ActualState == domain.StateRunning {
+		if err := s.Stop(ctx, id); err != nil {
+			return err
+		}
+		instance, err = s.repo.Instance(ctx, id)
+		if err != nil {
+			return err
+		}
+	}
+	if instance.ContainerID != "" {
+		if err := s.engine.Remove(ctx, instance.ContainerID); err != nil {
+			return err
+		}
+	}
+	if err := s.repo.DeleteInstance(ctx, id); err != nil {
+		return err
+	}
+	if deleteData {
+		if filepath.Base(id) != id {
+			return errors.New("invalid instance id")
+		}
+		return os.RemoveAll(filepath.Join(s.dataRoot, "instances", id))
+	}
+	return nil
 }
 func (s *Service) fault(ctx context.Context, v domain.Instance, cause error) error {
 	v.ActualState = domain.StateFaulted

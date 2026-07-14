@@ -111,6 +111,20 @@ func TestGameUpdateUsesFixedSteamCMDMaintenanceContainer(t *testing.T) {
 	}
 }
 
+func TestStatsCalculatesCPUAndMemory(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"cpu_stats": map[string]any{"cpu_usage": map[string]any{"total_usage": 300.0, "percpu_usage": []int{1, 2}}, "system_cpu_usage": 1000.0}, "precpu_stats": map[string]any{"cpu_usage": map[string]any{"total_usage": 100.0}, "system_cpu_usage": 500.0}, "memory_stats": map[string]any{"usage": 1073741824.0, "stats": map[string]any{"cache": 268435456.0}}})
+	}))
+	defer server.Close()
+	stats, err := NewEngine(server.URL).Stats(context.Background(), "container")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.CPUPercent != 80 || stats.MemoryBytes != 805306368 {
+		t.Fatalf("stats=%#v", stats)
+	}
+}
+
 func TestEngineUsesOnlyFixedLifecycleEndpoints(t *testing.T) {
 	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

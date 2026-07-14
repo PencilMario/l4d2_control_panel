@@ -5,6 +5,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -13,6 +14,7 @@ type fakeEngine struct {
 	created, started, stopped bool
 	execOperation             string
 	containers                []docker.Container
+	removed                   bool
 }
 
 func (f *fakeEngine) Create(context.Context, docker.ContainerSpec) (string, error) {
@@ -28,6 +30,7 @@ func (f *fakeEngine) Stop(context.Context, string, int) error { f.stopped = true
 func (f *fakeEngine) ListManaged(context.Context) ([]docker.Container, error) {
 	return f.containers, nil
 }
+func (f *fakeEngine) Remove(context.Context, string) error { f.removed = true; return nil }
 
 type freePorts struct{}
 
@@ -89,5 +92,27 @@ func TestReconcileMarksMissingAndReturnsUnknownContainers(t *testing.T) {
 	gotKnown, _ := db.Instance(context.Background(), "known")
 	if gotMissing.ActualState != domain.StateOrphaned || gotKnown.ContainerID != "known-container" || gotKnown.ActualState != domain.StateRunning || len(unknown) != 1 || unknown[0].ID != "unknown-container" {
 		t.Fatalf("missing=%#v known=%#v unknown=%#v", gotMissing, gotKnown, unknown)
+	}
+}
+
+func TestRebuildReplacesContainerButKeepsPersistentData(t *testing.T) {
+	root := t.TempDir()
+	db, _ := store.Open(filepath.Join(root, "panel.db"))
+	defer db.Close()
+	v := domain.Instance{ID: "abc", NodeID: "local", Name: "one", ContainerID: "old", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}
+	_ = db.CreateInstance(context.Background(), v)
+	game := filepath.Join(root, "instances", "abc", "game")
+	_ = os.MkdirAll(game, 0750)
+	_ = os.WriteFile(filepath.Join(game, "keep"), []byte("data"), 0640)
+	engine := &fakeEngine{}
+	if err := New(db, engine, freePorts{}, root).Rebuild(context.Background(), "abc"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := db.Instance(context.Background(), "abc")
+	if !engine.removed || got.ContainerID != "container-1" || !engine.started {
+		t.Fatalf("engine=%#v got=%#v", engine, got)
+	}
+	if _, err := os.Stat(filepath.Join(game, "keep")); err != nil {
+		t.Fatal("persistent game data removed")
 	}
 }

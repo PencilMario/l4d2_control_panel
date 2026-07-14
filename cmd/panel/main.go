@@ -8,6 +8,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/config"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
+	"github.com/not0721here/l4d2-control-panel/internal/health"
 	"github.com/not0721here/l4d2-control-panel/internal/httpapi"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/lifecycle"
@@ -16,6 +17,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/ports"
 	"github.com/not0721here/l4d2-control-panel/internal/releases"
 	"github.com/not0721here/l4d2-control-panel/internal/scheduler"
+	"github.com/not0721here/l4d2-control-panel/internal/secrets"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 	"github.com/not0721here/l4d2-control-panel/internal/updates"
 	"log"
@@ -53,17 +55,18 @@ func main() {
 	}
 	engine := docker.NewEngine(dockerHost)
 	portChecker := ports.Checker{Configured: func() []int { return nil }, Listening: ports.IsListening}
-	life := lifecycle.New(db, engine, portChecker, cfg.DataRoot)
+	gameHost := os.Getenv("L4D2_PANEL_GAME_HOST")
+	if gameHost == "" {
+		gameHost = "127.0.0.1"
+	}
+	healthChecker := health.Checker{Host: gameHost, Query: a2s.Client{}}
+	life := lifecycle.New(db, engine, portChecker, cfg.DataRoot, lifecycle.WithHealth(healthChecker))
 	if unknown, reconcileErr := life.Reconcile(context.Background()); reconcileErr != nil {
 		log.Printf("container reconciliation deferred: %v", reconcileErr)
 	} else if len(unknown) > 0 {
 		log.Printf("found %d unclaimed managed containers", len(unknown))
 	}
 	jobManager := jobs.NewPersistentManager(db)
-	gameHost := os.Getenv("L4D2_PANEL_GAME_HOST")
-	if gameHost == "" {
-		gameHost = "127.0.0.1"
-	}
 	playerService := players.NewService(db, a2s.Client{}, engine, gameHost)
 	uploadManager, err := content.NewUploadManager(cfg.DataRoot)
 	if err != nil {
@@ -77,10 +80,18 @@ func main() {
 	updatePipeline := updates.New(cfg.DataRoot)
 	updateCoordinator := &updates.Coordinator{Lifecycle: life, Deployer: updatePipeline}
 	gameCoordinator := &updates.GameCoordinator{Root: cfg.DataRoot, Instances: db, Lifecycle: life, Updater: engine, Private: privateManager}
-	dispatcher := automation.Dispatcher{Jobs: jobManager, Players: playerService, Packages: packageManager, PackagesUpdate: updateCoordinator, GameUpdate: gameCoordinator, Releases: releases.Client{}, Maintenance: maintenance.New(cfg.DataRoot)}
+	secretKey, err := secrets.LoadOrCreateKey(filepath.Join(cfg.PanelDir, "secret.key"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	secretService, err := secrets.New(db, secretKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+	dispatcher := automation.Dispatcher{Jobs: jobManager, Players: playerService, Packages: packageManager, PackagesUpdate: updateCoordinator, GameUpdate: gameCoordinator, Releases: releases.Client{}, Maintenance: maintenance.New(cfg.DataRoot), Secrets: secretService}
 	scheduleService := scheduler.NewService(db, dispatcher)
 	defer scheduleService.Stop()
-	api := httpapi.New(db, sessions, httpapi.WithOperations(life, jobManager), httpapi.WithConsole(engine), httpapi.WithPlayers(playerService), httpapi.WithContent(uploadManager, privateManager, packageManager, updatePipeline, updateCoordinator), httpapi.WithGameUpdates(gameCoordinator), httpapi.WithScheduler(scheduleService))
+	api := httpapi.New(db, sessions, httpapi.WithOperations(life, jobManager), httpapi.WithConsole(engine), httpapi.WithPlayers(playerService), httpapi.WithContent(uploadManager, privateManager, packageManager, updatePipeline, updateCoordinator), httpapi.WithGameUpdates(gameCoordinator), httpapi.WithScheduler(scheduleService), httpapi.WithSecrets(secretService), httpapi.WithResources(engine))
 	mux := http.NewServeMux()
 	mux.Handle("/api/", api.Handler())
 	web := os.Getenv("L4D2_PANEL_WEB_ROOT")

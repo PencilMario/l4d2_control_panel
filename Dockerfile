@@ -14,7 +14,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/panel ./cmd/panel
 
 FROM ${OFFICIAL_REGISTRY}/library/alpine:3.22
-RUN addgroup -S panel && adduser -S -G panel panel && apk add --no-cache ca-certificates tzdata
+RUN addgroup -S -g 10001 panel && adduser -S -D -H -u 10001 -G panel panel && apk add --no-cache ca-certificates tzdata
 COPY --from=backend /out/panel /usr/local/bin/panel
 COPY --from=web /src/web/dist /opt/panel/web
 USER panel

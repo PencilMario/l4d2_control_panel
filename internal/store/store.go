@@ -209,3 +209,19 @@ func parseOptionalTime(v string) time.Time {
 	parsed, _ := time.Parse(time.RFC3339Nano, v)
 	return parsed
 }
+func (s *Store) SaveSecret(ctx context.Context, name string, ciphertext []byte) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO secrets(name,ciphertext,updated_at) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET ciphertext=excluded.ciphertext,updated_at=excluded.updated_at`, name, ciphertext, time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+func (s *Store) LoadSecret(ctx context.Context, name string) ([]byte, bool, error) {
+	var value []byte
+	err := s.db.QueryRowContext(ctx, `SELECT ciphertext FROM secrets WHERE name=?`, name).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	return value, err == nil, err
+}
+func (s *Store) DeleteSecret(ctx context.Context, name string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM secrets WHERE name=?`, name)
+	return err
+}

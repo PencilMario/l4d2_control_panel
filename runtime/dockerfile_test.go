@@ -17,6 +17,7 @@ func TestDockerfileReusesSteamCMDUser(t *testing.T) {
 	if strings.Contains(text, "&& useradd -m -u 10001 steam") || !strings.Contains(text, "id -u steam") {
 		t.Fatal("Dockerfile must reuse the SteamCMD image's steam user")
 	}
+	if !strings.Contains(text,"usermod -u 10001 steam")||!strings.Contains(text,"USER steam"){t.Fatal("runtime must align persistent-data UID and run SRCDS as non-root")}
 }
 
 func TestSupervisorSelfTest(t *testing.T) {

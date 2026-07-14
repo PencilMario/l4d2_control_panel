@@ -15,10 +15,12 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/players"
 	"github.com/not0721here/l4d2-control-panel/internal/releases"
 	"github.com/not0721here/l4d2-control-panel/internal/scheduler"
+	"github.com/not0721here/l4d2-control-panel/internal/secrets"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 	"github.com/not0721here/l4d2-control-panel/internal/updates"
 )
@@ -41,12 +43,16 @@ type Server struct {
 	releases          releases.Client
 	gameUpdates       *updates.GameCoordinator
 	schedules         *scheduler.Service
+	secrets           *secrets.Service
+	resources         ResourceProvider
 }
 
 type Lifecycle interface {
 	Start(context.Context, string) error
 	Stop(context.Context, string) error
 	Restart(context.Context, string) error
+	Rebuild(context.Context,string)error
+	Delete(context.Context,string,bool)error
 }
 type Option func(*Server)
 
@@ -83,6 +89,9 @@ func WithGameUpdates(coordinator *updates.GameCoordinator) Option {
 func WithScheduler(service *scheduler.Service) Option {
 	return func(s *Server) { s.schedules = service }
 }
+func WithSecrets(service *secrets.Service) Option { return func(s *Server) { s.secrets = service } }
+type ResourceProvider interface{Stats(context.Context,string)(docker.ResourceStats,error)}
+func WithResources(provider ResourceProvider)Option{return func(s *Server){s.resources=provider}}
 
 func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 	s := &Server{store: db, auth: a}
@@ -100,10 +109,13 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		})
 		r.Get("/api/instances", s.listInstances)
 		r.Post("/api/instances", s.createInstance)
+		r.Put("/api/instances/{id}",s.updateInstance)
+		r.Delete("/api/instances/{id}",s.deleteInstance)
 		r.Post("/api/instances/{id}/actions", s.instanceAction)
 		r.Get("/api/jobs/{id}", s.getJob)
 		r.Get("/api/instances/{id}/console", s.consoleSocket)
 		r.Get("/api/instances/{id}/players", s.onlinePlayers)
+		r.Get("/api/instances/{id}/resources",s.instanceResources)
 		r.Post("/api/instances/{id}/players/{userID}/actions", s.playerAction)
 		r.Get("/api/audit", s.auditEvents)
 		r.Get("/api/content/vpk", s.listVPK)
@@ -123,9 +135,58 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Post("/api/schedules", s.saveSchedule)
 		r.Delete("/api/schedules/{id}", s.deleteSchedule)
 		r.Post("/api/schedules/{id}/run", s.runSchedule)
+		r.Get("/api/settings/github-token", s.githubTokenStatus)
+		r.Put("/api/settings/github-token", s.setGithubToken)
+		r.Delete("/api/settings/github-token", s.deleteGithubToken)
 	})
 	s.router = r
 	return s
+}
+
+func(s *Server)instanceResources(w http.ResponseWriter,r *http.Request){if s.resources==nil{writeError(w,503,"resources_unavailable","resource provider unavailable");return};instance,err:=s.store.Instance(r.Context(),chi.URLParam(r,"id"));if err!=nil||instance.ContainerID==""{writeError(w,404,"instance_not_running","instance container unavailable");return};stats,err:=s.resources.Stats(r.Context(),instance.ContainerID);if err!=nil{writeError(w,502,"stats_failed",err.Error());return};writeJSON(w,200,stats)}
+
+func(s *Server)updateInstance(w http.ResponseWriter,r *http.Request){instance,err:=s.store.Instance(r.Context(),chi.URLParam(r,"id"));if err!=nil{writeError(w,404,"instance_not_found",err.Error());return};var input struct{Name string `json:"name"`;GamePort int `json:"game_port"`;StartMap string `json:"start_map"`;GameMode string `json:"game_mode"`;Tickrate int `json:"tickrate"`;MaxPlayers int `json:"max_players"`;ExtraArgs string `json:"extra_args"`;RuntimeImage string `json:"runtime_image"`};if decodeJSON(w,r,&input)!=nil{return};if input.Name==""||input.GamePort<1024||input.GamePort>65535||input.StartMap==""||input.GameMode==""||input.Tickrate<30||input.Tickrate>128||input.MaxPlayers<1||input.MaxPlayers>32{writeError(w,422,"invalid_instance","invalid instance configuration");return};instance.Name,instance.GamePort,instance.StartMap,instance.GameMode,instance.Tickrate,instance.MaxPlayers,instance.ExtraArgs=input.Name,input.GamePort,input.StartMap,input.GameMode,input.Tickrate,input.MaxPlayers,input.ExtraArgs;if input.RuntimeImage!=""{instance.RuntimeImage=input.RuntimeImage};if err:=s.store.UpdateInstance(r.Context(),instance);err!=nil{writeError(w,409,"instance_conflict",err.Error());return};if instance.ContainerID!=""&&s.lifecycle!=nil&&s.jobs!=nil{job:=s.jobs.Start(context.WithoutCancel(r.Context()),instance.ID,"rebuild",func(ctx context.Context,_ jobs.Reporter)error{return s.lifecycle.Rebuild(ctx,instance.ID)});writeJSON(w,202,job);return};writeJSON(w,200,instance)}
+func(s *Server)deleteInstance(w http.ResponseWriter,r *http.Request){if s.lifecycle==nil||s.jobs==nil{writeError(w,503,"operations_unavailable","lifecycle unavailable");return};var input struct{Confirm bool `json:"confirm"`;DeleteData bool `json:"delete_data"`};if decodeJSON(w,r,&input)!=nil{return};if !input.Confirm{writeError(w,428,"confirmation_required","instance deletion requires confirmation");return};id:=chi.URLParam(r,"id");job:=s.jobs.Start(context.WithoutCancel(r.Context()),id,"delete",func(ctx context.Context,_ jobs.Reporter)error{return s.lifecycle.Delete(ctx,id,input.DeleteData)});writeJSON(w,202,job)}
+
+func (s *Server) githubTokenStatus(w http.ResponseWriter, r *http.Request) {
+	if s.secrets == nil {
+		writeError(w, 503, "secrets_unavailable", "secret store unavailable")
+		return
+	}
+	_, found, err := s.secrets.Get(r.Context(), "github_token")
+	if err != nil {
+		writeError(w, 500, "secret_error", err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"configured": found})
+}
+func (s *Server) setGithubToken(w http.ResponseWriter, r *http.Request) {
+	if s.secrets == nil {
+		writeError(w, 503, "secrets_unavailable", "secret store unavailable")
+		return
+	}
+	var input struct {
+		Token string `json:"token"`
+	}
+	if decodeJSON(w, r, &input) != nil {
+		return
+	}
+	if err := s.secrets.Set(r.Context(), "github_token", input.Token); err != nil {
+		writeError(w, 422, "secret_error", err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"configured": true})
+}
+func (s *Server) deleteGithubToken(w http.ResponseWriter, r *http.Request) {
+	if s.secrets == nil {
+		writeError(w, 503, "secrets_unavailable", "secret store unavailable")
+		return
+	}
+	if err := s.secrets.Delete(r.Context(), "github_token"); err != nil {
+		writeError(w, 500, "secret_error", err.Error())
+		return
+	}
+	w.WriteHeader(204)
 }
 
 func (s *Server) listSchedules(w http.ResponseWriter, r *http.Request) {
@@ -253,14 +314,17 @@ func (s *Server) fetchRelease(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Repository   string `json:"repository"`
 		AssetPattern string `json:"asset_pattern"`
-		Token        string `json:"token"`
 	}
 	if decodeJSON(w, r, &input) != nil {
 		return
 	}
 	job := s.jobs.Start(context.WithoutCancel(r.Context()), "global", "release_fetch", func(ctx context.Context, reporter jobs.Reporter) error {
 		reporter.Progress("release", 10, "checking GitHub Release")
-		_, err := s.releases.FetchLatest(ctx, input.Repository, input.AssetPattern, input.Token, s.packages)
+		token := ""
+		if s.secrets != nil {
+			token, _, _ = s.secrets.Get(ctx, "github_token")
+		}
+		_, err := s.releases.FetchLatest(ctx, input.Repository, input.AssetPattern, token, s.packages)
 		return err
 	})
 	writeJSON(w, 202, job)
