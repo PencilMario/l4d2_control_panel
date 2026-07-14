@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/config"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
@@ -45,6 +46,11 @@ func main() {
 	engine := docker.NewEngine(dockerHost)
 	portChecker := ports.Checker{Configured: func() []int { return nil }, Listening: ports.IsListening}
 	life := lifecycle.New(db, engine, portChecker, cfg.DataRoot)
+	if unknown, reconcileErr := life.Reconcile(context.Background()); reconcileErr != nil {
+		log.Printf("container reconciliation deferred: %v", reconcileErr)
+	} else if len(unknown) > 0 {
+		log.Printf("found %d unclaimed managed containers", len(unknown))
+	}
 	jobManager := jobs.NewPersistentManager(db)
 	api := httpapi.New(db, sessions, httpapi.WithOperations(life, jobManager))
 	mux := http.NewServeMux()

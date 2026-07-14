@@ -12,6 +12,7 @@ import (
 type fakeEngine struct {
 	created, started, stopped bool
 	execOperation             string
+	containers                []docker.Container
 }
 
 func (f *fakeEngine) Create(context.Context, docker.ContainerSpec) (string, error) {
@@ -24,6 +25,9 @@ func (f *fakeEngine) RunSupervisor(_ context.Context, _ string, op string) error
 	return nil
 }
 func (f *fakeEngine) Stop(context.Context, string, int) error { f.stopped = true; return nil }
+func (f *fakeEngine) ListManaged(context.Context) ([]docker.Container, error) {
+	return f.containers, nil
+}
 
 type freePorts struct{}
 
@@ -62,5 +66,28 @@ func TestStopUsesSupervisorBeforeDocker(t *testing.T) {
 	got, _ := db.Instance(context.Background(), "abc")
 	if engine.execOperation != "stop" || !engine.stopped || got.ActualState != domain.StateStopped {
 		t.Fatalf("engine=%#v instance=%#v", engine, got)
+	}
+}
+
+func TestReconcileMarksMissingAndReturnsUnknownContainers(t *testing.T) {
+	root := t.TempDir()
+	db, _ := store.Open(filepath.Join(root, "panel.db"))
+	defer db.Close()
+	missing := domain.Instance{ID: "missing", NodeID: "local", Name: "missing", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}
+	known := missing
+	known.ID = "known"
+	known.Name = "known"
+	known.GamePort = 27016
+	_ = db.CreateInstance(context.Background(), missing)
+	_ = db.CreateInstance(context.Background(), known)
+	engine := &fakeEngine{containers: []docker.Container{{ID: "known-container", State: "running", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "known"}}, {ID: "unknown-container", State: "running", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "unknown"}}}}
+	unknown, err := New(db, engine, freePorts{}, root).Reconcile(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotMissing, _ := db.Instance(context.Background(), "missing")
+	gotKnown, _ := db.Instance(context.Background(), "known")
+	if gotMissing.ActualState != domain.StateOrphaned || gotKnown.ContainerID != "known-container" || gotKnown.ActualState != domain.StateRunning || len(unknown) != 1 || unknown[0].ID != "unknown-container" {
+		t.Fatalf("missing=%#v known=%#v unknown=%#v", gotMissing, gotKnown, unknown)
 	}
 }

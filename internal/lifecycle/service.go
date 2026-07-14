@@ -11,6 +11,7 @@ import (
 
 type Repository interface {
 	Instance(context.Context, string) (domain.Instance, error)
+	Instances(context.Context) ([]domain.Instance, error)
 	UpdateInstance(context.Context, domain.Instance) error
 }
 type Engine interface {
@@ -18,7 +19,51 @@ type Engine interface {
 	Start(context.Context, string) error
 	RunSupervisor(context.Context, string, string) error
 	Stop(context.Context, string, int) error
+	ListManaged(context.Context) ([]docker.Container, error)
 }
+
+func (s *Service) Reconcile(ctx context.Context) ([]docker.Container, error) {
+	containers, err := s.engine.ListManaged(ctx)
+	if err != nil {
+		return nil, err
+	}
+	instances, err := s.repo.Instances(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]docker.Container, len(containers))
+	for _, container := range containers {
+		byID[container.InstanceID()] = container
+	}
+	known := make(map[string]bool, len(instances))
+	for _, instance := range instances {
+		known[instance.ID] = true
+		if container, ok := byID[instance.ID]; ok {
+			instance.ContainerID = container.ID
+			if container.State == "running" {
+				instance.ActualState = domain.StateRunning
+			} else {
+				instance.ActualState = domain.StateStopped
+			}
+			if err := s.repo.UpdateInstance(ctx, instance); err != nil {
+				return nil, err
+			}
+		} else if instance.ActualState == domain.StateRunning || instance.DesiredState == domain.StateRunning {
+			instance.ActualState = domain.StateOrphaned
+			if err := s.repo.UpdateInstance(ctx, instance); err != nil {
+				return nil, err
+			}
+		}
+	}
+	unknown := make([]docker.Container, 0)
+	for _, container := range containers {
+		if !known[container.InstanceID()] {
+			unknown = append(unknown, container)
+		}
+	}
+	return unknown, nil
+}
+
 type PortChecker interface{ Available(int) error }
 type Service struct {
 	repo     Repository
