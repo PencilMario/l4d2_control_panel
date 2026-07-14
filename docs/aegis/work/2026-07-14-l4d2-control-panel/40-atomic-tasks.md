@@ -6,7 +6,7 @@
 - [x] Safe content and update pipelines
 - [x] Console, A2S, players, scheduler and audit
 - [x] React administration interface
-- [ ] Runtime images, deployment and full verification (remote verification active)
+- [ ] Runtime images, deployment and full verification (partial: image pull blocked)
 
 Next: write failing authentication and HTTP contract tests.
 
@@ -23,3 +23,5 @@ Operations evidence: `go test -count=1 ./internal/players ./internal/scheduler` 
 Frontend evidence: `npm test -- --run` passed 2 component tests and `npm run build` produced the production bundle. The tested main journey covers operational visibility and stop confirmation; live API hydration remains deployment integration. Drift check: continue; no destructive shortcut added.
 
 Local release evidence: `go test ./...` and `go vet ./...` passed; frontend tests/build passed; `docker compose --env-file .env.example config --quiet` passed. Next: isolated remote Docker image build on `sirphomesv`. Drift check: continue; remote actions are build-only and do not start services.
+
+Remote evidence: Linux Docker 29.6.1 and Compose 5.2.0 detected; Compose config passed. Passwordless sudo reached the daemon, but the configured `docker.1panel.live` mirror returned HTTP 403 for `golang`, `node`, and `alpine`, so image compilation remains unverified. Temporary source was removed. Drift decision: needs-verification; do not claim full deployment or design acceptance.

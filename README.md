@@ -23,6 +23,8 @@ docker compose config
 docker compose up -d --build
 ```
 
+If Docker Hub is unavailable, build official stages through Public ECR without changing the daemon: `docker compose build --build-arg OFFICIAL_REGISTRY=public.ecr.aws/docker panel`.
+
 The browser endpoint binds to loopback by default for a reverse proxy. Only the socket proxy mounts `/var/run/docker.sock`; the Panel reaches its restricted HTTP API over an internal control network. Game containers created by the lifecycle adapter use host networking and persistent instance directories.
 
 ## Runtime integration smoke checklist

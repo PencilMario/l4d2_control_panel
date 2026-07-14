@@ -1,4 +1,5 @@
-FROM cm2network/steamcmd:root
+ARG STEAMCMD_IMAGE=cm2network/steamcmd:root
+FROM ${STEAMCMD_IMAGE}
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends python3 util-linux lib32gcc-s1 && rm -rf /var/lib/apt/lists/* && useradd -m -u 10001 steam
 COPY supervisor.py /usr/local/lib/l4d2-supervisor.py
