@@ -20,6 +20,7 @@ The panel stores data below `L4D2_PANEL_DATA_ROOT` (default `/srv/l4d2-panel`) a
 cp .env.example .env
 # edit .env and use a long random administrator password
 docker compose config
+docker compose --profile images build runtime-image
 docker compose up -d --build
 ```
 

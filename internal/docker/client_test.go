@@ -125,6 +125,20 @@ func TestStatsCalculatesCPUAndMemory(t *testing.T) {
 	}
 }
 
+func TestPingReadsDockerInfo(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1.44/info" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ServerVersion": "29.0", "ContainersRunning": 3})
+	}))
+	defer server.Close()
+	info, err := NewEngine(server.URL).Info(context.Background())
+	if err != nil || info.ServerVersion != "29.0" || info.ContainersRunning != 3 {
+		t.Fatalf("info=%#v err=%v", info, err)
+	}
+}
+
 func TestEngineUsesOnlyFixedLifecycleEndpoints(t *testing.T) {
 	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

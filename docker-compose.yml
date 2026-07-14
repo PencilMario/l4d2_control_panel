@@ -6,8 +6,16 @@ services:
     volumes:
       - ${L4D2_PANEL_DATA_ROOT:-/srv/l4d2-panel}:/srv/l4d2-panel
     restart: "no"
+  runtime-image:
+    image: l4d2-server-runtime:latest
+    build:
+      context: runtime
+      args:
+        STEAMCMD_IMAGE: ${STEAMCMD_IMAGE:-cm2network/steamcmd:root}
+    entrypoint: ["/bin/true"]
+    profiles: [images]
   socket-proxy:
-    image: tecnativa/docker-socket-proxy:0.3.0
+    image: ${SOCKET_PROXY_IMAGE:-tecnativa/docker-socket-proxy:0.3.0}
     restart: unless-stopped
     environment:
       CONTAINERS: 1
@@ -25,7 +33,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks: [control]
-    ports: ["127.0.0.1:23750:2375"]
+    ports: ["127.0.0.1:${L4D2_PANEL_DOCKER_PROXY_PORT:-23750}:2375"]
     read_only: true
   panel:
     build: .
@@ -36,14 +44,19 @@ services:
       socket-proxy:
         condition: service_started
     environment:
-      L4D2_PANEL_LISTEN: :8080
+      L4D2_PANEL_LISTEN: :${L4D2_PANEL_HTTP_PORT:-8080}
       L4D2_PANEL_DATA_ROOT: /srv/l4d2-panel
       L4D2_PANEL_ADMIN_PASSWORD: ${L4D2_PANEL_ADMIN_PASSWORD:?set admin password}
-      DOCKER_HOST: tcp://127.0.0.1:23750
+      DOCKER_HOST: tcp://127.0.0.1:${L4D2_PANEL_DOCKER_PROXY_PORT:-23750}
     volumes:
       - ${L4D2_PANEL_DATA_ROOT:-/srv/l4d2-panel}:/srv/l4d2-panel
     network_mode: host
     security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:${L4D2_PANEL_HTTP_PORT:-8080}/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 networks:
   control:
     internal: true
