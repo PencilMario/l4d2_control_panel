@@ -26,5 +26,10 @@ CREATE TABLE IF NOT EXISTS audit_events (
  id TEXT PRIMARY KEY, action TEXT NOT NULL, target TEXT NOT NULL, result TEXT NOT NULL,
  metadata TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS scheduled_tasks (
+ id TEXT PRIMARY KEY, instance_id TEXT NOT NULL, type TEXT NOT NULL, cron TEXT NOT NULL,
+ timezone TEXT NOT NULL, online_policy TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}',
+ enabled INTEGER NOT NULL, last_run TEXT NOT NULL DEFAULT '', next_run TEXT NOT NULL DEFAULT ''
+);
 INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, CURRENT_TIMESTAMP);
 `

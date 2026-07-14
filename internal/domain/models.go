@@ -32,3 +32,8 @@ type AuditRecord struct {
 	ID, Action, Target, Result, Metadata string
 	CreatedAt                            time.Time
 }
+type ScheduledTask struct {
+	ID, InstanceID, Type, Cron, Timezone, OnlinePolicy, Payload string
+	Enabled                                                     bool
+	LastRun, NextRun                                            time.Time
+}

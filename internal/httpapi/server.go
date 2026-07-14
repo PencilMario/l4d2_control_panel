@@ -18,6 +18,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/players"
 	"github.com/not0721here/l4d2-control-panel/internal/releases"
+	"github.com/not0721here/l4d2-control-panel/internal/scheduler"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 	"github.com/not0721here/l4d2-control-panel/internal/updates"
 )
@@ -39,6 +40,7 @@ type Server struct {
 	updateCoordinator *updates.Coordinator
 	releases          releases.Client
 	gameUpdates       *updates.GameCoordinator
+	schedules         *scheduler.Service
 }
 
 type Lifecycle interface {
@@ -78,6 +80,9 @@ func WithContent(uploads *content.UploadManager, private *content.PrivateManager
 func WithGameUpdates(coordinator *updates.GameCoordinator) Option {
 	return func(s *Server) { s.gameUpdates = coordinator }
 }
+func WithScheduler(service *scheduler.Service) Option {
+	return func(s *Server) { s.schedules = service }
+}
 
 func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 	s := &Server{store: db, auth: a}
@@ -114,9 +119,79 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Post("/api/packages/github", s.fetchRelease)
 		r.Post("/api/instances/{id}/updates", s.updatePackage)
 		r.Post("/api/instances/{id}/game-update", s.updateGame)
+		r.Get("/api/schedules", s.listSchedules)
+		r.Post("/api/schedules", s.saveSchedule)
+		r.Delete("/api/schedules/{id}", s.deleteSchedule)
+		r.Post("/api/schedules/{id}/run", s.runSchedule)
 	})
 	s.router = r
 	return s
+}
+
+func (s *Server) listSchedules(w http.ResponseWriter, r *http.Request) {
+	if s.schedules == nil {
+		writeError(w, 503, "scheduler_unavailable", "scheduler unavailable")
+		return
+	}
+	tasks, err := s.schedules.List(r.Context())
+	if err != nil {
+		writeError(w, 500, "schedule_error", err.Error())
+		return
+	}
+	writeJSON(w, 200, tasks)
+}
+func (s *Server) saveSchedule(w http.ResponseWriter, r *http.Request) {
+	if s.schedules == nil {
+		writeError(w, 503, "scheduler_unavailable", "scheduler unavailable")
+		return
+	}
+	var task domain.ScheduledTask
+	if decodeJSON(w, r, &task) != nil {
+		return
+	}
+	if task.ID == "" {
+		task.ID = uuid.NewString()
+	}
+	if task.Timezone == "" {
+		task.Timezone = "UTC"
+	}
+	if task.OnlinePolicy == "" {
+		task.OnlinePolicy = "skip"
+	}
+	if task.Payload == "" {
+		task.Payload = "{}"
+	}
+	if !json.Valid([]byte(task.Payload)) {
+		writeError(w, 422, "invalid_payload", "payload must be JSON")
+		return
+	}
+	if err := s.schedules.Save(r.Context(), task); err != nil {
+		writeError(w, 422, "schedule_invalid", err.Error())
+		return
+	}
+	writeJSON(w, 200, task)
+}
+func (s *Server) deleteSchedule(w http.ResponseWriter, r *http.Request) {
+	if s.schedules == nil {
+		writeError(w, 503, "scheduler_unavailable", "scheduler unavailable")
+		return
+	}
+	if err := s.schedules.Delete(r.Context(), chi.URLParam(r, "id")); err != nil {
+		writeError(w, 500, "schedule_error", err.Error())
+		return
+	}
+	w.WriteHeader(204)
+}
+func (s *Server) runSchedule(w http.ResponseWriter, r *http.Request) {
+	if s.schedules == nil {
+		writeError(w, 503, "scheduler_unavailable", "scheduler unavailable")
+		return
+	}
+	if err := s.schedules.RunNow(context.WithoutCancel(r.Context()), chi.URLParam(r, "id")); err != nil {
+		writeError(w, 422, "schedule_error", err.Error())
+		return
+	}
+	writeJSON(w, 202, map[string]bool{"queued": true})
 }
 
 func (s *Server) updateGame(w http.ResponseWriter, r *http.Request) {

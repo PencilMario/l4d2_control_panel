@@ -83,3 +83,23 @@ func TestAuditEventsPersist(t *testing.T) {
 		t.Fatalf("events=%#v err=%v", events, err)
 	}
 }
+
+func TestScheduledTasksPersist(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	task := domain.ScheduledTask{ID: "task-1", InstanceID: "abc", Type: "game_update", Cron: "0 4 * * *", Timezone: "Asia/Hong_Kong", OnlinePolicy: "skip", Payload: `{}`, Enabled: true}
+	if err := s.SaveScheduledTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := s.ScheduledTasks(ctx)
+	if err != nil || len(tasks) != 1 || tasks[0].Timezone != "Asia/Hong_Kong" {
+		t.Fatalf("tasks=%#v err=%v", tasks, err)
+	}
+	if err := s.DeleteScheduledTask(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+}

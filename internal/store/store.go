@@ -172,3 +172,40 @@ func (s *Store) AuditEvents(ctx context.Context, limit int) ([]domain.AuditRecor
 	}
 	return result, rows.Err()
 }
+func (s *Store) SaveScheduledTask(ctx context.Context, v domain.ScheduledTask) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO scheduled_tasks(id,instance_id,type,cron,timezone,online_policy,payload,enabled,last_run,next_run) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET instance_id=excluded.instance_id,type=excluded.type,cron=excluded.cron,timezone=excluded.timezone,online_policy=excluded.online_policy,payload=excluded.payload,enabled=excluded.enabled,last_run=excluded.last_run,next_run=excluded.next_run`, v.ID, v.InstanceID, v.Type, v.Cron, v.Timezone, v.OnlinePolicy, v.Payload, v.Enabled, formatOptionalTime(v.LastRun), formatOptionalTime(v.NextRun))
+	return err
+}
+func (s *Store) ScheduledTasks(ctx context.Context) ([]domain.ScheduledTask, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,instance_id,type,cron,timezone,online_policy,payload,enabled,last_run,next_run FROM scheduled_tasks ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []domain.ScheduledTask{}
+	for rows.Next() {
+		var v domain.ScheduledTask
+		var last, next string
+		if err := rows.Scan(&v.ID, &v.InstanceID, &v.Type, &v.Cron, &v.Timezone, &v.OnlinePolicy, &v.Payload, &v.Enabled, &last, &next); err != nil {
+			return nil, err
+		}
+		v.LastRun = parseOptionalTime(last)
+		v.NextRun = parseOptionalTime(next)
+		result = append(result, v)
+	}
+	return result, rows.Err()
+}
+func (s *Store) DeleteScheduledTask(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM scheduled_tasks WHERE id=?`, id)
+	return err
+}
+func formatOptionalTime(v time.Time) string {
+	if v.IsZero() {
+		return ""
+	}
+	return v.UTC().Format(time.RFC3339Nano)
+}
+func parseOptionalTime(v string) time.Time {
+	parsed, _ := time.Parse(time.RFC3339Nano, v)
+	return parsed
+}
