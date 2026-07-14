@@ -15,7 +15,7 @@
 
 ## Active slice
 
-Deploy the anonymous first-install fix and expanded content/Job UI to the isolated `sirphomesv` smoke stack. Start the installed SRCDS through the Panel and verify A2S, PTY, Job completion and restart persistence. Then exercise the content/scheduler/audit paths and continue the fault-recovery audit.
+Commit and deploy the A2S challenge/GameHost fix to the isolated `sirphomesv` smoke stack. Reconcile the already-running SRCDS without restarting it, verify A2S/player queries and PTY, then exercise restart persistence and the content/scheduler/audit paths.
 
 ## Completed in the latest slice
 
@@ -28,6 +28,8 @@ Deploy the anonymous first-install fix and expanded content/Job UI to the isolat
 - Replaced the incorrect licensed-Steam assumption with a tested anonymous Windows-to-Linux first-install bootstrap.
 - Added the persistent Job/SSE page plus VPK download/rename/delete and private file tree/edit/download/history/delete controls.
 - Bound both host-network control services to loopback and refreshed deployment/TLS documentation.
+- Traced the remote A2S failure to two independent runtime contracts: SRCDS answers the host LAN address but not loopback, and its INFO response first returns a `0x41` challenge before `0x49` data.
+- Added A2S INFO challenge handling and made the SRCDS-reachable game host a required configuration value shared by health and player queries; the old loopback query fallback is retired.
 
 ## Blocked-on
 
@@ -35,9 +37,9 @@ Deploy the anonymous first-install fix and expanded content/Job UI to the isolat
 
 ## Next
 
-1. Commit this verified slice.
-2. Rebuild/recreate the isolated remote Panel and runtime images from the commit.
-3. Start the anonymously installed game through the Panel and verify SRCDS/A2S/PTY/Job state.
+1. Complete the A2S slice review and commit it.
+2. Rebuild/recreate the isolated remote Panel from the commit.
+3. Reconcile the anonymously installed, already-running game and verify SRCDS/A2S/PTY/Job state.
 4. Smoke VPK/private/package/scheduler/audit/SSE paths.
 5. Continue requirement-by-requirement gap closure and browser E2E work.
 
@@ -45,5 +47,5 @@ Deploy the anonymous first-install fix and expanded content/Job UI to the isolat
 
 - Scope: continues to implement the approved single-host, single-admin design.
 - Compatibility: host networking, fixed Supervisor Exec operations and content precedence are unchanged.
-- New owner/fallback: none; private-path validation remains owned by `PrivateManager`, and Docker authority remains behind the restricted proxy.
-- Decision: `continue`; the licensed-credential assumption was retired after direct dual-platform anonymous-install evidence.
+- New owner/fallback: `Config.GameHost` is the sole A2S target owner; the implicit loopback fallback has been removed. Private-path validation remains owned by `PrivateManager`, and Docker authority remains behind the restricted proxy.
+- Decision: `continue`; the licensed-credential assumption and loopback A2S fallback were retired after direct runtime evidence.

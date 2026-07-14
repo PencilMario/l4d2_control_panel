@@ -8,6 +8,7 @@ import (
 
 type Config struct {
 	ListenAddress string
+	GameHost      string
 	DataRoot      string
 	PanelDir      string
 	PackagesDir   string
@@ -28,7 +29,11 @@ func Load() (Config, error) {
 	if listen == "" {
 		listen = ":8080"
 	}
-	c := Config{ListenAddress: listen, DataRoot: filepath.Clean(root)}
+	gameHost := os.Getenv("L4D2_PANEL_GAME_HOST")
+	if gameHost == "" {
+		return Config{}, errors.New("L4D2_PANEL_GAME_HOST is required and must be an address SRCDS answers on")
+	}
+	c := Config{ListenAddress: listen, GameHost: gameHost, DataRoot: filepath.Clean(root)}
 	c.PanelDir = filepath.Join(c.DataRoot, "panel")
 	c.PackagesDir = filepath.Join(c.DataRoot, "packages")
 	c.InstancesDir = filepath.Join(c.DataRoot, "instances")

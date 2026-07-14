@@ -15,6 +15,9 @@ func TestHostNetworkControlServicesBindLoopback(t *testing.T) {
 	if !strings.Contains(compose, "L4D2_PANEL_LISTEN: 127.0.0.1:${L4D2_PANEL_HTTP_PORT") {
 		t.Fatal("host-network Panel must bind loopback for the TLS reverse proxy")
 	}
+	if !strings.Contains(compose, "L4D2_PANEL_GAME_HOST: ${L4D2_PANEL_GAME_HOST:?") {
+		t.Fatal("Compose must require the SRCDS-reachable host address")
+	}
 	if !strings.Contains(compose, "LISTEN_ADDR: 127.0.0.1:${L4D2_PANEL_DOCKER_PROXY_PORT") {
 		t.Fatal("Docker socket proxy must bind loopback only")
 	}

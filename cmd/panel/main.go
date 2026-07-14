@@ -69,11 +69,7 @@ func main() {
 	}
 	engine := docker.NewEngine(dockerHost, docker.WithDownloadProxy(os.Getenv("L4D2_PANEL_DOWNLOAD_PROXY")), docker.WithSteamCredentials(steamCredentials))
 	portChecker := ports.Checker{Configured: func() []int { return nil }, Listening: ports.IsListening}
-	gameHost := os.Getenv("L4D2_PANEL_GAME_HOST")
-	if gameHost == "" {
-		gameHost = "127.0.0.1"
-	}
-	healthChecker := health.Checker{Host: gameHost, Query: a2s.Client{}, Probe: engine}
+	healthChecker := health.Checker{Host: cfg.GameHost, Query: a2s.Client{}, Probe: engine}
 	life := lifecycle.New(db, engine, portChecker, cfg.DataRoot, lifecycle.WithHealth(healthChecker), lifecycle.WithSpace(disk.Checker{}, 12<<30))
 	if unknown, reconcileErr := life.Reconcile(context.Background()); reconcileErr != nil {
 		log.Printf("container reconciliation deferred: %v", reconcileErr)
@@ -81,7 +77,7 @@ func main() {
 		log.Printf("found %d unclaimed managed containers", len(unknown))
 	}
 	jobManager := jobs.NewPersistentManager(db)
-	playerService := players.NewService(db, a2s.Client{}, engine, gameHost)
+	playerService := players.NewService(db, a2s.Client{}, engine, cfg.GameHost)
 	uploadManager, err := content.NewUploadManager(cfg.DataRoot)
 	if err != nil {
 		log.Fatal(err)

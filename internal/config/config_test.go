@@ -9,6 +9,7 @@ func TestLoadCreatesPersistentLayout(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("L4D2_PANEL_DATA_ROOT", filepath.Join(root, "panel-data"))
 	t.Setenv("L4D2_PANEL_LISTEN", "")
+	t.Setenv("L4D2_PANEL_GAME_HOST", "192.0.2.10")
 
 	cfg, err := Load()
 	if err != nil {
@@ -21,6 +22,14 @@ func TestLoadCreatesPersistentLayout(t *testing.T) {
 		if !isDirectory(path) {
 			t.Fatalf("expected directory %s", path)
 		}
+	}
+}
+
+func TestLoadRequiresGameHost(t *testing.T) {
+	t.Setenv("L4D2_PANEL_DATA_ROOT", t.TempDir())
+	t.Setenv("L4D2_PANEL_GAME_HOST", "")
+	if _, err := Load(); err == nil {
+		t.Fatal("missing game host accepted")
 	}
 }
 

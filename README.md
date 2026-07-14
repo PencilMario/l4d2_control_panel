@@ -15,7 +15,8 @@ The Panel never mounts `/var/run/docker.sock`. A repository-owned socket proxy e
 
 ```sh
 cp .env.example .env
-# Set a long, random L4D2_PANEL_ADMIN_PASSWORD and review the paths/ports.
+# Set a long random administrator password, and set L4D2_PANEL_GAME_HOST to
+# the LAN/Tailscale address on which SRCDS answers A2S (not 127.0.0.1).
 docker compose --env-file .env config --quiet
 docker compose --env-file .env --profile images build runtime-image
 docker compose --env-file .env up -d --build
@@ -25,6 +26,8 @@ Both control services use host networking but bind loopback only:
 
 - Panel: `127.0.0.1:${L4D2_PANEL_HTTP_PORT:-8080}`
 - restricted Docker proxy: `127.0.0.1:${L4D2_PANEL_DOCKER_PROXY_PORT:-23750}`
+
+`L4D2_PANEL_GAME_HOST` is intentionally required. Some Source servers bind UDP on all interfaces but do not answer A2S sent to loopback; the Panel uses this address for health and player queries.
 
 Put HTTPS in front of the Panel. For example, Caddy can proxy WebSocket and SSE traffic without extra directives:
 

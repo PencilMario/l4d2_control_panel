@@ -51,6 +51,16 @@ func (c Client) Info(address string) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
+	if raw[4] == 0x41 {
+		if len(raw) < 9 {
+			return Info{}, errors.New("truncated A2S_INFO challenge")
+		}
+		request = append(request, raw[5:9]...)
+		raw, err = c.exchange(address, request)
+		if err != nil {
+			return Info{}, err
+		}
+	}
 	if raw[4] != 0x49 || len(raw) < 6 {
 		return Info{}, errors.New("unexpected A2S_INFO response")
 	}
