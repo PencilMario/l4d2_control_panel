@@ -6,7 +6,7 @@
 - [x] Safe content and update pipelines
 - [x] Console, A2S, players, scheduler and audit
 - [x] React administration interface
-- [ ] Runtime images, deployment and full verification (partial: image pull blocked)
+- [ ] Runtime images, deployment and full verification (partial: core images verified; full runtime smoke pending)
 
 Next: write failing authentication and HTTP contract tests.
 
@@ -25,3 +25,5 @@ Frontend evidence: `npm test -- --run` passed 2 component tests and `npm run bui
 Local release evidence: `go test ./...` and `go vet ./...` passed; frontend tests/build passed; `docker compose --env-file .env.example config --quiet` passed. Next: isolated remote Docker image build on `sirphomesv`. Drift check: continue; remote actions are build-only and do not start services.
 
 Remote evidence: Linux Docker 29.6.1 and Compose 5.2.0 detected; Compose config passed. Passwordless sudo reached the daemon, but the configured `docker.1panel.live` mirror returned HTTP 403 for `golang`, `node`, and `alpine`, so image compilation remains unverified. Temporary source was removed. Drift decision: needs-verification; do not claim full deployment or design acceptance.
+
+Registry workaround evidence: Public ECR plus build-only HTTP(S) proxy arguments built the complete Panel image without daemon restart. `dockerproxy.net` supplied the SteamCMD base, and the runtime image built after the duplicate-user defect was reproduced, regression-tested, and fixed. Existing host containers were not restarted. Drift decision: needs-verification because SRCDS itself and the full browser-to-container journey were not launched.
