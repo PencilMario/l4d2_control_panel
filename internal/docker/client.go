@@ -11,12 +11,14 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/not0721here/l4d2-control-panel/internal/domain"
 )
 
 const apiVersion = "/v1.44"
@@ -45,8 +47,37 @@ type hostConfig struct {
 }
 type createRequest struct {
 	Image      string            `json:"Image"`
+	Cmd        []string          `json:"Cmd,omitempty"`
+	User       string            `json:"User,omitempty"`
 	Labels     map[string]string `json:"Labels"`
 	HostConfig hostConfig        `json:"HostConfig"`
+}
+
+func (e *Engine) UpdateGame(ctx context.Context, dataRoot string, instance domain.Instance) error {
+	body := createRequest{Image: instance.RuntimeImage, Cmd: []string{"steamcmd", "+force_install_dir", "/opt/l4d2/game", "+login", "anonymous", "+app_update", "222860", "validate", "+quit"}, User: "steam", Labels: map[string]string{ManagedLabel: "true", InstanceLabel: instance.ID, RoleLabel: "maintenance"}, HostConfig: hostConfig{Binds: []string{filepath.Join(dataRoot, "instances", instance.ID, "game") + ":/opt/l4d2/game"}, NetworkMode: "bridge", SecurityOpt: []string{"no-new-privileges"}}}
+	var created struct {
+		ID string `json:"Id"`
+	}
+	name := "l4d2-update-" + instance.ID + "-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
+	if err := e.do(ctx, http.MethodPost, "/containers/create", url.Values{"name": []string{name}}, body, &created); err != nil {
+		return err
+	}
+	defer func() {
+		_ = e.do(context.WithoutCancel(ctx), http.MethodDelete, "/containers/"+url.PathEscape(created.ID), url.Values{"force": []string{"true"}, "v": []string{"false"}}, nil, nil)
+	}()
+	if err := e.Start(ctx, created.ID); err != nil {
+		return err
+	}
+	var result struct {
+		StatusCode int `json:"StatusCode"`
+	}
+	if err := e.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(created.ID)+"/wait", url.Values{"condition": []string{"not-running"}}, nil, &result); err != nil {
+		return err
+	}
+	if result.StatusCode != 0 {
+		return fmt.Errorf("steamcmd exited with code %d", result.StatusCode)
+	}
+	return nil
 }
 
 func NewEngine(host string) *Engine {

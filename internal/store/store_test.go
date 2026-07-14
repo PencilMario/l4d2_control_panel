@@ -66,3 +66,20 @@ func TestInstanceCRUD(t *testing.T) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
+
+func TestAuditEventsPersist(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	event := domain.AuditRecord{ID: "audit-1", Action: "POST", Target: "/api/instances", Result: "201", Metadata: `{"remote":"127.0.0.1"}`}
+	if err := s.RecordAudit(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	events, err := s.AuditEvents(ctx, 10)
+	if err != nil || len(events) != 1 || events[0].Action != "POST" {
+		t.Fatalf("events=%#v err=%v", events, err)
+	}
+}

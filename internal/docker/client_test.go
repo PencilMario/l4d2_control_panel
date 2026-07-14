@@ -81,6 +81,36 @@ func TestPlayerCommandRejectsArbitraryConsoleInput(t *testing.T) {
 	}
 }
 
+func TestGameUpdateUsesFixedSteamCMDMaintenanceContainer(t *testing.T) {
+	var created createRequest
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/containers/create"):
+			if err := json.NewDecoder(r.Body).Decode(&created); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"Id": "maintenance"})
+		case strings.HasSuffix(r.URL.Path, "/wait"):
+			_ = json.NewEncoder(w).Encode(map[string]int{"StatusCode": 0})
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+	instance := domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"}
+	if err := NewEngine(server.URL).UpdateGame(context.Background(), t.TempDir(), instance); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(created.Cmd, " ") != "steamcmd +force_install_dir /opt/l4d2/game +login anonymous +app_update 222860 validate +quit" || created.HostConfig.NetworkMode != "bridge" || created.Labels[RoleLabel] != "maintenance" {
+		t.Fatalf("request=%#v", created)
+	}
+	if len(paths) != 4 {
+		t.Fatalf("paths=%v", paths)
+	}
+}
+
 func TestEngineUsesOnlyFixedLifecycleEndpoints(t *testing.T) {
 	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

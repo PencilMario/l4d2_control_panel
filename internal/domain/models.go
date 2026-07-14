@@ -28,3 +28,7 @@ type JobRecord struct {
 	Percent                                             int
 	CreatedAt, UpdatedAt                                time.Time
 }
+type AuditRecord struct {
+	ID, Action, Target, Result, Metadata string
+	CreatedAt                            time.Time
+}

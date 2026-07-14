@@ -144,3 +144,31 @@ func (s *Store) LoadJob(id string) (domain.JobRecord, bool, error) {
 	v.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
 	return v, true, nil
 }
+func (s *Store) RecordAudit(ctx context.Context, v domain.AuditRecord) error {
+	if v.CreatedAt.IsZero() {
+		v.CreatedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO audit_events(id,action,target,result,metadata,created_at) VALUES(?,?,?,?,?,?)`, v.ID, v.Action, v.Target, v.Result, v.Metadata, v.CreatedAt.Format(time.RFC3339Nano))
+	return err
+}
+func (s *Store) AuditEvents(ctx context.Context, limit int) ([]domain.AuditRecord, error) {
+	if limit < 1 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,action,target,result,metadata,created_at FROM audit_events ORDER BY created_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []domain.AuditRecord{}
+	for rows.Next() {
+		var v domain.AuditRecord
+		var created string
+		if err := rows.Scan(&v.ID, &v.Action, &v.Target, &v.Result, &v.Metadata, &created); err != nil {
+			return nil, err
+		}
+		v.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		result = append(result, v)
+	}
+	return result, rows.Err()
+}

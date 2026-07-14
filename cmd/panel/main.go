@@ -5,6 +5,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/a2s"
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/config"
+	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/httpapi"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
@@ -12,6 +13,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/players"
 	"github.com/not0721here/l4d2-control-panel/internal/ports"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
+	"github.com/not0721here/l4d2-control-panel/internal/updates"
 	"log"
 	"net/http"
 	"os"
@@ -59,7 +61,19 @@ func main() {
 		gameHost = "127.0.0.1"
 	}
 	playerService := players.NewService(db, a2s.Client{}, engine, gameHost)
-	api := httpapi.New(db, sessions, httpapi.WithOperations(life, jobManager), httpapi.WithConsole(engine), httpapi.WithPlayers(playerService))
+	uploadManager, err := content.NewUploadManager(cfg.DataRoot)
+	if err != nil {
+		log.Fatal(err)
+	}
+	privateManager := content.NewPrivateManager(cfg.DataRoot, 1<<20)
+	packageManager, err := content.NewPackageManager(cfg.DataRoot)
+	if err != nil {
+		log.Fatal(err)
+	}
+	updatePipeline := updates.New(cfg.DataRoot)
+	updateCoordinator := &updates.Coordinator{Lifecycle: life, Deployer: updatePipeline}
+	gameCoordinator := &updates.GameCoordinator{Root: cfg.DataRoot, Instances: db, Lifecycle: life, Updater: engine, Private: privateManager}
+	api := httpapi.New(db, sessions, httpapi.WithOperations(life, jobManager), httpapi.WithConsole(engine), httpapi.WithPlayers(playerService), httpapi.WithContent(uploadManager, privateManager, packageManager, updatePipeline, updateCoordinator), httpapi.WithGameUpdates(gameCoordinator))
 	mux := http.NewServeMux()
 	mux.Handle("/api/", api.Handler())
 	web := os.Getenv("L4D2_PANEL_WEB_ROOT")

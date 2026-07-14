@@ -22,5 +22,9 @@ CREATE TABLE IF NOT EXISTS jobs (
  stage TEXT NOT NULL DEFAULT '', percent INTEGER NOT NULL DEFAULT 0, message TEXT NOT NULL DEFAULT '',
  error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS audit_events (
+ id TEXT PRIMARY KEY, action TEXT NOT NULL, target TEXT NOT NULL, result TEXT NOT NULL,
+ metadata TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
+);
 INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, CURRENT_TIMESTAMP);
 `

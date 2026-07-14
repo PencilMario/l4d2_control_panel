@@ -13,22 +13,32 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
+	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/players"
+	"github.com/not0721here/l4d2-control-panel/internal/releases"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
+	"github.com/not0721here/l4d2-control-panel/internal/updates"
 )
 
 const sessionCookie = "l4d2_panel_session"
 
 type Server struct {
-	store     *store.Store
-	auth      *auth.Service
-	router    http.Handler
-	lifecycle Lifecycle
-	jobs      *jobs.Manager
-	console   ConsoleAttacher
-	players   PlayerService
+	store             *store.Store
+	auth              *auth.Service
+	router            http.Handler
+	lifecycle         Lifecycle
+	jobs              *jobs.Manager
+	console           ConsoleAttacher
+	players           PlayerService
+	uploads           *content.UploadManager
+	private           *content.PrivateManager
+	updates           *updates.Pipeline
+	packages          *content.PackageManager
+	updateCoordinator *updates.Coordinator
+	releases          releases.Client
+	gameUpdates       *updates.GameCoordinator
 }
 
 type Lifecycle interface {
@@ -55,6 +65,19 @@ type PlayerService interface {
 }
 
 func WithPlayers(service PlayerService) Option { return func(s *Server) { s.players = service } }
+func WithContent(uploads *content.UploadManager, private *content.PrivateManager, packages *content.PackageManager, pipeline *updates.Pipeline, coordinator *updates.Coordinator) Option {
+	return func(s *Server) {
+		s.uploads = uploads
+		s.private = private
+		s.packages = packages
+		s.updates = pipeline
+		s.updateCoordinator = coordinator
+		s.releases = releases.Client{}
+	}
+}
+func WithGameUpdates(coordinator *updates.GameCoordinator) Option {
+	return func(s *Server) { s.gameUpdates = coordinator }
+}
 
 func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 	s := &Server{store: db, auth: a}
@@ -65,6 +88,7 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 	r.Post("/api/auth/login", s.login)
 	r.Group(func(r chi.Router) {
 		r.Use(s.requireAuth)
+		r.Use(s.auditMutations)
 		r.Post("/api/auth/logout", s.logout)
 		r.Get("/api/session", func(w http.ResponseWriter, _ *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]bool{"authenticated": true})
@@ -76,9 +100,276 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Get("/api/instances/{id}/console", s.consoleSocket)
 		r.Get("/api/instances/{id}/players", s.onlinePlayers)
 		r.Post("/api/instances/{id}/players/{userID}/actions", s.playerAction)
+		r.Get("/api/audit", s.auditEvents)
+		r.Get("/api/content/vpk", s.listVPK)
+		r.Post("/api/content/vpk/uploads", s.beginVPK)
+		r.Patch("/api/content/vpk/uploads/{id}", s.writeVPK)
+		r.Post("/api/content/vpk/uploads/{id}/complete", s.completeVPK)
+		r.Post("/api/content/vpk/{name}/rename", s.renameVPK)
+		r.Delete("/api/content/vpk/{name}", s.deleteVPK)
+		r.Put("/api/instances/{id}/private/*", s.savePrivate)
+		r.Post("/api/instances/{id}/private/apply", s.applyPrivate)
+		r.Get("/api/packages", s.listPackages)
+		r.Post("/api/packages/uploads", s.uploadPackage)
+		r.Post("/api/packages/github", s.fetchRelease)
+		r.Post("/api/instances/{id}/updates", s.updatePackage)
+		r.Post("/api/instances/{id}/game-update", s.updateGame)
 	})
 	s.router = r
 	return s
+}
+
+func (s *Server) updateGame(w http.ResponseWriter, r *http.Request) {
+	if s.gameUpdates == nil || s.jobs == nil {
+		writeError(w, 503, "updates_unavailable", "game update unavailable")
+		return
+	}
+	var input struct {
+		Confirm bool `json:"confirm"`
+	}
+	if decodeJSON(w, r, &input) != nil {
+		return
+	}
+	if !input.Confirm {
+		writeError(w, 428, "confirmation_required", "game update requires confirmation")
+		return
+	}
+	id := chi.URLParam(r, "id")
+	job := s.jobs.Start(context.WithoutCancel(r.Context()), id, "game_update", func(ctx context.Context, reporter jobs.Reporter) error {
+		reporter.Progress("steamcmd", 10, "validating App 222860")
+		return s.gameUpdates.Update(ctx, id)
+	})
+	writeJSON(w, 202, job)
+}
+
+func (s *Server) listPackages(w http.ResponseWriter, r *http.Request) {
+	if s.packages == nil {
+		writeError(w, 503, "packages_unavailable", "package manager unavailable")
+		return
+	}
+	items, err := s.packages.List()
+	if err != nil {
+		writeError(w, 500, "package_error", err.Error())
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) uploadPackage(w http.ResponseWriter, r *http.Request) {
+	if s.packages == nil {
+		writeError(w, 503, "packages_unavailable", "package manager unavailable")
+		return
+	}
+	if r.ContentLength < 1 || r.ContentLength > 2<<30 {
+		writeError(w, 413, "invalid_size", "Content-Length is required and limited to 2 GiB")
+		return
+	}
+	item, err := s.packages.AddUpload(r.URL.Query().Get("filename"), r.URL.Query().Get("version"), http.MaxBytesReader(w, r.Body, 2<<30), r.ContentLength)
+	if err != nil {
+		writeError(w, 422, "package_invalid", err.Error())
+		return
+	}
+	writeJSON(w, 201, item)
+}
+func (s *Server) fetchRelease(w http.ResponseWriter, r *http.Request) {
+	if s.packages == nil || s.jobs == nil {
+		writeError(w, 503, "packages_unavailable", "package manager unavailable")
+		return
+	}
+	var input struct {
+		Repository   string `json:"repository"`
+		AssetPattern string `json:"asset_pattern"`
+		Token        string `json:"token"`
+	}
+	if decodeJSON(w, r, &input) != nil {
+		return
+	}
+	job := s.jobs.Start(context.WithoutCancel(r.Context()), "global", "release_fetch", func(ctx context.Context, reporter jobs.Reporter) error {
+		reporter.Progress("release", 10, "checking GitHub Release")
+		_, err := s.releases.FetchLatest(ctx, input.Repository, input.AssetPattern, input.Token, s.packages)
+		return err
+	})
+	writeJSON(w, 202, job)
+}
+func (s *Server) updatePackage(w http.ResponseWriter, r *http.Request) {
+	if s.packages == nil || s.updateCoordinator == nil || s.jobs == nil {
+		writeError(w, 503, "updates_unavailable", "update pipeline unavailable")
+		return
+	}
+	var input struct {
+		PackageID string       `json:"package_id"`
+		Mode      updates.Mode `json:"mode"`
+		Confirm   bool         `json:"confirm"`
+	}
+	if decodeJSON(w, r, &input) != nil {
+		return
+	}
+	if input.Mode == updates.Full && !input.Confirm {
+		writeError(w, 428, "confirmation_required", "full update requires confirmation")
+		return
+	}
+	item, err := s.packages.Get(input.PackageID)
+	if err != nil {
+		writeError(w, 404, "package_not_found", err.Error())
+		return
+	}
+	if input.Mode == updates.Hot && !item.HotCompatible {
+		writeError(w, 422, "hot_update_forbidden", "package is not hot-update compatible")
+		return
+	}
+	id := chi.URLParam(r, "id")
+	job := s.jobs.Start(context.WithoutCancel(r.Context()), id, "package_"+string(input.Mode), func(ctx context.Context, reporter jobs.Reporter) error {
+		reporter.Progress("deploy", 10, "deploying package")
+		if err := s.updateCoordinator.ApplyPackage(ctx, id, item, input.Mode); err != nil {
+			return err
+		}
+		instance, err := s.store.Instance(ctx, id)
+		if err != nil {
+			return err
+		}
+		instance.PackageVersion = item.ID
+		return s.store.UpdateInstance(ctx, instance)
+	})
+	writeJSON(w, 202, job)
+}
+
+func (s *Server) listVPK(w http.ResponseWriter, r *http.Request) {
+	if s.uploads == nil {
+		writeError(w, 503, "content_unavailable", "content manager unavailable")
+		return
+	}
+	items, err := s.uploads.List()
+	if err != nil {
+		writeError(w, 500, "content_error", err.Error())
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) beginVPK(w http.ResponseWriter, r *http.Request) {
+	if s.uploads == nil {
+		writeError(w, 503, "content_unavailable", "content manager unavailable")
+		return
+	}
+	var input struct {
+		Name string `json:"name"`
+		Size int64  `json:"size"`
+		Hash string `json:"sha256"`
+	}
+	if decodeJSON(w, r, &input) != nil {
+		return
+	}
+	session, err := s.uploads.Begin(input.Name, input.Size, input.Hash)
+	if err != nil {
+		writeError(w, 422, "invalid_upload", err.Error())
+		return
+	}
+	writeJSON(w, 201, session)
+}
+func (s *Server) writeVPK(w http.ResponseWriter, r *http.Request) {
+	offset, err := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64)
+	if err != nil {
+		writeError(w, 422, "invalid_offset", "numeric offset required")
+		return
+	}
+	written, err := s.uploads.Write(chi.URLParam(r, "id"), offset, http.MaxBytesReader(w, r.Body, 64<<20))
+	if err != nil {
+		writeError(w, 409, "upload_error", err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]int64{"written": written, "next_offset": offset + written})
+}
+func (s *Server) completeVPK(w http.ResponseWriter, r *http.Request) {
+	item, duplicate, err := s.uploads.Complete(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, 422, "upload_incomplete", err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"item": item, "duplicate": duplicate})
+}
+func (s *Server) renameVPK(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Name    string `json:"name"`
+		Confirm bool   `json:"confirm"`
+	}
+	if decodeJSON(w, r, &input) != nil {
+		return
+	}
+	if !input.Confirm {
+		writeError(w, 428, "confirmation_required", "renaming visible VPK requires confirmation")
+		return
+	}
+	item, err := s.uploads.Rename(chi.URLParam(r, "name"), input.Name)
+	if err != nil {
+		writeError(w, 422, "rename_failed", err.Error())
+		return
+	}
+	writeJSON(w, 200, item)
+}
+func (s *Server) deleteVPK(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("confirm") != "true" {
+		writeError(w, 428, "confirmation_required", "deleting VPK requires confirmation")
+		return
+	}
+	if err := s.uploads.Delete(chi.URLParam(r, "name")); err != nil {
+		writeError(w, 422, "delete_failed", err.Error())
+		return
+	}
+	w.WriteHeader(204)
+}
+func (s *Server) savePrivate(w http.ResponseWriter, r *http.Request) {
+	if s.private == nil {
+		writeError(w, 503, "content_unavailable", "private manager unavailable")
+		return
+	}
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		writeError(w, 413, "file_too_large", err.Error())
+		return
+	}
+	item, err := s.private.Save(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "*"), raw)
+	if err != nil {
+		writeError(w, 422, "private_file_error", err.Error())
+		return
+	}
+	writeJSON(w, 200, item)
+}
+func (s *Server) applyPrivate(w http.ResponseWriter, r *http.Request) {
+	if s.private == nil || s.jobs == nil {
+		writeError(w, 503, "content_unavailable", "private manager unavailable")
+		return
+	}
+	id := chi.URLParam(r, "id")
+	job := s.jobs.Start(context.WithoutCancel(r.Context()), id, "apply_private", func(ctx context.Context, _ jobs.Reporter) error { return s.private.Apply(ctx, id) })
+	writeJSON(w, 202, job)
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+func (s *Server) auditMutations(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+			next.ServeHTTP(w, r)
+			return
+		}
+		wrapped := &statusWriter{ResponseWriter: w, status: 200}
+		next.ServeHTTP(wrapped, r)
+		metadata, _ := json.Marshal(map[string]string{"remote": r.RemoteAddr})
+		_ = s.store.RecordAudit(context.WithoutCancel(r.Context()), domain.AuditRecord{ID: uuid.NewString(), Action: r.Method, Target: r.URL.Path, Result: strconv.Itoa(wrapped.status), Metadata: string(metadata)})
+	})
+}
+func (s *Server) auditEvents(w http.ResponseWriter, r *http.Request) {
+	events, err := s.store.AuditEvents(r.Context(), 100)
+	if err != nil {
+		writeError(w, 500, "audit_error", err.Error())
+		return
+	}
+	writeJSON(w, 200, events)
 }
 
 func (s *Server) onlinePlayers(w http.ResponseWriter, r *http.Request) {

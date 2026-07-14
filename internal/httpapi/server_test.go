@@ -88,6 +88,10 @@ func TestCreateAndListInstance(t *testing.T) {
 	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte("Coop One")) {
 		t.Fatalf("list: %d %s", w.Code, w.Body.String())
 	}
+	events, err := db.AuditEvents(context.Background(), 10)
+	if err != nil || len(events) != 1 || events[0].Target != "/api/instances" || events[0].Result != "201" {
+		t.Fatalf("audit=%#v err=%v", events, err)
+	}
 }
 
 func TestCreateRejectsInvalidPort(t *testing.T) {
