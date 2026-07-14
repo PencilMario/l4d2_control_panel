@@ -11,7 +11,7 @@
 - [x] Complete browser contract and E2E coverage with real HTTP desktop/mobile Playwright journeys.
 - [x] Complete the safe shared-host fault-injection and recovery matrix; Docker-daemon restart and ENOSPC remain dedicated-host-only acceptance.
 - [ ] Complete fresh-host runtime acceptance (anonymous install and Panel-managed SRCDS/A2S/PTY/lifecycle persistence are verified; game-update maintenance remains).
-- [ ] Production delivery documentation, TLS/reverse-proxy guidance and final branch integration.
+- [x] Production delivery documentation, TLS/reverse-proxy guidance and final branch integration.
 - [x] Repair browser/API contracts, destructive confirmations, large VPK chunking and truthful loading/error/health states.
 - [x] Declare, persist and reserve SourceTV/plugin ports across API, lifecycle, runtime and UI.
 - [x] Add durable package-update journal recovery and bounded Panel shutdown/Job drain.
@@ -20,7 +20,7 @@
 
 ## Active slice
 
-No active implementation slice. Task 12 is verified; branch integration awaits the user's choice.
+No active implementation slice. The verified feature branch was fast-forwarded into `main`.
 
 ## Completed in the latest slice
 
@@ -72,8 +72,8 @@ No active implementation slice. Task 12 is verified; branch integration awaits t
 
 ## Next
 
-1. Commit the verified Task 12 slice.
-2. Choose the branch integration path.
+1. Run Docker-daemon restart, ENOSPC and another full game-update validation only on a dedicated disposable host with sufficient disk.
+2. Verify optional licensed Steam Guard behavior only if that deployment path is needed.
 
 ## DriftCheckDraft
 

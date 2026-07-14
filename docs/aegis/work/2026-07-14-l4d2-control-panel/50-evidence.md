@@ -138,3 +138,10 @@ Targeted red/green evidence in the latest slice:
 ## Evidence judgment
 
 Confidence is A for the fresh local test/build claims, browser contract regressions, real-browser main journey, safe shared-host interruption matrix, direct anonymous Steam installation, writer adoption and the exercised Panel-managed SRCDS/A2S/PTY/lifecycle journey. Confidence remains B for Docker-daemon restart, ENOSPC and optional licensed Steam Guard behavior because they are explicitly unexecuted. This bundle is verified evidence, not an authoritative completion signal.
+
+## Main integration (2026-07-15)
+
+- `main` fast-forwarded from `d91c76b` to `ffe4c94`, integrating all 32 implementation commits without a merge commit. The `feat/l4d2-control-panel` branch and Git worktree registration were removed.
+- Post-merge verification covered all 27 production Go packages. The first sequence encountered the documented Windows `testing.TempDir` cleanup race in `internal/lifecycle`; that package passed in an isolated `TEMP/TMP/GOTMPDIR`, then the complete package set passed across a tool-timeout-bounded 22-package run and a sequential 5-package tail. The build-tagged E2E fixture and `go vet ./...` passed separately.
+- On merged `main`, Vitest passed 17/17, Vite built production assets, proxy-enabled Playwright passed desktop and 390x844 mobile (2/2), `npm audit --omit=dev` found 0 vulnerabilities and Compose config rendered cleanly.
+- The pre-existing untracked `.playwright-mcp/` directory in the main worktree was preserved. The removed feature worktree left only an empty, unregistered directory temporarily locked by an external Windows process; no source or Git metadata remains there.
