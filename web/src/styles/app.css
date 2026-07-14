@@ -48,7 +48,7 @@ aside {
   font-family: "Barlow Condensed";
   font-size: 26px;
   font-weight: 700;
-  letter-spacing: -1px;
+  letter-spacing: 0;
   color: #0b0e0d;
   background: var(--acid);
   padding: 2px 7px;
@@ -112,6 +112,14 @@ aside a.active {
   border-radius: 50%;
   background: var(--acid);
   box-shadow: 0 0 12px var(--acid);
+}
+.node.checking i {
+  background: var(--amber);
+  box-shadow: 0 0 12px var(--amber);
+}
+.node.error i {
+  background: var(--red);
+  box-shadow: 0 0 12px var(--red);
 }
 .node span,
 .node small {
@@ -599,13 +607,37 @@ nav button.active {
   font-weight: 700;
   margin-top: 12px;
 }
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--acid);
+  outline-offset: 2px;
+}
 .form-error,
-.error-banner {
+.error-banner,
+.error {
   color: #ff8e84;
   background: #2c1714;
   border: 1px solid #5c2d27;
   padding: 10px;
   font-size: 12px;
+}
+.operation-status {
+  color: var(--acid);
+  background: #152019;
+  border: 1px solid #31543f;
+  padding: 10px;
+  font-size: 12px;
+}
+.content-layout > .error,
+.content-layout > .operation-status {
+  grid-column: 1 / -1;
 }
 .error-banner {
   display: flex;

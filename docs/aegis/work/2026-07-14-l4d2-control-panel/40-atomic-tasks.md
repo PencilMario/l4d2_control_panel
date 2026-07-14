@@ -8,14 +8,19 @@
 - [x] A2S query, status-to-UserID mapping, kick/ban commands and resource stats.
 - [x] Chunked VPK storage, private overlay manager, protected ZIP/package ingestion, GitHub Release acquisition, hot/full/game update coordinators, backup and cleanup primitives.
 - [x] Scheduler persistence/execution and online-player policy.
-- [ ] Complete browser contract and E2E coverage (active: content, player and persistent Job surfaces are connected; full private/VPK controls, Job history and browser E2E still need audit).
+- [ ] Complete browser contract and E2E coverage (browser/API contract regressions are repaired; real HTTP Playwright coverage remains).
 - [ ] Complete fault-injection and recovery acceptance (job restart is marked interrupted; update-stage continuation/rollback and Docker/SRCDS interruption matrix still need proof).
-- [ ] Complete fresh-host runtime acceptance (anonymous App 222860 dual-platform installation is verified; Panel-managed SRCDS/A2S/PTY start and restart persistence are the active checks).
+- [ ] Complete fresh-host runtime acceptance (anonymous install and Panel-managed SRCDS/A2S/PTY/lifecycle persistence are verified; game-update maintenance remains).
 - [ ] Production delivery documentation, TLS/reverse-proxy guidance and final branch integration.
+- [x] Repair browser/API contracts, destructive confirmations, large VPK chunking and truthful loading/error/health states.
+- [ ] Declare, persist and reserve SourceTV/plugin ports across API, lifecycle, runtime and UI.
+- [ ] Add durable package-update journal recovery and bounded Panel shutdown/Job drain.
+- [ ] Reconcile maintenance writers and recover interrupted uploads/backups/game updates.
+- [ ] Add real-HTTP Playwright acceptance and the safe Linux fault-injection matrix.
 
 ## Active slice
 
-Commit and deploy the A2S challenge/GameHost fix to the isolated `sirphomesv` smoke stack. Reconcile the already-running SRCDS without restarting it, verify A2S/player queries and PTY, then exercise restart persistence and the content/scheduler/audit paths.
+Declare and reserve SourceTV and plugin ports across persistence, API, lifecycle, runtime and UI, then continue through Tasks 10-12 for journal recovery, maintenance recovery and browser/fault acceptance.
 
 ## Completed in the latest slice
 
@@ -30,6 +35,16 @@ Commit and deploy the A2S challenge/GameHost fix to the isolated `sirphomesv` sm
 - Bound both host-network control services to loopback and refreshed deployment/TLS documentation.
 - Traced the remote A2S failure to two independent runtime contracts: SRCDS answers the host LAN address but not loopback, and its INFO response first returns a `0x41` challenge before `0x49` data.
 - Added A2S INFO challenge handling and made the SRCDS-reachable game host a required configuration value shared by health and player queries; the old loopback query fallback is retired.
+- Rebuilt only the remote Panel while preserving the running game container; health, loopback control listeners and startup reconciliation all recovered.
+- Verified the old active Job became `interrupted`, the instance reconciled to `running`, and the authenticated players endpoint returned `c2m1_highway` without A2S timeout.
+- Verified the native console WebSocket upgraded, accepted a harmless `echo` command, and replayed its marker after disconnect/reconnect.
+- Verified Panel-managed stop/start and same-configuration rebuild Jobs all succeeded; desired/actual state converged to `running`, the game container ID changed, and persistent game file hashes remained unchanged.
+- Exercised VPK upload/chunk/download/rename/delete, private save/read/history/apply/delete, protected ZIP upload/list, Cron save/run/delete, Job SSE and audit records on Linux, then removed every temporary smoke object.
+- Made `ScheduledTask` own an explicit snake_case JSON contract while preserving strict unknown-field rejection.
+- Added visible Cron, content, player, settings and Docker health error states; Job polling now classifies `interrupted` as terminal.
+- Added explicit confirmation dialogs for game updates, full package updates, player kicks and permanent bans without weakening server-side confirmation enforcement.
+- Replaced whole-file VPK hashing and one-shot PATCH with incremental SHA-256 and sequential 8 MiB chunks.
+- Corrected the Steam settings copy to state that anonymous dual-platform installation is supported and licensed credentials are optional.
 
 ## Blocked-on
 
@@ -37,15 +52,14 @@ Commit and deploy the A2S challenge/GameHost fix to the isolated `sirphomesv` sm
 
 ## Next
 
-1. Complete the A2S slice review and commit it.
-2. Rebuild/recreate the isolated remote Panel from the commit.
-3. Reconcile the anonymously installed, already-running game and verify SRCDS/A2S/PTY/Job state.
-4. Smoke VPK/private/package/scheduler/audit/SSE paths.
-5. Continue requirement-by-requirement gap closure and browser E2E work.
+1. Implement SourceTV/plugin-port persistence, conflict checking, runtime arguments and UI fields.
+2. Implement durable update-stage recovery and graceful shutdown with regression tests.
+3. Reconcile maintenance writers and interrupted artifacts.
+4. Add real HTTP Playwright coverage and run the remaining safe fault-injection matrix.
 
 ## DriftCheckDraft
 
 - Scope: continues to implement the approved single-host, single-admin design.
 - Compatibility: host networking, fixed Supervisor Exec operations and content precedence are unchanged.
-- New owner/fallback: `Config.GameHost` is the sole A2S target owner; the implicit loopback fallback has been removed. Private-path validation remains owned by `PrivateManager`, and Docker authority remains behind the restricted proxy.
-- Decision: `continue`; the licensed-credential assumption and loopback A2S fallback were retired after direct runtime evidence.
+- New owner/fallback: `Config.GameHost` remains the sole A2S target owner. `ScheduledTask` JSON tags now own the browser schedule contract; UI dialogs add no second authorization owner because HTTP confirmation remains enforced server-side.
+- Decision: `continue`; Task 8 stayed within the approved browser/API boundary, retired one-shot VPK upload and direct destructive submissions, and introduced no compatibility fallback.

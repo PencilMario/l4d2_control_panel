@@ -33,7 +33,14 @@ type AuditRecord struct {
 	CreatedAt                            time.Time
 }
 type ScheduledTask struct {
-	ID, InstanceID, Type, Cron, Timezone, OnlinePolicy, Payload string
-	Enabled                                                     bool
-	LastRun, NextRun                                            time.Time
+	ID           string    `json:"id"`
+	InstanceID   string    `json:"instance_id"`
+	Type         string    `json:"type"`
+	Cron         string    `json:"cron"`
+	Timezone     string    `json:"timezone"`
+	OnlinePolicy string    `json:"online_policy"`
+	Payload      string    `json:"payload"`
+	Enabled      bool      `json:"enabled"`
+	LastRun      time.Time `json:"last_run"`
+	NextRun      time.Time `json:"next_run"`
 }

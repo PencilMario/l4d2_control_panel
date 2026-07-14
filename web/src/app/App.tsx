@@ -26,6 +26,7 @@ import {
   Users,
   X,
 } from "lucide-react";
+import { sha256 } from "@noble/hashes/sha2.js";
 import { api, apiText, normalizeInstance, type Job } from "../api/client";
 import "../styles/app.css";
 export type Instance = {
@@ -45,6 +46,19 @@ type Props = {
   onAction?: (id: string, action: string) => void;
 };
 type Page = "overview" | "content" | "jobs" | "schedules" | "settings";
+type HealthState = {
+  status: "checking" | "online" | "error";
+  message: string;
+};
+type Confirmation = {
+  title: string;
+  description: string;
+  confirmLabel: string;
+  confirm: () => void;
+};
+
+const errorMessage = (reason: unknown) =>
+  reason instanceof Error ? reason.message : String(reason);
 
 export function App({ initialInstances, onAction }: Props) {
   const injected = initialInstances !== undefined;
@@ -58,6 +72,11 @@ export function App({ initialInstances, onAction }: Props) {
   const [playersTarget, setPlayersTarget] = useState<Instance | null>(null);
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState("");
+  const [health, setHealth] = useState<HealthState>(
+    injected
+      ? { status: "online", message: "测试数据已加载" }
+      : { status: "checking", message: "正在检查 Docker API…" },
+  );
   const loadInstances = async () => {
     const base = (await api<any[]>("/api/instances")).map(normalizeInstance);
     const enriched = await Promise.all(
@@ -79,12 +98,20 @@ export function App({ initialInstances, onAction }: Props) {
     );
     setInstances(enriched);
   };
+  const loadHealth = async () => {
+    try {
+      await api("/api/health");
+      setHealth({ status: "online", message: "Docker API 正常" });
+    } catch (reason) {
+      setHealth({ status: "error", message: errorMessage(reason) });
+    }
+  };
   useEffect(() => {
     if (injected) return;
     api("/api/session")
       .then(() => {
         setAuth("yes");
-        return loadInstances();
+        void Promise.allSettled([loadInstances(), loadHealth()]);
       })
       .catch(() => setAuth("no"));
   }, []);
@@ -107,22 +134,25 @@ export function App({ initialInstances, onAction }: Props) {
         confirm: kind !== "start",
       });
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
     }
   };
   const pollJob = (id: string) => {
-    const timer = setInterval(async () => {
+    const read = async () => {
       try {
         const next = await api<Job>(`/api/jobs/${id}`);
         setJob(next);
-        if (["succeeded", "failed"].includes(next.Status)) {
+        if (["succeeded", "failed", "interrupted"].includes(next.Status)) {
           clearInterval(timer);
-          loadInstances();
+          void loadInstances();
         }
-      } catch {
+      } catch (reason) {
         clearInterval(timer);
+        setError(errorMessage(reason));
       }
-    }, 800);
+    };
+    const timer = window.setInterval(() => void read(), 800);
+    void read();
   };
   if (auth === "checking")
     return <div className="splash">正在连接控制节点…</div>;
@@ -131,7 +161,7 @@ export function App({ initialInstances, onAction }: Props) {
       <Login
         onSuccess={() => {
           setAuth("yes");
-          loadInstances();
+          void Promise.allSettled([loadInstances(), loadHealth()]);
         }}
       />
     );
@@ -184,10 +214,15 @@ export function App({ initialInstances, onAction }: Props) {
           </Nav>
         </nav>
         <div className="aside-foot">
-          <div className="node">
+          <div className={`node ${health.status}`}>
             <i></i>
             <span>
-              控制节点在线<small>Docker API 正常</small>
+              {health.status === "online"
+                ? "控制节点在线"
+                : health.status === "error"
+                  ? "控制节点异常"
+                  : "控制节点检查中"}
+              <small>{health.message}</small>
             </span>
           </div>
         </div>
@@ -282,7 +317,7 @@ function Login({ onSuccess }: { onSuccess: () => void }) {
       });
       onSuccess();
     } catch (err) {
-      setError(String(err));
+      setError(errorMessage(err));
     }
   };
   return (
@@ -347,6 +382,7 @@ function Overview({
   reload: () => void;
 }) {
   const [creating, setCreating] = useState(false);
+  const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   return (
     <>
       <section className="metrics">
@@ -456,8 +492,16 @@ function Overview({
                 </button>
                 <button
                   onClick={() =>
-                    queue(`/api/instances/${x.id}/game-update`, {
-                      confirm: true,
+                    setConfirmation({
+                      title: `更新游戏 ${x.name}？`,
+                      description:
+                        "游戏更新会停止 SRCDS，完成校验与内容重放后再启动服务器。",
+                      confirmLabel: "确认更新游戏",
+                      confirm: () => {
+                        void queue(`/api/instances/${x.id}/game-update`, {
+                          confirm: true,
+                        });
+                      },
                     })
                   }
                 >
@@ -478,6 +522,16 @@ function Overview({
           done={() => {
             setCreating(false);
             reload();
+          }}
+        />
+      )}
+      {confirmation && (
+        <ConfirmationDialog
+          {...confirmation}
+          close={() => setConfirmation(null)}
+          onConfirm={() => {
+            confirmation.confirm();
+            setConfirmation(null);
           }}
         />
       )}
@@ -684,6 +738,7 @@ type PrivateFileEntry = {
 
 const encodeRelativePath = (path: string) =>
   path.split("/").map(encodeURIComponent).join("/");
+const VPK_CHUNK_SIZE = 8 * 1024 * 1024;
 
 function ContentPage({
   instances,
@@ -701,13 +756,15 @@ function ContentPage({
   const [privatePath, setPrivatePath] = useState("cfg/server.cfg");
   const [privateText, setPrivateText] = useState("");
   const [contentError, setContentError] = useState("");
+  const [vpkUploadStatus, setVPKUploadStatus] = useState("");
+  const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const load = () =>
     Promise.all([
       api<any[]>("/api/content/vpk").then(setVpks),
       api<any[]>("/api/packages").then(setPackages),
     ]);
   useEffect(() => {
-    load().catch(() => {});
+    load().catch((reason) => setContentError(errorMessage(reason)));
   }, []);
   useEffect(() => {
     let active = true;
@@ -719,7 +776,9 @@ function ContentPage({
     }
     api<PrivateFileEntry[]>(`/api/instances/${selected}/private`)
       .then((files) => active && setPrivateFiles(files))
-      .catch((reason) => active && setContentError(String(reason)));
+      .catch(
+        (reason) => active && setContentError(errorMessage(reason)),
+      );
     return () => {
       active = false;
     };
@@ -731,27 +790,44 @@ function ContentPage({
     );
   };
   const uploadVPK = async (file: File) => {
-    const hash = await crypto.subtle.digest(
-      "SHA-256",
-      await file.arrayBuffer(),
-    );
-    const sha = [...new Uint8Array(hash)]
+    const hash = sha256.create();
+    for (let offset = 0; offset < file.size; offset += VPK_CHUNK_SIZE) {
+      const end = Math.min(offset + VPK_CHUNK_SIZE, file.size);
+      const chunk = file.slice(offset, end);
+      hash.update(new Uint8Array(await chunk.arrayBuffer()));
+      setVPKUploadStatus(
+        `正在计算 VPK 校验 · ${Math.round((end / file.size) * 100)}%`,
+      );
+    }
+    const digest = hash.digest();
+    const sha = [...digest]
       .map((x) => x.toString(16).padStart(2, "0"))
       .join("");
     const session = await api<any>("/api/content/vpk/uploads", {
       method: "POST",
       body: JSON.stringify({ name: file.name, size: file.size, sha256: sha }),
     });
-    await api(`/api/content/vpk/uploads/${session.id ?? session.ID}?offset=0`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/octet-stream" },
-      body: file,
-    });
+    for (let offset = 0; offset < file.size; offset += VPK_CHUNK_SIZE) {
+      const end = Math.min(offset + VPK_CHUNK_SIZE, file.size);
+      const chunk = file.slice(offset, end);
+      await api(
+        `/api/content/vpk/uploads/${session.id ?? session.ID}?offset=${offset}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/octet-stream" },
+          body: chunk,
+        },
+      );
+      setVPKUploadStatus(
+        `正在上传 VPK · ${Math.round((end / file.size) * 100)}%`,
+      );
+    }
     await api(`/api/content/vpk/uploads/${session.id ?? session.ID}/complete`, {
       method: "POST",
       body: "{}",
     });
     await load();
+    setVPKUploadStatus("VPK 上传完成 · 100%");
   };
   const uploadPackage = async (file: File) => {
     await api(
@@ -815,13 +891,18 @@ function ContentPage({
   };
   const runContentAction = (operation: () => Promise<unknown>) => {
     setContentError("");
-    void operation().catch((reason) => setContentError(String(reason)));
+    void operation().catch((reason) => setContentError(errorMessage(reason)));
   };
   return (
     <div className="content-layout">
       {contentError && (
         <div className="error" role="alert">
           {contentError}
+        </div>
+      )}
+      {vpkUploadStatus && (
+        <div className="operation-status" role="status">
+          {vpkUploadStatus}
         </div>
       )}
       <Panel
@@ -904,13 +985,20 @@ function ContentPage({
               <button
                 disabled={!selected}
                 onClick={() =>
-                  runContentAction(() =>
-                    queue(`/api/instances/${selected}/updates`, {
-                      package_id: x.id,
-                      mode: "full",
-                      confirm: true,
-                    }),
-                  )
+                  setConfirmation({
+                    title: `完整更新 ${x.filename}？`,
+                    description:
+                      "完整更新会停止服务器并替换插件包；失败时后台任务会保留诊断记录。",
+                    confirmLabel: "确认完整更新",
+                    confirm: () =>
+                      runContentAction(() =>
+                        queue(`/api/instances/${selected}/updates`, {
+                          package_id: x.id,
+                          mode: "full",
+                          confirm: true,
+                        }),
+                      ),
+                  })
                 }
               >
                 完整更新
@@ -1029,31 +1117,76 @@ function ContentPage({
           保存并立即应用
         </button>
       </form>
+      {confirmation && (
+        <ConfirmationDialog
+          title={confirmation.title}
+          description={confirmation.description}
+          confirmLabel={confirmation.confirmLabel}
+          close={() => setConfirmation(null)}
+          onConfirm={() => {
+            confirmation.confirm();
+            setConfirmation(null);
+          }}
+        />
+      )}
     </div>
   );
 }
+type ScheduledTask = {
+  id: string;
+  type: string;
+  cron: string;
+  timezone: string;
+  enabled: boolean;
+};
+
+const normalizeScheduledTask = (value: any): ScheduledTask => ({
+  id: value.id ?? value.ID,
+  type: value.type ?? value.Type,
+  cron: value.cron ?? value.Cron,
+  timezone: value.timezone ?? value.Timezone,
+  enabled: value.enabled ?? value.Enabled,
+});
+
 function SchedulesPage({ instances }: { instances: Instance[] }) {
-  const [tasks, setTasks] = useState<any[]>([]);
-  const load = () => api<any[]>("/api/schedules").then(setTasks);
+  const [tasks, setTasks] = useState<ScheduledTask[]>([]);
+  const [scheduleError, setScheduleError] = useState("");
+  const [scheduleStatus, setScheduleStatus] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const load = async () => {
+    const items = await api<any[]>("/api/schedules");
+    setTasks(items.map(normalizeScheduledTask));
+  };
   useEffect(() => {
-    load().catch(() => {});
+    load().catch((reason) => setScheduleError(errorMessage(reason)));
   }, []);
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const data = new FormData(e.currentTarget);
-    await api("/api/schedules", {
-      method: "POST",
-      body: JSON.stringify({
-        instance_id: data.get("instance"),
-        type: data.get("type"),
-        cron: data.get("cron"),
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        online_policy: data.get("policy"),
-        enabled: true,
-        payload: "{}",
-      }),
-    });
-    load();
+    setScheduleError("");
+    setScheduleStatus("正在保存计划…");
+    setSubmitting(true);
+    try {
+      await api("/api/schedules", {
+        method: "POST",
+        body: JSON.stringify({
+          instance_id: data.get("instance"),
+          type: data.get("type"),
+          cron: data.get("cron"),
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          online_policy: data.get("policy"),
+          enabled: true,
+          payload: "{}",
+        }),
+      });
+      await load();
+      setScheduleStatus("计划已保存");
+    } catch (reason) {
+      setScheduleStatus("");
+      setScheduleError(errorMessage(reason));
+    } finally {
+      setSubmitting(false);
+    }
   };
   return (
     <div className="schedule-layout">
@@ -1064,7 +1197,9 @@ function SchedulesPage({ instances }: { instances: Instance[] }) {
           实例
           <select name="instance">
             {instances.map((x) => (
-              <option value={x.id}>{x.name}</option>
+              <option key={x.id} value={x.id}>
+                {x.name}
+              </option>
             ))}
           </select>
         </label>
@@ -1089,14 +1224,26 @@ function SchedulesPage({ instances }: { instances: Instance[] }) {
             <option value="force">强制执行</option>
           </select>
         </label>
-        <button className="create">保存计划</button>
+        {scheduleError && (
+          <div className="error" role="alert">
+            {scheduleError}
+          </div>
+        )}
+        {scheduleStatus && (
+          <div className="operation-status" role="status">
+            {scheduleStatus}
+          </div>
+        )}
+        <button className="create" disabled={submitting || !instances.length}>
+          保存计划
+        </button>
       </form>
       <Panel title="执行计划">
         {tasks.map((x) => (
           <Row
-            key={x.ID}
-            name={x.Type}
-            meta={`${x.Cron} · ${x.Timezone} · ${x.Enabled ? "启用" : "停用"}`}
+            key={x.id}
+            name={x.type}
+            meta={`${x.cron} · ${x.timezone} · ${x.enabled ? "启用" : "停用"}`}
           />
         ))}
         {!tasks.length && <div className="empty">暂无计划任务</div>}
@@ -1114,107 +1261,156 @@ function PlayersModal({
   queue: (path: string, body: any) => Promise<void>;
 }) {
   const [snapshot, setSnapshot] = useState<any>(null);
+  const [playersError, setPlayersError] = useState("");
+  const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   useEffect(() => {
     api(`/api/instances/${instance.id}/players`)
       .then(setSnapshot)
-      .catch(() => setSnapshot({ players: [] }));
+      .catch((reason) => {
+        setSnapshot({ players: [] });
+        setPlayersError(errorMessage(reason));
+      });
   }, [instance.id]);
+  const requestAction = (player: any, action: "kick" | "ban") => {
+    const kick = action === "kick";
+    setConfirmation({
+      title: kick ? `踢出 ${player.name}？` : `永久封禁 ${player.name}？`,
+      description: kick
+        ? "玩家会立即从当前服务器断开。"
+        : "该玩家将被永久封禁，直至管理员手动解除。",
+      confirmLabel: kick ? "确认踢出" : "确认永久封禁",
+      confirm: () => {
+        setPlayersError("");
+        void queue(
+          `/api/instances/${instance.id}/players/${player.user_id}/actions`,
+          {
+            action,
+            ...(kick ? {} : { minutes: 0 }),
+            confirm: true,
+          },
+        ).catch((reason) => setPlayersError(errorMessage(reason)));
+      },
+    });
+  };
   return (
-    <div className="modal-wrap">
-      <div className="modal players-modal">
-        <div className="section-head">
-          <div>
-            <p className="eyebrow">ONLINE PLAYERS</p>
-            <h2>{instance.name}</h2>
-          </div>
-          <button onClick={close}>
-            <X />
-          </button>
-        </div>
-        {snapshot?.players?.map((player: any) => (
-          <div className="data-row" key={`${player.name}-${player.user_id}`}>
+    <>
+      <div className="modal-wrap">
+        <div className="modal players-modal">
+          <div className="section-head">
             <div>
-              <b>{player.name}</b>
-              <small>
-                UserID {player.user_id || "未映射"} · 分数 {player.score}
-              </small>
+              <p className="eyebrow">ONLINE PLAYERS</p>
+              <h2>{instance.name}</h2>
             </div>
-            {player.user_id > 0 && (
-              <div className="inline-actions">
-                <button
-                  onClick={() =>
-                    queue(
-                      `/api/instances/${instance.id}/players/${player.user_id}/actions`,
-                      { action: "kick", confirm: true },
-                    )
-                  }
-                >
-                  踢出
-                </button>
-                <button
-                  className="danger"
-                  onClick={() =>
-                    queue(
-                      `/api/instances/${instance.id}/players/${player.user_id}/actions`,
-                      { action: "ban", minutes: 0, confirm: true },
-                    )
-                  }
-                >
-                  永久封禁
-                </button>
-              </div>
-            )}
+            <button aria-label="关闭玩家列表" onClick={close}>
+              <X />
+            </button>
           </div>
-        ))}
-        {snapshot && !snapshot.players?.length && (
-          <div className="empty">当前没有在线玩家</div>
-        )}
+          {playersError && (
+            <div className="error" role="alert">
+              {playersError}
+            </div>
+          )}
+          {snapshot?.players?.map((player: any) => (
+            <div className="data-row" key={`${player.name}-${player.user_id}`}>
+              <div>
+                <b>{player.name}</b>
+                <small>
+                  UserID {player.user_id || "未映射"} · 分数 {player.score}
+                </small>
+              </div>
+              {player.user_id > 0 && (
+                <div className="inline-actions">
+                  <button onClick={() => requestAction(player, "kick")}>
+                    踢出
+                  </button>
+                  <button
+                    className="danger"
+                    onClick={() => requestAction(player, "ban")}
+                  >
+                    永久封禁
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+          {snapshot && !snapshot.players?.length && (
+            <div className="empty">当前没有在线玩家</div>
+          )}
+        </div>
       </div>
-    </div>
+      {confirmation && (
+        <ConfirmationDialog
+          {...confirmation}
+          close={() => setConfirmation(null)}
+          onConfirm={() => {
+            confirmation.confirm();
+            setConfirmation(null);
+          }}
+        />
+      )}
+    </>
   );
 }
 
 function SettingsPage() {
   const [steam, setSteam] = useState(false);
   const [github, setGithub] = useState(false);
+  const [settingsError, setSettingsError] = useState("");
   useEffect(() => {
     api<any>("/api/settings/steam")
       .then((x) => setSteam(x.configured))
-      .catch(() => {});
+      .catch((reason) => setSettingsError(errorMessage(reason)));
     api<any>("/api/settings/github-token")
       .then((x) => setGithub(x.configured))
-      .catch(() => {});
+      .catch((reason) => setSettingsError(errorMessage(reason)));
   }, []);
   const saveSteam = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const data = new FormData(e.currentTarget);
-    await api("/api/settings/steam", {
-      method: "PUT",
-      body: JSON.stringify({
-        username: data.get("username"),
-        password: data.get("password"),
-      }),
-    });
-    setSteam(true);
-    e.currentTarget.reset();
+    setSettingsError("");
+    try {
+      await api("/api/settings/steam", {
+        method: "PUT",
+        body: JSON.stringify({
+          username: data.get("username"),
+          password: data.get("password"),
+        }),
+      });
+      setSteam(true);
+      e.currentTarget.reset();
+    } catch (reason) {
+      setSettingsError(errorMessage(reason));
+    }
   };
   const saveGithub = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const data = new FormData(e.currentTarget);
-    await api("/api/settings/github-token", {
-      method: "PUT",
-      body: JSON.stringify({ token: data.get("token") }),
-    });
-    setGithub(true);
-    e.currentTarget.reset();
+    setSettingsError("");
+    try {
+      await api("/api/settings/github-token", {
+        method: "PUT",
+        body: JSON.stringify({ token: data.get("token") }),
+      });
+      setGithub(true);
+      e.currentTarget.reset();
+    } catch (reason) {
+      setSettingsError(errorMessage(reason));
+    }
   };
   return (
     <div className="content-layout">
+      {settingsError && (
+        <div className="error" role="alert">
+          {settingsError}
+        </div>
+      )}
       <form className="control-form" onSubmit={saveSteam}>
         <p className="eyebrow">STEAMCMD LICENSE</p>
         <h2>Steam 安装凭据</h2>
         <p>
-          {steam ? "已加密配置" : "未配置；匿名账号可能无法安装 App 222860"}
+          {steam
+            ? "已加密配置；匿名首装仍可用"
+            : "匿名首装已支持；仅许可账号需要配置凭据"}
         </p>
         <label>
           用户名
@@ -1326,6 +1522,55 @@ function Confirm({
           <button onClick={close}>取消</button>
           <button className="danger" aria-label="确认停止" onClick={confirm}>
             确认停止
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+function ConfirmationDialog({
+  title,
+  description,
+  confirmLabel,
+  close,
+  onConfirm,
+}: {
+  title: string;
+  description: string;
+  confirmLabel: string;
+  close: () => void;
+  onConfirm: () => void;
+}) {
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [close]);
+  return (
+    <div className="modal-wrap">
+      <div
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirmation-title"
+      >
+        <span className="danger-icon">
+          <CircleStop />
+        </span>
+        <p className="eyebrow">CONFIRM OPERATION</p>
+        <h2 id="confirmation-title">{title}</h2>
+        <p>{description}</p>
+        <div>
+          <button onClick={close}>取消</button>
+          <button
+            autoFocus
+            className="danger"
+            aria-label={confirmLabel}
+            onClick={onConfirm}
+          >
+            {confirmLabel}
           </button>
         </div>
       </div>

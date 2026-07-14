@@ -21,6 +21,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
+	"github.com/not0721here/l4d2-control-panel/internal/scheduler"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 )
 
@@ -33,6 +34,10 @@ func (f *fakeLifecycle) Rebuild(context.Context, string) error      { f.action =
 func (f *fakeLifecycle) Delete(context.Context, string, bool) error { f.action = "delete"; return nil }
 
 type fakeAttacher struct{ peer net.Conn }
+
+type fakeScheduleDispatcher struct{}
+
+func (fakeScheduleDispatcher) Dispatch(context.Context, domain.ScheduledTask) error { return nil }
 
 func (f *fakeAttacher) AttachSupervisor(context.Context, string) (io.ReadWriteCloser, error) {
 	client, peer := net.Pipe()
@@ -111,6 +116,35 @@ func TestCreateRejectsInvalidPort(t *testing.T) {
 	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
+}
+
+func TestScheduleAcceptsSnakeCaseJSONAndRejectsUnknownFields(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	schedules := scheduler.NewService(db, fakeScheduleDispatcher{})
+	defer schedules.Stop()
+	s = New(db, s.auth, WithScheduler(schedules))
+	cookie := loginCookie(t, s)
+
+	t.Run("snake case", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodPost, "/api/schedules", bytes.NewBufferString(`{"instance_id":"abc","type":"game_update","cron":"0 4 * * *","timezone":"Asia/Hong_Kong","online_policy":"skip","enabled":true,"payload":"{}"}`))
+		r.AddCookie(cookie)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"instance_id":"abc"`) || !strings.Contains(w.Body.String(), `"online_policy":"skip"`) {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("unknown field", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodPost, "/api/schedules", bytes.NewBufferString(`{"instance_id":"abc","type":"game_update","cron":"0 4 * * *","timezone":"UTC","online_policy":"skip","enabled":true,"payload":"{}","surprise":true}`))
+		r.AddCookie(cookie)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "unknown field") {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+	})
 }
 
 func TestInstanceActionRunsAsPersistentJob(t *testing.T) {
