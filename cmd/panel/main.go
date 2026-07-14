@@ -21,13 +21,18 @@ func main() {
 		log.Fatal(err)
 	}
 	defer db.Close()
-	password := os.Getenv("L4D2_PANEL_ADMIN_PASSWORD")
-	if password == "" {
-		log.Fatal("L4D2_PANEL_ADMIN_PASSWORD is required")
-	}
-	sessions := auth.NewService()
-	if err := sessions.Bootstrap(password); err != nil {
+	sessions, err := auth.NewPersistentService(db)
+	if err != nil {
 		log.Fatal(err)
+	}
+	if !sessions.Configured() {
+		password := os.Getenv("L4D2_PANEL_ADMIN_PASSWORD")
+		if password == "" {
+			log.Fatal("L4D2_PANEL_ADMIN_PASSWORD is required for initial bootstrap")
+		}
+		if err := sessions.Bootstrap(password); err != nil {
+			log.Fatal(err)
+		}
 	}
 	api := httpapi.New(db, sessions)
 	mux := http.NewServeMux()

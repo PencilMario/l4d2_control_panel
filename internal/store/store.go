@@ -89,3 +89,39 @@ func scanInstance(s scanner) (domain.Instance, error) {
 func fields(v domain.Instance) []any {
 	return []any{v.ID, v.NodeID, v.Name, v.GamePort, v.SourceTVPort, v.StartMap, v.GameMode, v.Tickrate, v.MaxPlayers, v.ExtraArgs, v.RuntimeImage, v.PackageVersion, v.DesiredState, v.ActualState, v.CreatedAt.Format(time.RFC3339Nano), v.UpdatedAt.Format(time.RFC3339Nano)}
 }
+
+func (s *Store) LoadCredential() (hash, salt []byte, found bool, err error) {
+	err = s.db.QueryRow(`SELECT password_hash,salt FROM administrator WHERE singleton=1`).Scan(&hash, &salt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, false, nil
+	}
+	return hash, salt, err == nil, err
+}
+
+func (s *Store) SaveCredential(hash, salt []byte) error {
+	_, err := s.db.Exec(`INSERT INTO administrator(singleton,password_hash,salt,updated_at) VALUES(1,?,?,?) ON CONFLICT(singleton) DO NOTHING`, hash, salt, time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *Store) SaveSession(tokenHash []byte, expires time.Time) error {
+	_, err := s.db.Exec(`INSERT INTO sessions(token_hash,expires_at,created_at) VALUES(?,?,?)`, tokenHash, expires.UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *Store) SessionValid(tokenHash []byte, now time.Time) (bool, error) {
+	var expires string
+	err := s.db.QueryRow(`SELECT expires_at FROM sessions WHERE token_hash=?`, tokenHash).Scan(&expires)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, expires)
+	return err == nil && now.Before(parsed), err
+}
+
+func (s *Store) DeleteSession(tokenHash []byte) error {
+	_, err := s.db.Exec(`DELETE FROM sessions WHERE token_hash=?`, tokenHash)
+	return err
+}

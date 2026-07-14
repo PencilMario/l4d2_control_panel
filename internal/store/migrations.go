@@ -10,5 +10,12 @@ CREATE TABLE IF NOT EXISTS instances (
  package_version TEXT NOT NULL DEFAULT '', desired_state TEXT NOT NULL, actual_state TEXT NOT NULL,
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS administrator (
+ singleton INTEGER PRIMARY KEY CHECK(singleton = 1), password_hash BLOB NOT NULL,
+ salt BLOB NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sessions (
+ token_hash BLOB PRIMARY KEY, expires_at TEXT NOT NULL, created_at TEXT NOT NULL
+);
 INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, CURRENT_TIMESTAMP);
 `

@@ -1,14 +1,14 @@
 # Atomic task checkpoint
 
-- [x] Backend foundation and persistence
-- [x] Authentication and HTTP contract
-- [x] Container lifecycle, ports and jobs
-- [x] Safe content and update pipelines
-- [x] Console, A2S, players, scheduler and audit
-- [x] React administration interface
+- [ ] Backend persistence expansion (active: auth/session/job/audit/content/scheduler)
+- [ ] Authentication and complete HTTP contract
+- [ ] Real Docker lifecycle, reconciliation and persistent jobs
+- [ ] Complete content and update pipelines
+- [ ] Console, A2S, players, scheduler and audit integration
+- [ ] React API integration and complete pages
 - [ ] Runtime images, deployment and full verification (partial: core images verified; full runtime smoke pending)
 
-Next: write failing authentication and HTTP contract tests.
+Next: make credentials and sessions survive reopening SQLite, then persist jobs and audit events.
 
 Evidence: config tests passed via a deliberately named compiled test binary (Windows blocks the exact temporary name `config.test.exe`); `go test -count=1 ./internal/store` passed. Drift check: continue; scope and compatibility boundary unchanged.
 
