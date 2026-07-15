@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -224,6 +225,29 @@ func TestPrivateZIPRecoveryCleansPreJournalWorkspace(t *testing.T) {
 	raw, err := m.Read(ctx, "abc", "sentinel.cfg")
 	if err != nil || string(raw) != "before" {
 		t.Fatalf("sentinel=%q err=%v", raw, err)
+	}
+}
+
+func TestPrivateZIPRecoverySkipsCleanInstanceLease(t *testing.T) {
+	root := t.TempDir()
+	m := NewPrivateManager(root, 1<<20)
+	if _, err := m.Save(context.Background(), "abc", "sentinel.cfg", []byte("before")); err != nil {
+		t.Fatal(err)
+	}
+	lock := m.instanceLock("abc")
+	lock.Lock()
+	done := make(chan error, 1)
+	go func() { done <- m.Recover(context.Background()) }()
+	select {
+	case err := <-done:
+		lock.Unlock()
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		lock.Unlock()
+		<-done
+		t.Fatal("recovery waited for a clean instance lease")
 	}
 }
 

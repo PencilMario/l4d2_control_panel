@@ -1229,6 +1229,14 @@ func (m *PrivateManager) Recover(ctx context.Context) error {
 		}
 		instanceID := entry.Name()
 		base := filepath.Join(instances, instanceID)
+		pending, pendingErr := privateRecoveryPending(base)
+		if pendingErr != nil {
+			result = errors.Join(result, pendingErr)
+			continue
+		}
+		if !pending {
+			continue
+		}
 		lock := m.instanceLock(instanceID)
 		lock.Lock()
 		recoverErr := m.recoverPrivateInstanceLocked(ctx, instanceID, base)
@@ -1236,6 +1244,20 @@ func (m *PrivateManager) Recover(ctx context.Context) error {
 		result = errors.Join(result, recoverErr)
 	}
 	return result
+}
+
+func privateRecoveryPending(base string) (bool, error) {
+	root := filepath.Join(base, "backups", "private")
+	for _, kind := range []string{"apply-*", "restore-*"} {
+		works, err := filepath.Glob(filepath.Join(root, kind))
+		if err != nil {
+			return false, err
+		}
+		if len(works) > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (m *PrivateManager) recoverPrivateInstanceLocked(ctx context.Context, instanceID, base string) error {
