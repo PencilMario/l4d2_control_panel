@@ -549,7 +549,7 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
-  it("confirms game updates before submitting them", async () => {
+  it("selects both forced reinstall targets by default", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response('{"ID":"job-1","Status":"pending"}', {
         status: 202,
@@ -560,17 +560,54 @@ describe("App", () => {
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "更新" }));
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(screen.getByRole("dialog")).toHaveTextContent("更新游戏");
+    expect(screen.getByRole("dialog")).toHaveTextContent("重新安装实例组件");
+    expect(screen.getByRole("checkbox", { name: "重新安装游戏本体" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "重新安装实例插件包" })).toBeChecked();
     await userEvent.click(
-      screen.getByRole("button", { name: "确认更新游戏" }),
+      screen.getByRole("button", { name: "确认重新安装" }),
     );
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/instances/1/game-update",
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ confirm: true }),
+        body: JSON.stringify({
+          confirm: true,
+          reinstall_game: true,
+          reinstall_package: true,
+        }),
       }),
     );
+  });
+
+  it("submits one selected reinstall target and disables an empty selection", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('{"ID":"job-1","Status":"pending"}', {
+        status: 202,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "更新" }));
+    const game = screen.getByRole("checkbox", { name: "重新安装游戏本体" });
+    const packageOption = screen.getByRole("checkbox", { name: "重新安装实例插件包" });
+    await userEvent.click(packageOption);
+    await userEvent.click(screen.getByRole("button", { name: "确认重新安装" }));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/instances/1/game-update",
+      expect.objectContaining({
+        body: JSON.stringify({
+          confirm: true,
+          reinstall_game: true,
+          reinstall_package: false,
+        }),
+      }),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "更新" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "重新安装游戏本体" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "重新安装实例插件包" }));
+    expect(screen.getByRole("button", { name: "确认重新安装" })).toBeDisabled();
   });
 
   it("confirms full package updates before submitting them", async () => {

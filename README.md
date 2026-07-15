@@ -68,6 +68,8 @@ The same configuration dialog is used for new and existing instances. It exposes
 
 Changing startup values or the selected package on an installed instance creates one serialized `reconfigure` Job. Package deployment and container rebuild preserve the instance's stopped/running intent, and the applied package ID advances only after deployment commits.
 
+From an instance card, **Update** opens a selective forced-reinstall dialog. It can reinstall the game files, fully redeploy the instance's currently selected plugin package, or do both in one serialized Job; both choices are selected by default. The operation does not check for newer package versions or switch the selected package.
+
 ## Private files and console
 
 Each instance has an independent **Private Files** Tab. File edits, uploads, renames and deletions are staged in the instance workspace; **Apply changes** commits the complete staged diff as one background Job. After a successful apply, snapshot pruning makes a best-effort attempt to retain the latest 20 snapshots by default. A prune failure is reported diagnostically without failing the committed apply, so retention can temporarily exceed 20. Restoring a snapshot also runs transactionally, and deleting a private override restores the current package/shared/Valve lower-layer file when one exists instead of leaving stale private content behind.

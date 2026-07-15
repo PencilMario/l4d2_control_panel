@@ -3,6 +3,7 @@ package updates
 import (
 	"context"
 	"errors"
+	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"strings"
 	"testing"
@@ -51,6 +52,106 @@ func (l orderedLife) Stop(context.Context, string) error {
 func (l orderedLife) Start(context.Context, string) error {
 	*l.events = append(*l.events, "start")
 	return nil
+}
+
+type gamePackages struct {
+	item content.PackageVersion
+	err  error
+}
+
+func (p gamePackages) Get(string) (content.PackageVersion, error) { return p.item, p.err }
+
+type gameDeployment struct {
+	events    *[]string
+	commitErr error
+}
+
+func (d gameDeployment) Commit() error {
+	*d.events = append(*d.events, "commit")
+	return d.commitErr
+}
+func (d gameDeployment) Rollback() error {
+	*d.events = append(*d.events, "rollback")
+	return nil
+}
+
+type gameDeployer struct {
+	events    *[]string
+	commitErr error
+}
+
+func (d gameDeployer) Begin(_ context.Context, _ string, _ string, _ string, mode Mode) (Deployment, error) {
+	*d.events = append(*d.events, "deploy:"+string(mode))
+	return gameDeployment{events: d.events, commitErr: d.commitErr}, nil
+}
+
+func TestGameReinstallPackageOnlyForcesFullDeployment(t *testing.T) {
+	events := []string{}
+	repo := &gameRepo{instance: domain.Instance{ID: "abc", SelectedPackageID: "pkg", PackageVersion: "pkg", DesiredState: domain.StateStopped, ActualState: domain.StateStopped}}
+	coordinator := GameCoordinator{
+		Instances: repo,
+		Lifecycle: orderedLife{&events},
+		Private:   privateApplier{&events},
+		Packages:  gamePackages{item: content.PackageVersion{ID: "pkg", ArchivePath: "package.zip", Version: "v1"}},
+		Deployer:  gameDeployer{events: &events},
+	}
+	if err := coordinator.Reinstall(context.Background(), "abc", ReinstallOptions{Package: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(events, ","); got != "deploy:full,commit" {
+		t.Fatalf("events=%s", got)
+	}
+}
+
+func TestGameReinstallCombinedStopsAndStartsOnce(t *testing.T) {
+	events := []string{}
+	repo := &gameRepo{instance: domain.Instance{ID: "abc", SelectedPackageID: "pkg", PackageVersion: "pkg", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}}
+	coordinator := GameCoordinator{
+		Root:      "/data",
+		Instances: repo,
+		Lifecycle: orderedLife{&events},
+		Updater:   gameUpdater{events: &events},
+		Private:   privateApplier{&events},
+		Packages:  gamePackages{item: content.PackageVersion{ID: "pkg", ArchivePath: "package.zip", Version: "v1"}},
+		Deployer:  gameDeployer{events: &events},
+	}
+	if err := coordinator.Reinstall(context.Background(), "abc", ReinstallOptions{Game: true, Package: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(events, ","); got != "stop,steamcmd,deploy:full,start,commit" {
+		t.Fatalf("events=%s", got)
+	}
+}
+
+func TestGameReinstallRollsBackCommittedPackageFailureWhileStopped(t *testing.T) {
+	events := []string{}
+	want := errors.New("commit failed")
+	repo := &gameRepo{instance: domain.Instance{ID: "abc", SelectedPackageID: "pkg", PackageVersion: "pkg", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}}
+	coordinator := GameCoordinator{
+		Instances: repo,
+		Lifecycle: orderedLife{&events},
+		Private:   privateApplier{&events},
+		Packages:  gamePackages{item: content.PackageVersion{ID: "pkg", ArchivePath: "package.zip", Version: "v1"}},
+		Deployer:  gameDeployer{events: &events, commitErr: want},
+	}
+	err := coordinator.Reinstall(context.Background(), "abc", ReinstallOptions{Package: true})
+	if !errors.Is(err, want) {
+		t.Fatalf("err=%v", err)
+	}
+	if got := strings.Join(events, ","); got != "stop,deploy:full,start,commit,stop,rollback,start" {
+		t.Fatalf("events=%s", got)
+	}
+}
+
+func TestGameReinstallPackageRequiresSelectedPackage(t *testing.T) {
+	events := []string{}
+	want := errors.New("package missing")
+	repo := &gameRepo{instance: domain.Instance{ID: "abc", DesiredState: domain.StateStopped, ActualState: domain.StateStopped}}
+	coordinator := GameCoordinator{Instances: repo, Lifecycle: orderedLife{&events}, Private: privateApplier{&events}, Packages: gamePackages{err: want}, Deployer: gameDeployer{events: &events}}
+	err := coordinator.Reinstall(context.Background(), "abc", ReinstallOptions{Package: true})
+	if !errors.Is(err, want) || repo.instance.ActualState != domain.StateFaulted {
+		t.Fatalf("err=%v instance=%#v", err, repo.instance)
+	}
 }
 func TestGameUpdateStopsValidatesReappliesAndStarts(t *testing.T) {
 	events := []string{}
