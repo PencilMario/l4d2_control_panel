@@ -285,9 +285,17 @@ func (e *Engine) maintenanceContainers(ctx context.Context, instanceID string) (
 }
 
 func NewEngine(host string, options ...EngineOption) *Engine {
+	client := &http.Client{}
+	if strings.HasPrefix(host, "unix://") {
+		socketPath := strings.TrimPrefix(host, "unix://")
+		client.Transport = &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+		}}
+		host = "http://docker"
+	}
 	host = strings.TrimRight(host, "/")
 	host = strings.Replace(host, "tcp://", "http://", 1)
-	engine := &Engine{base: host, http: &http.Client{}}
+	engine := &Engine{base: host, http: client}
 	for _, option := range options {
 		option(engine)
 	}

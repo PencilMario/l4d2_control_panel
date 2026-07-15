@@ -90,7 +90,7 @@ func main() {
 	}
 	dockerHost := os.Getenv("DOCKER_HOST")
 	if dockerHost == "" {
-		dockerHost = "http://127.0.0.1:23750"
+		dockerHost = "unix:///run/l4d2-panel/proxy.sock"
 	}
 	steamCredentials := func() (string, string) {
 		username, _, _ := secretService.Get(context.Background(), "steam_username")

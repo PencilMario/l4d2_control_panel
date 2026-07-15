@@ -6,13 +6,42 @@ import (
 	"encoding/json"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestUnixEngineUsesSocketTransport(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "docker.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1.44/info" || r.URL.RawQuery != "foo=bar" {
+			t.Fatalf("request = %s?%s", r.URL.Path, r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"Name":"unix"}`))
+	}))
+	server.Listener = listener
+	server.Start()
+	defer server.Close()
+	var out struct{ Name string }
+	if err := NewEngine("unix://"+socketPath).do(context.Background(), http.MethodGet, "/info", url.Values{"foo": []string{"bar"}}, nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Name != "unix" {
+		t.Fatalf("name = %q", out.Name)
+	}
+}
 
 func TestEngineCreatesRestrictedManagedContainer(t *testing.T) {
 	var got createRequest

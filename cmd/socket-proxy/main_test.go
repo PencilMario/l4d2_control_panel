@@ -3,14 +3,50 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/not0721here/l4d2-control-panel/internal/traffic"
 )
+
+func TestSocketListenerRejectsRegularFileAndSetsMode(t *testing.T) {
+	path := filepath.Join(os.TempDir(), fmt.Sprintf("l4d2-panel-%d.sock", os.Getpid()))
+	t.Cleanup(func() { _ = os.Remove(path) })
+	_ = os.Remove(path)
+	if err := os.WriteFile(path, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := listenUnix(path); err == nil {
+		t.Fatal("expected regular file rejection")
+	}
+	_ = os.Remove(path)
+	ln, err := listenUnix(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0660 {
+		t.Fatalf("mode = %o", info.Mode().Perm())
+	}
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ln, err = listenUnix(path)
+	if err != nil {
+		t.Fatalf("replace stale socket: %v", err)
+	}
+}
 
 func TestProxyHandlerRoutesTrafficBeforeDockerPolicy(t *testing.T) {
 	counter := traffic.NewCounter()
