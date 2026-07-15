@@ -92,6 +92,17 @@ func TestPlayerCommandRejectsArbitraryConsoleInput(t *testing.T) {
 	}
 }
 
+func TestExtractConsoleResponseIgnoresHistoryAndEchoedMarkerCommands(t *testing.T) {
+	raw := "old status\n# 9 1 \"Old Player\" STEAM_1:0:1 active\r\n" +
+		"echo START_MARKER\r\nstatus\r\necho END_MARKER\r\n" +
+		"START_MARKER\r\n# 2 1 \"Sir.P\" STEAM_1:0:526095818 active\r\nEND_MARKER\r\nnew noise\n"
+
+	response, ok := extractConsoleResponse(raw, "START_MARKER", "END_MARKER")
+	if !ok || response != "# 2 1 \"Sir.P\" STEAM_1:0:526095818 active" {
+		t.Fatalf("ok=%v response=%q", ok, response)
+	}
+}
+
 func TestGameUpdateUsesFixedSteamCMDMaintenanceContainer(t *testing.T) {
 	var created createRequest
 	var paths []string
