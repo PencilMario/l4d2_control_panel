@@ -154,45 +154,23 @@ describe("App", () => {
     ).toBeInTheDocument();
     vi.unstubAllGlobals();
   });
-  it("does not apply a private overlay when saving the file fails", async () => {
-    const calls: string[] = [];
+  it("opens private files as an independent main navigation page", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      vi.fn(async (input: RequestInfo | URL) => {
         const path = String(input);
-        calls.push(`${init?.method || "GET"} ${path}`);
-        if (
-          path === "/api/content/vpk" ||
-          path === "/api/packages" ||
-          path === "/api/instances/1/private"
-        ) {
-          return new Response("[]", {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        if (init?.method === "PUT" && path.includes("/private/")) {
-          return new Response(
-            JSON.stringify({ error: { message: "invalid private path" } }),
-            { status: 422, headers: { "Content-Type": "application/json" } },
-          );
-        }
-        return new Response(
-          JSON.stringify({ ID: "job-1", Status: "pending" }),
-          { status: 202, headers: { "Content-Type": "application/json" } },
-        );
+        const body = path.endsWith("/private/diff")
+          ? '{"changes":[],"summary":{"added":0,"modified":0,"deleted":0}}'
+          : "[]";
+        return new Response(body, {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
       }),
     );
     render(<App initialInstances={[instance]} />);
-    await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
-    await screen.findByText("实例私有覆盖");
-    await userEvent.click(
-      screen.getByRole("button", { name: "保存并立即应用" }),
-    );
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "invalid private path",
-    );
-    expect(calls.some((x) => x.includes("/private/apply"))).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "私有文件" }));
+    expect(await screen.findByRole("heading", { name: "私有文件" })).toBeVisible();
     vi.unstubAllGlobals();
   });
   it("disables instance-scoped content actions when no instance exists", async () => {
@@ -216,9 +194,6 @@ describe("App", () => {
       await screen.findByRole("button", { name: "热更新" }),
     ).toBeDisabled();
     expect(screen.getByRole("button", { name: "完整更新" })).toBeDisabled();
-    expect(
-      screen.getByRole("button", { name: "保存并立即应用" }),
-    ).toBeDisabled();
     await waitFor(() =>
       expect(screen.getByText("plugins.zip · v1")).toBeInTheDocument(),
     );
@@ -246,7 +221,7 @@ describe("App", () => {
     expect(screen.getByText("download interrupted")).toBeInTheDocument();
     vi.unstubAllGlobals();
   });
-  it("loads VPK downloads and private files into the editor", async () => {
+  it("loads VPK downloads from the content repository", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
@@ -263,18 +238,6 @@ describe("App", () => {
             headers: { "Content-Type": "application/json" },
           });
         }
-        if (path === "/api/instances/1/private") {
-          return new Response(
-            '[{"path":"cfg/server.cfg","size":14,"hash":"123456"}]',
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          );
-        }
-        if (path === "/api/instances/1/private/file/cfg/server.cfg") {
-          return new Response("hostname smoke", {
-            status: 200,
-            headers: { "Content-Type": "text/plain" },
-          });
-        }
         return new Response("[]", {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -288,12 +251,6 @@ describe("App", () => {
       "href",
       "/api/content/vpk/maps.vpk/download",
     );
-    await userEvent.click(
-      await screen.findByRole("button", { name: "编辑 cfg/server.cfg" }),
-    );
-    expect(
-      await screen.findByDisplayValue("hostname smoke"),
-    ).toBeInTheDocument();
     vi.unstubAllGlobals();
   });
 
