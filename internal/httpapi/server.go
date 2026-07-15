@@ -754,7 +754,9 @@ func (s *Server) updateGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Confirm bool `json:"confirm"`
+		Confirm          bool  `json:"confirm"`
+		ReinstallGame    *bool `json:"reinstall_game"`
+		ReinstallPackage *bool `json:"reinstall_package"`
 	}
 	if decodeJSON(w, r, &input) != nil {
 		return
@@ -763,10 +765,21 @@ func (s *Server) updateGame(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 428, "confirmation_required", "game update requires confirmation")
 		return
 	}
+	options := updates.ReinstallOptions{}
+	if input.ReinstallGame == nil && input.ReinstallPackage == nil {
+		options.Game = true
+	} else {
+		options.Game = input.ReinstallGame != nil && *input.ReinstallGame
+		options.Package = input.ReinstallPackage != nil && *input.ReinstallPackage
+	}
+	if !options.Game && !options.Package {
+		writeError(w, 422, "reinstall_target_required", "at least one reinstall target is required")
+		return
+	}
 	id := chi.URLParam(r, "id")
 	job, ok := s.startJob(w, r, id, "game_update", func(ctx context.Context, reporter jobs.Reporter) error {
-		reporter.Progress("steamcmd", 10, "validating App 222860")
-		return s.gameUpdates.Update(ctx, id)
+		reporter.Progress("reinstall", 10, "reinstalling selected instance components")
+		return s.gameUpdates.Reinstall(ctx, id, options)
 	})
 	if !ok {
 		return

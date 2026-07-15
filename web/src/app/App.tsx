@@ -505,6 +505,7 @@ function Overview({
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Instance | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const [reinstalling, setReinstalling] = useState<Instance | null>(null);
   const packagesByID = new globalThis.Map(
     packages.map((item) => [item.id, item]),
   );
@@ -673,19 +674,7 @@ function Overview({
                     玩家
                   </button>
                   <button
-                    onClick={() =>
-                      setConfirmation({
-                        title: `更新游戏 ${x.name}？`,
-                        description:
-                          "游戏更新会停止 SRCDS，完成校验与内容重放后再启动服务器。",
-                        confirmLabel: "确认更新游戏",
-                        confirm: () => {
-                          void queue(`/api/instances/${x.id}/game-update`, {
-                            confirm: true,
-                          });
-                        },
-                      })
-                    }
+                    onClick={() => setReinstalling(x)}
                   >
                     <RefreshCw />
                     更新
@@ -724,6 +713,20 @@ function Overview({
           onConfirm={() => {
             confirmation.confirm();
             setConfirmation(null);
+          }}
+        />
+      )}
+      {reinstalling && (
+        <ReinstallDialog
+          instance={reinstalling}
+          close={() => setReinstalling(null)}
+          onConfirm={(game, packageOption) => {
+            void queue(`/api/instances/${reinstalling.id}/game-update`, {
+              confirm: true,
+              reinstall_game: game,
+              reinstall_package: packageOption,
+            });
+            setReinstalling(null);
           }}
         />
       )}
@@ -1624,6 +1627,67 @@ function ConfirmationDialog({
             onClick={onConfirm}
           >
             {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReinstallDialog({
+  instance,
+  close,
+  onConfirm,
+}: {
+  instance: Instance;
+  close: () => void;
+  onConfirm: (game: boolean, packageOption: boolean) => void;
+}) {
+  const [game, setGame] = useState(true);
+  const [packageOption, setPackageOption] = useState(true);
+  return (
+    <div className="modal-wrap">
+      <div
+        className="modal reinstall-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="reinstall-title"
+      >
+        <span className="danger-icon">
+          <RefreshCw />
+        </span>
+        <p className="eyebrow">FORCED REINSTALL</p>
+        <h2 id="reinstall-title">重新安装实例组件</h2>
+        <p>{instance.name} 将在重新安装期间停止，并在完成后恢复原有运行状态。</p>
+        <fieldset className="reinstall-options">
+          <label>
+            <input
+              aria-label="重新安装游戏本体"
+              type="checkbox"
+              checked={game}
+              onChange={(event) => setGame(event.target.checked)}
+            />
+            <span><b>重新安装游戏本体</b><small>强制运行 SteamCMD 校验 App 222860</small></span>
+          </label>
+          <label>
+            <input
+              aria-label="重新安装实例插件包"
+              type="checkbox"
+              checked={packageOption}
+              onChange={(event) => setPackageOption(event.target.checked)}
+            />
+            <span><b>重新安装实例插件包</b><small>完整部署当前选中的插件包</small></span>
+          </label>
+        </fieldset>
+        <div>
+          <button onClick={close}>取消</button>
+          <button
+            className="danger"
+            aria-label="确认重新安装"
+            disabled={!game && !packageOption}
+            onClick={() => onConfirm(game, packageOption)}
+          >
+            确认重新安装
           </button>
         </div>
       </div>

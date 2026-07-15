@@ -40,6 +40,14 @@ func (f *fakeLifecycle) Restart(context.Context, string) error      { f.action =
 func (f *fakeLifecycle) Rebuild(context.Context, string) error      { f.action = "rebuild"; return nil }
 func (f *fakeLifecycle) Delete(context.Context, string, bool) error { f.action = "delete"; return nil }
 
+type apiGameUpdater struct{ calls int }
+
+func (u *apiGameUpdater) HasMaintenance(context.Context, string) (bool, error) { return false, nil }
+func (u *apiGameUpdater) UpdateGame(context.Context, string, domain.Instance) error {
+	u.calls++
+	return nil
+}
+
 type fakeAttacher struct{ peer net.Conn }
 
 type overviewPlayers struct {
@@ -698,6 +706,58 @@ func TestUpdatePlansOnlyRequiredRuntimeWork(t *testing.T) {
 	}
 	if stored.SelectedPackageID != packageB || stored.PackageVersion != packageB || stored.ExtraArgs != `+hostname "Changed"` {
 		t.Fatalf("instance=%#v", stored)
+	}
+}
+
+func TestGameUpdateAcceptsSelectiveReinstallContract(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		status    int
+		gameCalls int
+	}{
+		{name: "legacy game only", body: `{"confirm":true}`, status: http.StatusAccepted, gameCalls: 1},
+		{name: "game only", body: `{"confirm":true,"reinstall_game":true,"reinstall_package":false}`, status: http.StatusAccepted, gameCalls: 1},
+		{name: "package only", body: `{"confirm":true,"reinstall_game":false,"reinstall_package":true}`, status: http.StatusAccepted},
+		{name: "combined", body: `{"confirm":true,"reinstall_game":true,"reinstall_package":true}`, status: http.StatusAccepted, gameCalls: 1},
+		{name: "empty", body: `{"confirm":true,"reinstall_game":false,"reinstall_package":false}`, status: http.StatusUnprocessableEntity},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, db := testServer(t)
+			defer db.Close()
+			packageID := defaultPackageID(t, s)
+			packageItem, err := s.packages.Get(packageID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := filepath.Dir(filepath.Dir(filepath.Dir(packageItem.ArchivePath)))
+			instance := domain.Instance{ID: "selective", NodeID: "local", Name: "Selective", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", SelectedPackageID: packageID, PackageVersion: packageID, DesiredState: domain.StateStopped, ActualState: domain.StateStopped}
+			if err := db.CreateInstance(context.Background(), instance); err != nil {
+				t.Fatal(err)
+			}
+			updater := &apiGameUpdater{}
+			manager := jobs.NewPersistentManager(db)
+			private := content.NewPrivateManager(root, 1<<20)
+			coordinator := &updates.GameCoordinator{Root: root, Instances: db, Lifecycle: &fakeLifecycle{}, Updater: updater, Private: private, Packages: s.packages, Deployer: s.updates}
+			s = New(db, s.auth, WithOperations(&fakeLifecycle{}, manager), WithContent(nil, private, s.packages, s.updates, nil), WithGameUpdates(coordinator))
+			response := authenticatedJSON(t, s, loginCookie(t, s), http.MethodPost, "/api/instances/selective/game-update", tt.body)
+			if response.Code != tt.status {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if tt.status == http.StatusAccepted {
+				var job jobs.Job
+				if err := json.Unmarshal(response.Body.Bytes(), &job); err != nil {
+					t.Fatal(err)
+				}
+				if got := waitForJob(t, manager, job.ID); got.Status != jobs.Succeeded {
+					t.Fatalf("job=%#v", got)
+				}
+			}
+			if updater.calls != tt.gameCalls {
+				t.Fatalf("game calls=%d", updater.calls)
+			}
+		})
 	}
 }
 
