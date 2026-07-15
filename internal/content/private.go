@@ -397,12 +397,16 @@ func (m *PrivateManager) Delete(_ context.Context, instanceID, name string) erro
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(target); err != nil {
+	info, err := os.Stat(target)
+	if err != nil {
 		return err
 	}
 	lock := m.instanceLock(instanceID)
 	lock.Lock()
 	defer lock.Unlock()
+	if info.IsDir() {
+		return os.RemoveAll(target)
+	}
 	if _, err := m.save(instanceID, name, []byte{}); err != nil {
 		return err
 	}

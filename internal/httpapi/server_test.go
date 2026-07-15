@@ -58,7 +58,7 @@ func TestPrivateFileAPIContract(t *testing.T) {
 	}
 	root := t.TempDir()
 	private := content.NewPrivateManager(root, 1<<20)
-	s = New(db, s.auth, WithContent(nil, private, nil, nil, nil), WithPrivateUploads(content.NewPrivateUploadManager(root, 8<<20)))
+	s = New(db, s.auth, WithOperations(nil, jobs.NewPersistentManager(db)), WithContent(nil, private, nil, nil, nil), WithPrivateUploads(content.NewPrivateUploadManager(root, 8<<20)))
 	cookie := loginCookie(t, s)
 	for _, check := range []struct{ method, path string }{{http.MethodGet, "/api/instances/abc/private/tree"}, {http.MethodPost, "/api/instances/abc/private/directories"}} {
 		r := httptest.NewRequest(check.method, check.path, strings.NewReader(`{"path":"x"}`))
@@ -120,6 +120,32 @@ func TestPrivateFileAPIContract(t *testing.T) {
 	}
 	if w := do(http.MethodPost, "/api/instances/abc/private/move", `{"from":"cfg/a","to":"cfg/b","overwrite":true}`); w.Code != 428 {
 		t.Fatalf("move confirmation: %d %s", w.Code, w.Body.String())
+	}
+	if w := do(http.MethodPost, "/api/instances/abc/private/move", `{"from":"cfg/a","to":"cfg/b","overwrite":true,"confirm":true}`); w.Code != 204 {
+		t.Fatalf("confirmed move: %d %s", w.Code, w.Body.String())
+	}
+	put := func(contentType string, raw []byte) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPut, "/api/instances/abc/private/cfg/text.cfg", bytes.NewReader(raw))
+		r.AddCookie(cookie)
+		r.Header.Set("Content-Type", contentType)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		return w
+	}
+	if w := put("text/plain; charset=utf-8", []byte("hello")); w.Code != 200 {
+		t.Fatalf("text put: %d %s", w.Code, w.Body.String())
+	}
+	if raw, _ := private.Read(context.Background(), "abc", "cfg/text.cfg"); string(raw) != "hello" {
+		t.Fatalf("text not persisted: %q", raw)
+	}
+	if w := put("application/octet-stream", []byte("x")); w.Code != 415 {
+		t.Fatalf("wrong text media: %d", w.Code)
+	}
+	if w := put("text/plain", []byte{0xff}); w.Code != 422 {
+		t.Fatalf("invalid utf8: %d", w.Code)
+	}
+	if w := put("text/plain", bytes.Repeat([]byte("x"), 1<<20+1)); w.Code != 413 {
+		t.Fatalf("large text: %d", w.Code)
 	}
 	if w := do(http.MethodPost, "/api/instances/abc/private/snapshots/bad/restore", `{}`); w.Code != 428 {
 		t.Fatalf("restore confirmation: %d %s", w.Code, w.Body.String())
@@ -184,8 +210,87 @@ func TestPrivateFileAPIContract(t *testing.T) {
 	if w = do(http.MethodPost, "/api/instances/abc/private/uploads/"+session.ID+"/complete", ""); w.Code != 204 {
 		t.Fatalf("complete: %d %s", w.Code, w.Body.String())
 	}
+	bad := do(http.MethodPost, "/api/instances/abc/private/uploads", `{"path":"bad.bin","size":3,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`)
+	var badSession content.PrivateUploadSession
+	_ = json.Unmarshal(bad.Body.Bytes(), &badSession)
+	r = httptest.NewRequest(http.MethodPatch, "/api/instances/abc/private/uploads/"+badSession.ID, strings.NewReader("abc"))
+	r.AddCookie(cookie)
+	r.Header.Set("Upload-Offset", "0")
+	r.Header.Set("Content-Type", "application/offset+octet-stream")
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w = do(http.MethodPost, "/api/instances/abc/private/uploads/"+badSession.ID+"/complete", ""); w.Code != 422 || !strings.Contains(w.Body.String(), `"code":"upload_incomplete"`) {
+		t.Fatalf("hash complete: %d %s", w.Code, w.Body.String())
+	}
+	over := do(http.MethodPost, "/api/instances/abc/private/uploads", fmt.Sprintf(`{"path":"over.bin","size":3,"sha256":"%x"}`, sha256.Sum256([]byte("abc"))))
+	var overSession content.PrivateUploadSession
+	_ = json.Unmarshal(over.Body.Bytes(), &overSession)
+	r = httptest.NewRequest(http.MethodPatch, "/api/instances/abc/private/uploads/"+overSession.ID, strings.NewReader("abcd"))
+	r.AddCookie(cookie)
+	r.Header.Set("Upload-Offset", "0")
+	r.Header.Set("Content-Type", "application/offset+octet-stream")
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code < 400 {
+		t.Fatalf("overflow accepted: %d", w.Code)
+	}
+	if w = do(http.MethodGet, "/api/instances/abc/private/uploads/"+overSession.ID, ""); w.Code != 200 || !strings.Contains(w.Body.String(), `"offset":0`) {
+		t.Fatalf("overflow recover: %d %s", w.Code, w.Body.String())
+	}
 	if w = do(http.MethodGet, "/api/instances/abc/private/file/addons/file.bin", ""); w.Code != 200 || w.Body.String() != "abcdef" {
 		t.Fatalf("download: %d %q", w.Code, w.Body.String())
+	}
+	if err := private.ApplyChanges(context.Background(), "abc"); err != nil {
+		t.Fatal(err)
+	}
+	list := do(http.MethodGet, "/api/instances/abc/private/snapshots", "")
+	if list.Code != 200 {
+		t.Fatalf("snapshots: %d %s", list.Code, list.Body.String())
+	}
+	var snapshots []content.PrivateSnapshot
+	if err := json.Unmarshal(list.Body.Bytes(), &snapshots); err != nil || len(snapshots) == 0 {
+		t.Fatalf("snapshots json: %v %s", err, list.Body.String())
+	}
+	if w := do(http.MethodPost, "/api/instances/abc/private/snapshots/"+snapshots[0].ID+"/restore", `{"confirm":true}`); w.Code != 204 {
+		t.Fatalf("restore: %d %s", w.Code, w.Body.String())
+	}
+	apply := do(http.MethodPost, "/api/instances/abc/private/apply", `{}`)
+	if apply.Code != 202 {
+		t.Fatalf("apply: %d %s", apply.Code, apply.Body.String())
+	}
+	var started jobs.Job
+	if err := json.Unmarshal(apply.Body.Bytes(), &started); err != nil || started.Type != "apply_private" {
+		t.Fatalf("apply job: %+v %v", started, err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		job, ok := s.jobs.Get(started.ID)
+		if ok && job.Status == "succeeded" {
+			if job.Stage != "commit" {
+				t.Fatalf("final stage=%s", job.Stage)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("apply job did not succeed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if w := do(http.MethodDelete, "/api/instances/abc/private/file/cfg?confirm=true", ""); w.Code != 204 {
+		t.Fatalf("recursive delete: %d %s", w.Code, w.Body.String())
+	}
+	audits, err = db.AuditEvents(context.Background(), 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundSuccess := false
+	for _, event := range audits {
+		if event.Target == "/api/instances/abc/private/directories" && event.Result == "201" {
+			foundSuccess = true
+		}
+	}
+	if !foundSuccess {
+		t.Fatal("successful mutation was not audited")
 	}
 }
 

@@ -213,3 +213,25 @@ func TestPrivateUploadCleanupPairsAndKeepsActiveSession(t *testing.T) {
 		t.Fatalf("active removed: %v", err)
 	}
 }
+
+func TestPrivateUploadCleanupRejectsSymlinkRootWithoutTouchingOutside(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	sentinel := filepath.Join(outside, "sentinel")
+	if err := os.WriteFile(sentinel, []byte("safe"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	uploadRoot := filepath.Join(root, "instances", "abc", "backups", "private", "uploads")
+	if err := os.MkdirAll(filepath.Dir(uploadRoot), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, uploadRoot); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := NewPrivateUploadManager(root, 1024).Cleanup(); err == nil {
+		t.Fatal("unsafe upload root accepted")
+	}
+	if raw, err := os.ReadFile(sentinel); err != nil || string(raw) != "safe" {
+		t.Fatalf("outside changed: %q, %v", raw, err)
+	}
+}
