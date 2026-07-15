@@ -48,6 +48,57 @@ func (f *fakeAttacher) AttachSupervisor(context.Context, string) (io.ReadWriteCl
 	return client, nil
 }
 
+func TestPrivateFileAPIContract(t *testing.T) {
+	s, db := testServer(t)
+	t.Cleanup(func() { _ = db.Close() })
+	root := t.TempDir()
+	private := content.NewPrivateManager(root, 1<<20)
+	s = New(db, s.auth, WithContent(nil, private, nil, nil, nil), WithPrivateUploads(content.NewPrivateUploadManager(root, 8<<20)))
+	cookie := loginCookie(t, s)
+	do := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.AddCookie(cookie)
+		if body != "" {
+			r.Header.Set("Content-Type", "application/json")
+		}
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		return w
+	}
+	if w := do(http.MethodPost, "/api/instances/abc/private/directories", `{"path":"cfg"}`); w.Code != 201 {
+		t.Fatalf("mkdir: %d %s", w.Code, w.Body.String())
+	}
+	if w := do(http.MethodGet, "/api/instances/abc/private/tree", ""); w.Code != 200 {
+		t.Fatalf("tree: %d %s", w.Code, w.Body.String())
+	}
+	if w := do(http.MethodGet, "/api/instances/abc/private/diff", ""); w.Code != 200 {
+		t.Fatalf("diff: %d %s", w.Code, w.Body.String())
+	}
+	hash := sha256.Sum256([]byte("abcdef"))
+	w := do(http.MethodPost, "/api/instances/abc/private/uploads", fmt.Sprintf(`{"path":"addons/file.bin","size":6,"sha256":"%x"}`, hash))
+	if w.Code != 201 {
+		t.Fatalf("begin: %d %s", w.Code, w.Body.String())
+	}
+	var session content.PrivateUploadSession
+	if err := json.Unmarshal(w.Body.Bytes(), &session); err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPatch, "/api/instances/abc/private/uploads/"+session.ID, strings.NewReader("abcdef"))
+	r.AddCookie(cookie)
+	r.Header.Set("Upload-Offset", "0")
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != 204 || w.Header().Get("Upload-Offset") != "6" {
+		t.Fatalf("patch: %d %s offset=%s", w.Code, w.Body.String(), w.Header().Get("Upload-Offset"))
+	}
+	if w = do(http.MethodPost, "/api/instances/abc/private/uploads/"+session.ID+"/complete", ""); w.Code != 204 {
+		t.Fatalf("complete: %d %s", w.Code, w.Body.String())
+	}
+	if w = do(http.MethodGet, "/api/instances/abc/private/file/addons/file.bin", ""); w.Code != 200 || w.Body.String() != "abcdef" {
+		t.Fatalf("download: %d %q", w.Code, w.Body.String())
+	}
+}
+
 func testServer(t *testing.T) (*Server, *store.Store) {
 	t.Helper()
 	root := t.TempDir()
