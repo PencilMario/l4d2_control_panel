@@ -22,6 +22,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/httpapi"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
+	"github.com/not0721here/l4d2-control-panel/internal/metrics"
 	"github.com/not0721here/l4d2-control-panel/internal/players"
 	"github.com/not0721here/l4d2-control-panel/internal/scheduler"
 	"github.com/not0721here/l4d2-control-panel/internal/secrets"
@@ -143,6 +144,32 @@ func (fixtureResources) Stats(context.Context, string) (docker.ResourceStats, er
 	return docker.ResourceStats{CPUPercent: 12.5, MemoryBytes: 768 << 20}, nil
 }
 
+type fixturePerformance struct{}
+
+func (fixturePerformance) Latest(string) (metrics.Snapshot, bool) {
+	running := true
+	gameMap := "c2m1_highway"
+	playersOnline, maxPlayers := 1, 8
+	return metrics.Snapshot{
+		Timestamp: time.Date(2026, 7, 15, 12, 0, 10, 0, time.UTC), RunID: "fixture-run", ContainerRunning: &running,
+		CPUPercent: fixtureFloat64(12.5), MemoryBytes: fixtureUint64(768 << 20), MemoryLimitBytes: fixtureUint64(2 << 30), MemoryPercent: fixtureFloat64(37.5),
+		NetworkRXBytesPerSecond: fixtureFloat64(128), NetworkTXBytesPerSecond: fixtureFloat64(64), NetworkRXBytes: fixtureUint64(4096), NetworkTXBytes: fixtureUint64(2048),
+		BlockReadBytesPerSecond: fixtureFloat64(32), BlockWriteBytesPerSecond: fixtureFloat64(16), BlockReadBytes: fixtureUint64(1024), BlockWriteBytes: fixtureUint64(512),
+		PIDs: fixtureUint64(24), UptimeSeconds: fixtureUint64(3600), A2SLatencyMS: fixtureFloat64(2.5), Map: &gameMap, Players: &playersOnline, MaxPlayers: &maxPlayers,
+	}, true
+}
+
+func (fixturePerformance) History(string) []metrics.Snapshot {
+	zero := 0.0
+	return []metrics.Snapshot{
+		{Timestamp: time.Date(2026, 7, 15, 12, 0, 5, 0, time.UTC), RunID: "fixture-run", CPUPercent: fixtureFloat64(10), MemoryPercent: fixtureFloat64(37)},
+		{Timestamp: time.Date(2026, 7, 15, 12, 0, 10, 0, time.UTC), RunID: "fixture-run", CPUPercent: fixtureFloat64(12.5), MemoryPercent: fixtureFloat64(37.5), NetworkRXBytesPerSecond: &zero, NetworkTXBytesPerSecond: &zero, BlockReadBytesPerSecond: &zero, BlockWriteBytesPerSecond: &zero},
+	}
+}
+
+func fixtureFloat64(value float64) *float64 { return &value }
+func fixtureUint64(value uint64) *uint64    { return &value }
+
 type fixtureSystem struct{}
 
 func (fixtureSystem) Info(context.Context) (docker.Info, error) {
@@ -217,6 +244,7 @@ func main() {
 		httpapi.WithScheduler(schedules),
 		httpapi.WithSecrets(secretService),
 		httpapi.WithResources(fixtureResources{}),
+		httpapi.WithPerformance(fixturePerformance{}),
 		httpapi.WithSystem(fixtureSystem{}),
 	)
 	mux := http.NewServeMux()

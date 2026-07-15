@@ -148,7 +148,7 @@ func main() {
 			log.Fatal("L4D2_PANEL_SECURE_COOKIE must be true or false")
 		}
 	}
-	api := httpapi.New(db, sessions, httpapi.WithOperations(life, jobManager), httpapi.WithConsole(engine), httpapi.WithPlayers(playerService), httpapi.WithContent(uploadManager, privateManager, packageManager, updatePipeline, updateCoordinator), httpapi.WithGameUpdates(gameCoordinator), httpapi.WithScheduler(scheduleService), httpapi.WithSecrets(secretService), httpapi.WithResources(engine), httpapi.WithSystem(engine), httpapi.WithSecureCookie(secureCookie))
+	api := httpapi.New(db, sessions, httpapi.WithOperations(life, jobManager), httpapi.WithConsole(engine), httpapi.WithPlayers(playerService), httpapi.WithContent(uploadManager, privateManager, packageManager, updatePipeline, updateCoordinator), httpapi.WithGameUpdates(gameCoordinator), httpapi.WithScheduler(scheduleService), httpapi.WithSecrets(secretService), httpapi.WithResources(engine), httpapi.WithPerformance(performanceSampler), httpapi.WithSystem(engine), httpapi.WithSecureCookie(secureCookie))
 	mux := http.NewServeMux()
 	mux.Handle("/api/", api.Handler())
 	web := os.Getenv("L4D2_PANEL_WEB_ROOT")
