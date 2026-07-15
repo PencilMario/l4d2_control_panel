@@ -34,6 +34,28 @@ func TestSocketActiveListenerIsNotUnlinked(t *testing.T) {
 	_ = conn.Close()
 }
 
+func TestSecurePathSkipsChownWhenOwnershipMatches(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "proxy.sock")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	chownCalls := 0
+	err := securePathWith(
+		path,
+		0660,
+		0,
+		10001,
+		func(string) (int, int, bool, error) { return 0, 10001, true, nil },
+		func(string, int, int) error { chownCalls++; return errors.New("chown unavailable") },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chownCalls != 0 {
+		t.Fatalf("chown calls = %d, want 0", chownCalls)
+	}
+}
+
 func TestSocketStaleListenerIsRemoved(t *testing.T) {
 	path := testSocketPath(t, "stale")
 	stale, err := net.Listen("unix", path)

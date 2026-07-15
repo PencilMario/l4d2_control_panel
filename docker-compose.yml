@@ -16,6 +16,16 @@ services:
         STEAMCMD_IMAGE: ${STEAMCMD_IMAGE:-cm2network/steamcmd:root}
     entrypoint: ["/bin/true"]
     profiles: [images]
+  proxy-init:
+    image: ${ALPINE_IMAGE:-alpine:3.22}
+    user: "0:0"
+    command: ["sh", "-c", "chown 0:10001 /run/l4d2-panel && chmod 0750 /run/l4d2-panel"]
+    volumes:
+      - panel-proxy-run:/run/l4d2-panel
+    restart: "no"
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    security_opt: [no-new-privileges:true]
   socket-proxy:
     image: l4d2-docker-socket-proxy:latest
     build:
@@ -25,6 +35,9 @@ services:
         GO_IMAGE: ${GO_IMAGE:-golang:1.25-alpine}
         ALPINE_IMAGE: ${ALPINE_IMAGE:-alpine:3.22}
     restart: unless-stopped
+    depends_on:
+      proxy-init:
+        condition: service_completed_successfully
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - panel-proxy-run:/run/l4d2-panel
@@ -32,7 +45,7 @@ services:
       SOCKET_PATH: /run/l4d2-panel/proxy.sock
     network_mode: host
     read_only: true
-    user: "0:0"
+    user: "0:10001"
     cap_drop: [ALL]
     cap_add: [NET_RAW]
     security_opt: [no-new-privileges:true]

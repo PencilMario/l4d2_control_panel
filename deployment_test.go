@@ -13,6 +13,7 @@ func TestControlServicesUseSharedUnixProxyAndPublishOnlyPanel(t *testing.T) {
 	}
 	compose := string(raw)
 	services := serviceBlocks(t, compose)
+	proxyInit := services["proxy-init"]
 	proxy := services["socket-proxy"]
 	panel := services["panel"]
 	hostNetworkServices := make([]string, 0, 1)
@@ -25,7 +26,18 @@ func TestControlServicesUseSharedUnixProxyAndPublishOnlyPanel(t *testing.T) {
 		t.Fatalf("host networking services = %v, want [socket-proxy]", hostNetworkServices)
 	}
 
+	assertContains(t, proxyInit, "panel-proxy-run:/run/l4d2-panel", "proxy initializer shared run volume")
+	assertContains(t, proxyInit, "chown 0:10001 /run/l4d2-panel", "proxy initializer ownership")
+	assertContains(t, proxyInit, "chmod 0750 /run/l4d2-panel", "proxy initializer mode")
+	assertContains(t, proxyInit, "cap_drop: [ALL]", "proxy initializer cap_drop")
+	assertContains(t, proxyInit, "cap_add: [CHOWN]", "proxy initializer CHOWN-only cap_add")
+	if strings.Count(proxyInit, "cap_add:") != 1 {
+		t.Fatal("proxy-init must add CHOWN only")
+	}
+
 	assertContains(t, proxy, "network_mode: host", "socket-proxy host networking")
+	assertContains(t, proxy, "user: \"0:10001\"", "socket-proxy runtime uid/gid")
+	assertContains(t, proxy, "proxy-init:\n        condition: service_completed_successfully", "socket-proxy initializer dependency")
 	assertContains(t, proxy, "cap_drop: [ALL]", "socket-proxy cap_drop")
 	assertContains(t, proxy, "cap_add: [NET_RAW]", "socket-proxy NET_RAW-only cap_add")
 	assertContains(t, proxy, "read_only: true", "socket-proxy read-only root")

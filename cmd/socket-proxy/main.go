@@ -143,10 +143,23 @@ func dialUnixSocket(socketPath string) (net.Conn, error) {
 }
 
 func securePath(path string, mode os.FileMode, uid, gid int) error {
+	return securePathWith(path, mode, uid, gid, pathOwnership, os.Chown)
+}
+
+type ownershipFunc func(string) (uid, gid int, known bool, err error)
+
+func securePathWith(path string, mode os.FileMode, uid, gid int, ownership ownershipFunc, chown func(string, int, int) error) error {
 	if err := os.Chmod(path, mode); err != nil {
 		return err
 	}
-	err := os.Chown(path, uid, gid)
+	currentUID, currentGID, known, err := ownership(path)
+	if err != nil {
+		return err
+	}
+	if known && currentUID == uid && currentGID == gid {
+		return nil
+	}
+	err = chown(path, uid, gid)
 	if runtime.GOOS == "windows" {
 		return nil
 	}
