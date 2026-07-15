@@ -11,3 +11,13 @@ func TestParseStatusMapsNamesToStableUserIDs(t *testing.T) {
 		t.Fatalf("players=%#v", players)
 	}
 }
+
+func TestParseStatusAcceptsL4D2EntityColumnBeforePlayerName(t *testing.T) {
+	raw := `# userid name uniqueid connected ping loss state rate adr
+#  2 1 "Sir.P" STEAM_1:0:526095818 20:55 30 0 active 100000 100.106.239.85:27005`
+
+	players := ParseStatus(raw)
+	if len(players) != 1 || players[0].UserID != 2 || players[0].Name != "Sir.P" || players[0].SteamID != "STEAM_1:0:526095818" {
+		t.Fatalf("players=%#v", players)
+	}
+}
