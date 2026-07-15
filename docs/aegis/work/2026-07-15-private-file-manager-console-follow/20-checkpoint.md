@@ -14,7 +14,7 @@ Updated: 2026-07-15 19:25 +08:00
 
 ## Active slice
 
-Task 7 implementation is complete. Final whole-branch spec compliance and code quality review remain pending under the controller.
+Task 7 implementation, spec review and quality review are complete. Final whole-branch review and completion-candidate verification remain pending.
 
 ## Completed
 
@@ -44,6 +44,8 @@ Task 7 implementation is complete. Final whole-branch spec compliance and code q
 - Task 7 full Go regression, Vitest, production build, desktop/mobile Playwright and the tagged fixture test passed.
 - Task 7 retirement audit found no old immediate-apply UI or blind `private.Apply` call. Manual apply enters through HTTP `ApplyChangesWithProgress`; lower-layer deployment enters through the leased transaction `RebaseAndApply` path.
 - Task 7 README and evidence document the independent Tab, staged apply, 20-snapshot retention, lower-layer restoration, resumable uploads and console follow rules.
+- Task 7 spec and quality reviews approved after retention wording, retirement state, executable evidence, trace links and drift records were corrected.
+- Late upload-resume identity fix `4a79f45` passed focused 19/19, full web 54/54 and build; independent review approved it.
 
 ## Evidence refs
 
@@ -58,7 +60,7 @@ Nothing.
 
 ## ResumeStateHint
 
-Read this checkpoint, the intent, baseline read set, approved spec, plan and evidence. Confirm the worktree branch and diff agree with this checkpoint. Resume final whole-branch review only; do not repeat Task 7 unless evidence becomes stale.
+Read this checkpoint, the intent, baseline read set, approved spec, plan and evidence. Confirm the worktree branch and diff agree with this checkpoint. Resume final whole-branch review and verification-before-completion only.
 
 ## DriftCheckDraft
 
