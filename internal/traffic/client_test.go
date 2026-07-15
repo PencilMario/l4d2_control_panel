@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHandlerAndClientContract(t *testing.T) {
@@ -18,8 +19,9 @@ func TestHandlerAndClientContract(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := NewClient(server.URL, server.Client())
 	ctx := context.Background()
+	runID := time.Date(2026, 7, 16, 1, 2, 3, 456789, time.UTC).Format(time.RFC3339Nano)
 
-	if err := client.Register(ctx, Session{InstanceID: "instance-1", RunID: "run-1", Ports: []int{27015}}); err != nil {
+	if err := client.Register(ctx, Session{InstanceID: "instance-1", RunID: runID, Ports: []int{27015}}); err != nil {
 		t.Fatal(err)
 	}
 	counter.Observe(Packet{Length: 42, DstPort: 27015})
@@ -27,10 +29,10 @@ func TestHandlerAndClientContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != (Totals{RunID: "run-1", RXBytes: 42}) {
+	if got != (Totals{RunID: runID, RXBytes: 42}) {
 		t.Fatalf("Totals() = %+v", got)
 	}
-	if err := client.Stop(ctx, "instance-1", "run-1"); err != nil {
+	if err := client.Stop(ctx, "instance-1", runID); err != nil {
 		t.Fatal(err)
 	}
 }

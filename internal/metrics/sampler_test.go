@@ -224,6 +224,35 @@ func TestRegisterRetryAdvancesTrafficOwnership(t *testing.T) {
 	}
 }
 
+type counterTrafficAdapter struct{ counter *traffic.Counter }
+
+func (a counterTrafficAdapter) Register(_ context.Context, session traffic.Session) error {
+	return a.counter.Register(session)
+}
+func (a counterTrafficAdapter) Stop(_ context.Context, id, runID string) error {
+	return a.counter.Stop(id, runID)
+}
+func (a counterTrafficAdapter) Totals(_ context.Context, id string) (traffic.Totals, error) {
+	totals, ok := a.counter.Totals(id)
+	if !ok {
+		return traffic.Totals{}, errors.New("traffic totals unavailable")
+	}
+	return totals, nil
+}
+
+func TestSamplerRunIDMatchesRealTrafficContract(t *testing.T) {
+	now := time.Date(2026, 7, 16, 1, 2, 3, 456789, time.UTC)
+	s, _, _, _, _, _ := testSampler(now)
+	counter := traffic.NewCounter()
+	s.traffic = counterTrafficAdapter{counter: counter}
+	s.Sample(context.Background())
+	got, ok := counter.Totals("one")
+	want := now.Add(-time.Minute).Format(time.RFC3339Nano)
+	if !ok || got.RunID != want {
+		t.Fatalf("real traffic contract rejected sampler run: totals=%+v ok=%v want=%q", got, ok, want)
+	}
+}
+
 func TestRemovedInstanceRetainsOnlyPendingCleanupUntilStopSucceeds(t *testing.T) {
 	now := time.Now().UTC()
 	s, instances, _, network, _, _ := testSampler(now)

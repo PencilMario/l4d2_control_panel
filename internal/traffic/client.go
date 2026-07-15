@@ -137,7 +137,7 @@ func NewHandler(store Store, unavailable func() error) http.Handler {
 			if err := decodeStrictJSON(w, r, &request); err != nil {
 				return
 			}
-			if !safeID.MatchString(request.RunID) {
+			if !validRunID(request.RunID) {
 				http.Error(w, "invalid run ID", http.StatusBadRequest)
 				return
 			}

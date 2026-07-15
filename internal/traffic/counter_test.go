@@ -3,9 +3,26 @@ package traffic
 import (
 	"encoding/binary"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 )
+
+func TestCounterAcceptsRFC3339NanoRunID(t *testing.T) {
+	runID := time.Date(2026, 7, 16, 1, 2, 3, 456789, time.UTC).Format(time.RFC3339Nano)
+	c := NewCounter()
+	if err := c.Register(Session{InstanceID: "instance-1", RunID: runID, Ports: []int{27015}}); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := c.Totals("instance-1")
+	if !ok || got.RunID != runID {
+		t.Fatalf("totals=%+v ok=%v", got, ok)
+	}
+	if err := c.Stop("instance-1", runID); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestCounterAttributesDeclaredPortsOncePerDirection(t *testing.T) {
 	c := NewCounter()
@@ -33,6 +50,10 @@ func TestCounterRejectsInvalidRegistration(t *testing.T) {
 		{},
 		{InstanceID: "../escape", RunID: "run-1", Ports: []int{27015}},
 		{InstanceID: "instance-1", RunID: "bad/run", Ports: []int{27015}},
+		{InstanceID: "instance-1", RunID: "bad:run", Ports: []int{27015}},
+		{InstanceID: "instance-1", RunID: "bad run", Ports: []int{27015}},
+		{InstanceID: "instance-1", RunID: `bad\run`, Ports: []int{27015}},
+		{InstanceID: "instance-1", RunID: strings.Repeat("r", 129), Ports: []int{27015}},
 		{InstanceID: "instance-1", RunID: "run-1"},
 		{InstanceID: "instance-1", RunID: "run-1", Ports: []int{0}},
 		{InstanceID: "instance-1", RunID: "run-1", Ports: []int{65536}},

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"sync"
+	"time"
 )
 
 var safeID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
@@ -80,10 +81,21 @@ func (c *Counter) Stop(instanceID, runID string) error {
 }
 
 func validateIDs(instanceID, runID string) error {
-	if !safeID.MatchString(instanceID) || !safeID.MatchString(runID) {
+	if !safeID.MatchString(instanceID) || !validRunID(runID) {
 		return fmt.Errorf("%w: instance_id and run_id must be safe nonempty identifiers", ErrInvalidInput)
 	}
 	return nil
+}
+
+func validRunID(runID string) bool {
+	if len(runID) == 0 || len(runID) > 128 {
+		return false
+	}
+	if safeID.MatchString(runID) {
+		return true
+	}
+	_, err := time.Parse(time.RFC3339Nano, runID)
+	return err == nil
 }
 
 func (c *Counter) Observe(packet Packet) {
