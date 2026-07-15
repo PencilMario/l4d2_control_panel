@@ -1,9 +1,11 @@
 package traffic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -38,6 +40,31 @@ func TestNewClientEnforcesBoundedTimeout(t *testing.T) {
 	if client.http.Timeout <= 0 {
 		t.Fatal("NewClient accepted an unbounded HTTP client")
 	}
+}
+
+func TestClientDrainsErrorResponseForConnectionReuse(t *testing.T) {
+	body := bytes.NewReader(bytes.Repeat([]byte("x"), 8192))
+	httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadGateway,
+			Status:     "502 Bad Gateway",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(body),
+		}, nil
+	})}
+	_, err := NewClient("http://socket-proxy", httpClient).Totals(context.Background(), "instance-1")
+	if err == nil {
+		t.Fatal("Totals succeeded for an error response")
+	}
+	if body.Len() != 0 {
+		t.Fatalf("error response retained %d unread bytes", body.Len())
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
 }
 
 func TestHandlerRejectsMismatchedIDUnknownRunAndBadBodies(t *testing.T) {

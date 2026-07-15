@@ -88,6 +88,7 @@ func (c *Client) doJSON(ctx context.Context, method, instanceID string, input, o
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		message, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+		_, _ = io.Copy(io.Discard, res.Body)
 		return fmt.Errorf("traffic proxy returned %s: %s", res.Status, strings.TrimSpace(string(message)))
 	}
 	if output == nil {

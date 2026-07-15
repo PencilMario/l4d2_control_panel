@@ -38,8 +38,10 @@ func decodeFrame(frame []byte, packetLength uint64) (Packet, bool) {
 		offset += 4
 	}
 	var protocol byte
+	declaredEnd := len(frame)
 	switch etherType {
 	case 0x0800:
+		ipStart := offset
 		if len(frame) < offset+20 || frame[offset]>>4 != 4 {
 			return Packet{}, false
 		}
@@ -47,26 +49,38 @@ func decodeFrame(frame []byte, packetLength uint64) (Packet, bool) {
 		if headerLength < 20 || len(frame) < offset+headerLength {
 			return Packet{}, false
 		}
+		totalLength := int(binary.BigEndian.Uint16(frame[offset+2 : offset+4]))
+		if totalLength < headerLength+4 || packetLength < uint64(ipStart) || uint64(totalLength) > packetLength-uint64(ipStart) {
+			return Packet{}, false
+		}
+		declaredEnd = ipStart + totalLength
 		if binary.BigEndian.Uint16(frame[offset+6:offset+8])&0x1fff != 0 {
 			return Packet{}, false
 		}
 		protocol = frame[offset+9]
 		offset += headerLength
 	case 0x86dd:
+		ipStart := offset
 		if len(frame) < offset+40 || frame[offset]>>4 != 6 {
 			return Packet{}, false
 		}
+		payloadLength := int(binary.BigEndian.Uint16(frame[offset+4 : offset+6]))
+		totalLength := 40 + payloadLength
+		if packetLength < uint64(ipStart) || uint64(totalLength) > packetLength-uint64(ipStart) {
+			return Packet{}, false
+		}
+		declaredEnd = ipStart + totalLength
 		protocol = frame[offset+6]
 		offset += 40
 		var ok bool
-		protocol, offset, ok = walkIPv6Extensions(frame, protocol, offset)
+		protocol, offset, ok = walkIPv6Extensions(frame, protocol, offset, declaredEnd)
 		if !ok {
 			return Packet{}, false
 		}
 	default:
 		return Packet{}, false
 	}
-	if protocol != 6 && protocol != 17 || len(frame) < offset+4 {
+	if protocol != 6 && protocol != 17 || offset+4 > declaredEnd || len(frame) < offset+4 {
 		return Packet{}, false
 	}
 	return Packet{
@@ -76,29 +90,29 @@ func decodeFrame(frame []byte, packetLength uint64) (Packet, bool) {
 	}, true
 }
 
-func walkIPv6Extensions(frame []byte, protocol byte, offset int) (byte, int, bool) {
+func walkIPv6Extensions(frame []byte, protocol byte, offset, declaredEnd int) (byte, int, bool) {
 	for {
 		switch protocol {
 		case 0, 43, 60:
-			if len(frame) < offset+2 {
+			if offset+2 > declaredEnd || len(frame) < offset+2 {
 				return 0, 0, false
 			}
 			next, length := frame[offset], (int(frame[offset+1])+1)*8
-			if len(frame) < offset+length {
+			if offset+length > declaredEnd || len(frame) < offset+length {
 				return 0, 0, false
 			}
 			protocol, offset = next, offset+length
 		case 44:
-			if len(frame) < offset+8 || binary.BigEndian.Uint16(frame[offset+2:offset+4])&0xfff8 != 0 {
+			if offset+8 > declaredEnd || len(frame) < offset+8 || binary.BigEndian.Uint16(frame[offset+2:offset+4])&0xfff8 != 0 {
 				return 0, 0, false
 			}
 			protocol, offset = frame[offset], offset+8
 		case 51:
-			if len(frame) < offset+2 {
+			if offset+2 > declaredEnd || len(frame) < offset+2 {
 				return 0, 0, false
 			}
 			next, length := frame[offset], (int(frame[offset+1])+2)*4
-			if len(frame) < offset+length {
+			if offset+length > declaredEnd || len(frame) < offset+length {
 				return 0, 0, false
 			}
 			protocol, offset = next, offset+length

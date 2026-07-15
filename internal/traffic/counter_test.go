@@ -135,6 +135,7 @@ func TestDecodeFrameIPv4TCPAndVLANIPv6UDP(t *testing.T) {
 	ipv4 := make([]byte, 14+20+20)
 	binary.BigEndian.PutUint16(ipv4[12:14], 0x0800)
 	ipv4[14] = 0x45
+	binary.BigEndian.PutUint16(ipv4[16:18], 40)
 	ipv4[23] = 6
 	binary.BigEndian.PutUint16(ipv4[34:36], 27015)
 	binary.BigEndian.PutUint16(ipv4[36:38], 12345)
@@ -147,6 +148,7 @@ func TestDecodeFrameIPv4TCPAndVLANIPv6UDP(t *testing.T) {
 	binary.BigEndian.PutUint16(ipv6[12:14], 0x8100)
 	binary.BigEndian.PutUint16(ipv6[16:18], 0x86dd)
 	ipv6[18] = 0x60
+	binary.BigEndian.PutUint16(ipv6[22:24], 8)
 	ipv6[24] = 17
 	binary.BigEndian.PutUint16(ipv6[58:60], 12345)
 	binary.BigEndian.PutUint16(ipv6[60:62], 27016)
@@ -214,11 +216,81 @@ func TestDecodeFrameIgnoresTruncatedUnsupportedAndNonInitialFragments(t *testing
 	}
 }
 
+func TestDecodeFrameHonorsDeclaredIPLengths(t *testing.T) {
+	frames := map[string][]byte{
+		"IPv4 TCP total length excludes ports": func() []byte {
+			frame := ipv4Frame(28, 5, 6)
+			binary.BigEndian.PutUint16(frame[16:18], 22)
+			binary.BigEndian.PutUint16(frame[34:36], 27015)
+			binary.BigEndian.PutUint16(frame[36:38], 12345)
+			return frame
+		}(),
+		"IPv4 UDP total length excludes ports": func() []byte {
+			frame := ipv4Frame(28, 5, 17)
+			binary.BigEndian.PutUint16(frame[16:18], 23)
+			binary.BigEndian.PutUint16(frame[34:36], 27015)
+			binary.BigEndian.PutUint16(frame[36:38], 12345)
+			return frame
+		}(),
+		"IPv4 total length exceeds packet": func() []byte {
+			frame := ipv4Frame(28, 5, 6)
+			binary.BigEndian.PutUint16(frame[16:18], 60)
+			binary.BigEndian.PutUint16(frame[34:36], 27015)
+			binary.BigEndian.PutUint16(frame[36:38], 12345)
+			return frame
+		}(),
+		"IPv6 payload length excludes ports": func() []byte {
+			frame := ipv6Frame(48, 17)
+			binary.BigEndian.PutUint16(frame[18:20], 2)
+			binary.BigEndian.PutUint16(frame[54:56], 27015)
+			binary.BigEndian.PutUint16(frame[56:58], 12345)
+			return frame
+		}(),
+		"IPv6 extension exceeds declared payload": func() []byte {
+			frame := ipv6Frame(52, 0)
+			binary.BigEndian.PutUint16(frame[18:20], 8)
+			frame[54] = 6
+			frame[55] = 0
+			binary.BigEndian.PutUint16(frame[62:64], 27015)
+			binary.BigEndian.PutUint16(frame[64:66], 12345)
+			return frame
+		}(),
+		"IPv6 extension length exceeds declared payload": func() []byte {
+			frame := ipv6Frame(60, 0)
+			binary.BigEndian.PutUint16(frame[18:20], 12)
+			frame[54] = 6
+			frame[55] = 1
+			binary.BigEndian.PutUint16(frame[70:72], 27015)
+			binary.BigEndian.PutUint16(frame[72:74], 12345)
+			return frame
+		}(),
+		"IPv6 payload length exceeds packet": func() []byte {
+			frame := ipv6Frame(52, 0)
+			binary.BigEndian.PutUint16(frame[18:20], 100)
+			frame[54] = 6
+			frame[55] = 0
+			binary.BigEndian.PutUint16(frame[62:64], 27015)
+			binary.BigEndian.PutUint16(frame[64:66], 12345)
+			return frame
+		}(),
+	}
+	for name, frame := range frames {
+		t.Run(name, func(t *testing.T) {
+			if packet, ok := decodeFrame(frame, uint64(len(frame))); ok {
+				t.Fatalf("decodeFrame read outside declared IP length: %+v", packet)
+			}
+		})
+	}
+}
+
 func ipv4Frame(payloadLength, ihl int, protocol byte) []byte {
 	frame := make([]byte, 14+payloadLength)
 	binary.BigEndian.PutUint16(frame[12:14], 0x0800)
 	if payloadLength > 0 {
 		frame[14] = 0x40 | byte(ihl)
+	}
+	if payloadLength > 3 {
+		binary.BigEndian.PutUint16(frame[16:18], uint16(payloadLength))
 	}
 	if payloadLength > 9 {
 		frame[23] = protocol
@@ -231,6 +303,13 @@ func ipv6Frame(payloadLength int, nextHeader byte) []byte {
 	binary.BigEndian.PutUint16(frame[12:14], 0x86dd)
 	if payloadLength > 0 {
 		frame[14] = 0x60
+	}
+	if payloadLength > 6 {
+		declaredPayload := payloadLength - 40
+		if declaredPayload < 0 {
+			declaredPayload = 0
+		}
+		binary.BigEndian.PutUint16(frame[18:20], uint16(declaredPayload))
 	}
 	if payloadLength > 6 {
 		frame[20] = nextHeader
