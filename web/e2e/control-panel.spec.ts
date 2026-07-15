@@ -5,17 +5,23 @@ const packageZip = Buffer.from(
   "base64",
 );
 
-type FixtureJob = { ID: string; Status: string };
+type FixtureJob = {
+  ID: string;
+  InstanceID: string;
+  Type: string;
+  Status: string;
+};
 
 async function captureJob(
   page: Page,
   path: string,
   action: () => Promise<void>,
+  method = "POST",
 ): Promise<FixtureJob> {
   const response = page.waitForResponse((candidate) => {
     const request = candidate.request();
     return (
-      request.method() === "POST" &&
+      request.method() === method &&
       new URL(candidate.url()).pathname.includes(path) &&
       candidate.status() === 202
     );
@@ -45,6 +51,10 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   const suffix = mobile ? "Mobile" : "Desktop";
   const instanceName = `E2E ${suffix}`;
   const port = mobile ? 27115 : 27015;
+  const packageAName = `fixture-${suffix.toLowerCase()}-a.zip`;
+  const packageBName = `fixture-${suffix.toLowerCase()}-b.zip`;
+  const initialExtraArgs = `-strictportbind +hostname "E2E ${suffix}"`;
+  const changedExtraArgs = `+hostname "E2E ${suffix} Changed"`;
   let vpkChunks = 0;
   page.on("request", (request) => {
     if (
@@ -61,15 +71,90 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await page.getByRole("button", { name: "进入作战室" }).click();
   await expect(page.getByRole("heading", { name: "服务器作战室" })).toBeVisible();
 
+  await page.getByRole("button", { name: "内容仓库" }).click();
+  for (const name of [packageAName, packageBName]) {
+    await page.locator('input[accept=".zip"]').setInputFiles({
+      name,
+      mimeType: "application/zip",
+      buffer: packageZip,
+    });
+    await expect(page.getByText(new RegExp(name.replace(".", "\\.")))).toBeVisible();
+  }
+
+  await page.getByRole("button", { name: "总览" }).click();
   await page.getByRole("button", { name: "创建实例" }).click();
   await page.getByLabel("名称").fill(instanceName);
   await page.getByLabel("游戏端口").fill(String(port));
   await page.getByLabel("SourceTV 端口").fill(String(port + 5));
   await page.getByLabel("插件端口").fill(`${port + 6}, ${port + 7}`);
+  await page.getByLabel("插件包").selectOption({
+    label: `${packageAName} · ${packageAName}`,
+  });
+  await page.getByLabel("额外 SRCDS 启动项").fill(initialExtraArgs);
+  const preview = page.getByLabel("启动指令预览");
+  await expect(preview).toContainText(
+    `./srcds_run -game left4dead2 -console -port ${port} -tickrate 100 +map c2m1_highway +mp_gamemode coop -maxplayers 8 +tv_enable 1 +tv_port ${port + 5} ${initialExtraArgs}`,
+  );
+  const modalLayout = await page.locator(".instance-config-modal").evaluate((modal) => {
+    const box = modal.getBoundingClientRect();
+    const fields = modal
+      .querySelector(".instance-config-fields")!
+      .getBoundingClientRect();
+    const command = modal
+      .querySelector(".command-section")!
+      .getBoundingClientRect();
+    const controlsFit = Array.from(
+      modal.querySelectorAll("input, select, textarea"),
+    ).every(
+      (control) => control.scrollWidth <= control.clientWidth,
+    );
+    return {
+      left: box.left,
+      top: box.top,
+      right: box.right,
+      bottom: box.bottom,
+      scrollWidth: modal.scrollWidth,
+      clientWidth: modal.clientWidth,
+      fieldsBottom: fields.bottom,
+      fieldsLeft: fields.left,
+      fieldsRight: fields.right,
+      commandTop: command.top,
+      commandLeft: command.left,
+      commandRight: command.right,
+      controlsFit,
+    };
+  });
+  expect.soft(modalLayout.left).toBeGreaterThanOrEqual(0);
+  expect.soft(modalLayout.top).toBeGreaterThanOrEqual(0);
+  expect.soft(modalLayout.right).toBeLessThanOrEqual(
+    page.viewportSize()!.width,
+  );
+  expect.soft(modalLayout.bottom).toBeLessThanOrEqual(
+    page.viewportSize()!.height,
+  );
+  expect.soft(modalLayout.scrollWidth).toBeLessThanOrEqual(
+    modalLayout.clientWidth,
+  );
+  expect.soft(modalLayout.commandTop).toBeGreaterThanOrEqual(
+    modalLayout.fieldsBottom,
+  );
+  expect
+    .soft(Math.abs(modalLayout.commandLeft - modalLayout.fieldsLeft))
+    .toBeLessThanOrEqual(1);
+  expect
+    .soft(Math.abs(modalLayout.commandRight - modalLayout.fieldsRight))
+    .toBeLessThanOrEqual(1);
+  expect.soft(modalLayout.controlsFit).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath(`${testInfo.project.name}-instance-config.png`),
+    fullPage: true,
+  });
   await page.getByRole("button", { name: "创建", exact: true }).click();
 
   let card = page.locator("article.card").filter({ hasText: instanceName });
   await expect(card).toContainText("未安装");
+  await expect(card).toContainText(packageAName);
+  await expect(card).toContainText("待应用");
   const startJob = await captureJob(page, "/actions", () =>
     card.getByRole("button", { name: "启动" }).click(),
   );
@@ -80,6 +165,87 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await page.reload();
   card = page.locator("article.card").filter({ hasText: instanceName });
   await expect(card).toContainText("运行中");
+  await expect(card).toContainText(packageAName);
+  await expect(card).not.toContainText("待应用");
+
+  const initiallySaved = await page.evaluate(async (name) => {
+    const [instancesResponse, packagesResponse] = await Promise.all([
+      fetch("/api/instances"),
+      fetch("/api/packages"),
+    ]);
+    const instances = await instancesResponse.json();
+    const packages = await packagesResponse.json();
+    const item = instances.find(
+      (candidate: any) => (candidate.name ?? candidate.Name) === name,
+    );
+    const packageName = (id: string) =>
+      packages.find((candidate: any) => (candidate.id ?? candidate.ID) === id)
+        ?.filename;
+    const selected = item.package_id ?? item.SelectedPackageID;
+    const applied = item.applied_package_id ?? item.PackageVersion;
+    return {
+      id: item.id ?? item.ID,
+      extraArgs: item.extra_args ?? item.ExtraArgs,
+      selected,
+      applied,
+      selectedName: packageName(selected),
+      appliedName: packageName(applied),
+    };
+  }, instanceName);
+  expect(initiallySaved.extraArgs).toBe(initialExtraArgs);
+  expect(initiallySaved.selected).toBe(initiallySaved.applied);
+  expect(initiallySaved.selectedName).toBe(packageAName);
+  expect(initiallySaved.appliedName).toBe(packageAName);
+
+  await card
+    .getByRole("button", { name: `配置 ${instanceName}` })
+    .click();
+  await page.getByLabel("插件包").selectOption({
+    label: `${packageBName} · ${packageBName}`,
+  });
+  await page.getByLabel("额外 SRCDS 启动项").fill(changedExtraArgs);
+  await expect(page.getByLabel("启动指令预览")).toContainText(
+    changedExtraArgs,
+  );
+  const reconfigureJob = await captureJob(
+    page,
+    `/api/instances/${initiallySaved.id}`,
+    () => page.getByRole("button", { name: "保存并应用" }).click(),
+    "PUT",
+  );
+  expect(reconfigureJob.Type).toBe("reconfigure");
+  await waitForJob(page, reconfigureJob.ID);
+  await page.reload();
+  card = page.locator("article.card").filter({ hasText: instanceName });
+  await expect(card).toContainText(packageBName);
+  await expect(card).not.toContainText("待应用");
+
+  const changed = await page.evaluate(
+    async ({ id, name }) => {
+      const [instancesResponse, jobsResponse] = await Promise.all([
+        fetch("/api/instances"),
+        fetch("/api/jobs"),
+      ]);
+      const instances = await instancesResponse.json();
+      const jobs = await jobsResponse.json();
+      const item = instances.find(
+        (candidate: any) => (candidate.name ?? candidate.Name) === name,
+      );
+      return {
+        extraArgs: item.extra_args ?? item.ExtraArgs,
+        selected: item.package_id ?? item.SelectedPackageID,
+        applied: item.applied_package_id ?? item.PackageVersion,
+        reconfigureJobs: jobs.filter(
+          (job: any) =>
+            job.InstanceID === id && job.Type === "reconfigure",
+        ).length,
+      };
+    },
+    { id: initiallySaved.id, name: instanceName },
+  );
+  expect(changed.extraArgs).toBe(changedExtraArgs);
+  expect(changed.selected).toBe(changed.applied);
+  expect(changed.reconfigureJobs).toBe(1);
 
   await page.reload();
   await expect(page.getByRole("heading", { name: "服务器作战室" })).toBeVisible();
@@ -122,13 +288,6 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await expect(page.getByRole("status")).toContainText("VPK 上传完成");
   expect(vpkChunks).toBe(2);
 
-  await page.locator('input[accept=".zip"]').setInputFiles({
-    name: `fixture-${suffix.toLowerCase()}.zip`,
-    mimeType: "application/zip",
-    buffer: packageZip,
-  });
-  await expect(page.getByText(new RegExp(`fixture-${suffix.toLowerCase()}\\.zip`))).toBeVisible();
-
   await page.getByLabel("相对路径").fill(`cfg/${suffix.toLowerCase()}.cfg`);
   await page.getByLabel("文本内容").fill("sm_cvar fixture 1");
   const privateJob = await captureJob(page, "/private/apply", () =>
@@ -139,7 +298,7 @@ test("real HTTP administration journey survives refresh and streams recovery sta
 
   const packageRow = page
     .locator(".data-row")
-    .filter({ hasText: `fixture-${suffix.toLowerCase()}.zip` });
+    .filter({ hasText: packageBName });
   await packageRow.getByRole("button", { name: "完整更新" }).click();
   const confirmFull = page.getByRole("button", { name: "确认完整更新" });
   await expect(confirmFull).toBeFocused();
@@ -169,6 +328,9 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   ).toContainText("recovered after fixture restart");
   await expect(
     page.locator(".job-row").filter({ hasText: fullJob.ID.slice(0, 8) }),
+  ).toContainText("succeeded");
+  await expect(
+    page.locator(".job-row").filter({ hasText: reconfigureJob.ID.slice(0, 8) }),
   ).toContainText("succeeded");
   await expect(page.locator(".job-row").first()).toBeVisible();
 

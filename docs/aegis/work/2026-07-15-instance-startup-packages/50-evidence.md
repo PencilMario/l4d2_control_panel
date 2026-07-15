@@ -69,3 +69,19 @@ Implementation evidence will be appended after each red/green slice.
 - `cd web && npm test -- --run`: PASS, 22 tests.
 - `cd web && npm run build`: PASS.
 - `git diff --check`: PASS.
+
+## Task 7: Real Browser Journey
+
+- The expanded package-first journey initially passed because the Task 5 API, Task 6 UI and existing fixture start/applied-state behavior already covered the new flow.
+- Visual inspection exposed a real responsive defect: generic `.modal > div` flex styling placed the field grid and command preview side by side, squeezing mobile controls and clipping text.
+- RED: strengthened Playwright geometry checks failed with the command preview above/beside the field-grid bottom and mismatched left/right edges.
+- GREEN: `.instance-config-modal > .instance-config-body` now explicitly owns block layout. The preview renders below the fields at full width on desktop and mobile, with no control or viewport overflow.
+- The browser flow uploads packages A and B before creation, selects A with extra arguments, asserts the canonical preview, verifies first-start selected/applied equality, edits to B with changed arguments, observes exactly one `reconfigure` Job, refreshes persistence, then completes console, player, VPK, private overlay, full update, schedule and Job recovery checks.
+- Fixture conclusion: no new fake branch was required. First start already copies selected to applied state, and installed package changes use the production `updates.Coordinator` owner.
+- `go test -count=1 ./...`: PASS.
+- `go vet ./...`: PASS.
+- `cd web && npm test -- --run`: PASS, 22 tests.
+- `cd web && npm run build`: PASS.
+- `cd web && npm run e2e`: PASS, desktop and mobile.
+- `docker compose --env-file .env.example config --quiet`: PASS.
+- Screenshots: `web/test-results/control-panel-real-HTTP-ad-79bc6--and-streams-recovery-state-desktop/desktop-instance-config.png`, `desktop-journey.png`, and matching mobile outputs.

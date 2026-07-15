@@ -43,13 +43,22 @@ If registry or Steam downloads require a proxy, set `L4D2_PANEL_DOWNLOAD_PROXY` 
 
 ## SteamCMD first install
 
-Current L4D2 Steam content returns `Missing configuration` when an empty Linux install is requested directly. The runtime uses the established anonymous bootstrap sequence:
+Current L4D2 Steam content returns `Missing configuration` when an empty Linux install is requested directly. Before the first game container is created, the Panel uses a restricted maintenance container for the established anonymous bootstrap sequence:
 
 1. select the Windows platform and install App 222860;
 2. switch to Linux and run `app_update 222860 validate`;
-3. start `srcds_run` only after both stages succeed.
+3. deploy the instance's selected plugin package and replay its private overlay;
+4. create the run-only game container and start `srcds_run` only after every stage succeeds.
 
 Later game updates use a fixed Linux-only SteamCMD maintenance container. Optional licensed Steam credentials can be encrypted from System Settings, but anonymous installation is supported and no credentials are written to container logs.
+
+## Instance startup configuration
+
+Upload at least one ZIP plugin package in Content Repository before creating an instance. Every instance independently stores a selected package and the package whose deployment last committed successfully.
+
+The same configuration dialog is used for new and existing instances. It exposes the managed game, SourceTV and plugin ports, start map, game mode, tickrate and player limit. Additional SRCDS arguments are parsed as shell-style arguments and appended after the managed values; Panel-owned options such as `-port`, `-tickrate`, `+map` and `+tv_port` are rejected. The dialog previews the complete `srcds_run` command before submission.
+
+Changing startup values or the selected package on an installed instance creates one serialized `reconfigure` Job. Package deployment and container rebuild preserve the instance's stopped/running intent, and the applied package ID advances only after deployment commits.
 
 ## Persistent data
 

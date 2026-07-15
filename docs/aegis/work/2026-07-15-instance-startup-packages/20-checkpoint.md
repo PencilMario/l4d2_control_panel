@@ -4,8 +4,8 @@ Updated: 2026-07-15
 
 ## Current Todo
 
-- Active: Task 7, update the real-browser journey and operational checks.
-- Next: Task 8, review the complete branch and run the completion audit.
+- Active: Task 8, review the complete branch and run the completion audit.
+- Next: record final review evidence and complete the feature branch workflow.
 - Later: final evidence and branch completion.
 
 ## Completed
@@ -20,6 +20,7 @@ Updated: 2026-07-15
 - Task 4 completed: package updates preserve stopped/running intent and Coordinator owns applied-state writes.
 - Task 5 completed: strict create/update validation and one-Job reconfiguration are covered by HTTP integration tests.
 - Task 6 completed: create/edit share one controlled modal with package selection, editable managed startup values, extra arguments, live command preview and pending package status.
+- Task 7 completed: the desktop/mobile browser journey uploads two packages, creates with package A and extra args, verifies first-start application, edits to package B through one reconfiguration Job, and preserves all existing operational workflows.
 
 ## Evidence Refs
 
@@ -34,9 +35,9 @@ Updated: 2026-07-15
 
 - Scope: unchanged.
 - Compatibility: route paths, strict decoding and persistent Job polling remain unchanged; name-only edits now avoid unnecessary downtime.
-- Retirement: the create-only form and content-page-owned package list have been replaced by one shared configuration contract and App-owned package state.
+- Retirement: the old browser journey that created an instance before any package existed has been replaced by the required package-first flow.
 - Decision: continue.
 
 ## Next Step
 
-Update the Playwright journey to upload two packages before creation, verify preview and first-start application, then edit to the second package through one reconfiguration Job.
+Map the approved design to the implementation, audit changed code for contract drift and placeholders, then run final verification under `verification-before-completion`.
