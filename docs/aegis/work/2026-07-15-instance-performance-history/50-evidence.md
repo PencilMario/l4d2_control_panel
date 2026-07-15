@@ -29,6 +29,10 @@
 - Task 5 regression: focused HTTP tests, `go test -count=1 ./...`, tagged e2e fixture tests and `go vet ./...` passed.
 - Task 5 reviews: spec and quality approved; overview no longer calls request-time Docker/A2S providers, while `/resources` and `/players` remain.
 - Task 5 residual: the explicit history-provider-missing `503` branch is implemented but lacks a dedicated test; production and e2e fixture both inject the provider.
+- Task 6 RED/GREEN: missing panel, history append, RFC3339 ordering, stale poll/session effects, StrictMode replay and history/overview coupling were reproduced before fixes.
+- Task 6 regression: 46 frontend tests pass; three consecutive full-suite runs and 20 focused runs passed during async-race repair; production Vite build passes.
+- Task 6 reviews: spec and quality approved after generation-safe history ownership, StrictMode cancellation, independent history bootstrap and memo-stable Recharts props.
+- Task 6 residual: production JS is about 587 kB minified / 177 kB gzip and triggers Vite's 500 kB warning. Recharts is immediately visible core UI; no lazy split was added without measured startup evidence.
 
 ## Regression evidence
 

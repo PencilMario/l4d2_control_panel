@@ -5,5 +5,5 @@
 - [x] Task 3: Move proxy transport to a shared Unix Socket.
 - [x] Task 4: Build the five-second observation sampler and ring buffer.
 - [x] Task 5: Expose additive overview and history contracts.
-- [ ] Task 6: Render detailed metrics and Recharts history.
+- [x] Task 6: Render detailed metrics and Recharts history.
 - [ ] Task 7: Verify the main journey and deployment boundary.
