@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -147,12 +148,74 @@ func TestPrivateManifestRepeatedWrite(t *testing.T) {
 	}
 }
 
+func TestPrivateManifestReplacementIsAtomicToReaders(t *testing.T) {
+	manager := NewPrivateManager(t.TempDir(), 1<<20)
+	manifest := func(hash string) privateManifest {
+		return privateManifest{Entries: map[string]manifestEntry{"state.cfg": {Kind: "file", Hash: hash, Size: 1}}}
+	}
+	if err := manager.writePrivateManifest("abc", manifest("a")); err != nil {
+		t.Fatal(err)
+	}
+
+	stop := make(chan struct{})
+	errorsSeen := make(chan error, 1)
+	var readers sync.WaitGroup
+	for range 8 {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				loaded, err := manager.readPrivateManifest("abc")
+				if err == nil {
+					hash := loaded.Entries["state.cfg"].Hash
+					if len(loaded.Entries) != 1 || (hash != "a" && hash != "b") {
+						err = errors.New("reader observed missing or partial manifest")
+					}
+				}
+				if err != nil {
+					select {
+					case errorsSeen <- err:
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+	for i := 0; i < 500; i++ {
+		hash := "a"
+		if i%2 == 0 {
+			hash = "b"
+		}
+		if err := manager.writePrivateManifest("abc", manifest(hash)); err != nil {
+			close(stop)
+			readers.Wait()
+			t.Fatal(err)
+		}
+	}
+	close(stop)
+	readers.Wait()
+	select {
+	case err := <-errorsSeen:
+		t.Fatal(err)
+	default:
+	}
+}
+
 func TestPrivateManifestRejectsSymlinkEscape(t *testing.T) {
 	root := t.TempDir()
 	manager := NewPrivateManager(root, 1<<20)
 	manifest := privateManifest{Entries: map[string]manifestEntry{"first.cfg": {Kind: "file", Hash: "first", Size: 1}}}
 	outside := filepath.Join(root, "outside-instance")
 	if err := os.MkdirAll(outside, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "instances"), 0750); err != nil {
 		t.Fatal(err)
 	}
 	linked := filepath.Join(root, "instances", "linked")

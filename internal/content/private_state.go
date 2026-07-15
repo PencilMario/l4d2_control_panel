@@ -113,7 +113,7 @@ func (m *PrivateManager) readPrivateManifest(instanceID string) (privateManifest
 	if err := rejectSymlinkParents(m.root, path); err != nil {
 		return privateManifest{}, err
 	}
-	raw, err := os.ReadFile(path)
+	raw, err := readAtomicFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return privateManifest{Version: privateManifestVersion, Entries: map[string]manifestEntry{}}, nil
 	}
@@ -166,7 +166,7 @@ func (m *PrivateManager) writePrivateManifest(instanceID string, manifest privat
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return replacePath(temporaryName, path, true)
+	return atomicReplaceFile(temporaryName, path)
 }
 
 func isEmptyDirectory(path string, entries map[string]manifestEntry) bool {
