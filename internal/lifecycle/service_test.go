@@ -103,6 +103,28 @@ func TestStartPreparesSelectedPackageBeforeCreatingContainer(t *testing.T) {
 	}
 }
 
+func TestStartProvisionsUninstalledInstanceWhenPackageIsAlreadyMarkedApplied(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	value := domain.Instance{ID: "preapplied", NodeID: "local", Name: "preapplied", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", SelectedPackageID: "package-a", PackageVersion: "package-a", ActualState: domain.StateUninstalled}
+	if err := db.CreateInstance(context.Background(), value); err != nil {
+		t.Fatal(err)
+	}
+	events := []string{}
+	engine := &fakeEngine{events: &events}
+	service := New(db, engine, freePorts{}, root, WithProvisioner(fakeProvisioner{repo: db, events: &events}))
+	if err := service.Start(context.Background(), value.ID); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(events, ",") != "prepare,create,start" {
+		t.Fatalf("events=%v", events)
+	}
+}
+
 func TestStartDoesNotCreateContainerWhenProvisioningFails(t *testing.T) {
 	root := t.TempDir()
 	db, err := store.Open(filepath.Join(root, "panel.db"))

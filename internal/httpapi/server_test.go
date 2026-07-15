@@ -245,6 +245,17 @@ func TestCreateRejectsMissingPackageAndReservedArguments(t *testing.T) {
 	}
 }
 
+func TestCreateRejectsRuntimeImageOverride(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	cookie := loginCookie(t, s)
+	body := fmt.Sprintf(`{"name":"Image Override","game_port":27015,"start_map":"map","game_mode":"coop","tickrate":100,"max_players":8,"package_id":%q,"runtime_image":"attacker/runtime:latest"}`, defaultPackageID(t, s))
+	response := authenticatedJSON(t, s, cookie, http.MethodPost, "/api/instances", body)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "unknown field") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestUpdatePlansOnlyRequiredRuntimeWork(t *testing.T) {
 	s, db := testServer(t)
 	defer db.Close()

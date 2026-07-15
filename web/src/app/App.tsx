@@ -429,6 +429,7 @@ function Overview({
     );
     if (result?.Status && result?.ID) {
       acceptJob(result as Job);
+      await reload();
       return;
     }
     await reload();

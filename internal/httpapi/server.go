@@ -370,7 +370,6 @@ type instanceInput struct {
 	MaxPlayers   int    `json:"max_players"`
 	ExtraArgs    string `json:"extra_args"`
 	PackageID    string `json:"package_id"`
-	RuntimeImage string `json:"runtime_image"`
 }
 
 func (s *Server) validateInstanceInput(input *instanceInput) (content.PackageVersion, error) {
@@ -402,9 +401,6 @@ func (input instanceInput) apply(instance domain.Instance) domain.Instance {
 	instance.MaxPlayers = input.MaxPlayers
 	instance.ExtraArgs = input.ExtraArgs
 	instance.SelectedPackageID = input.PackageID
-	if input.RuntimeImage != "" {
-		instance.RuntimeImage = input.RuntimeImage
-	}
 	return instance
 }
 
@@ -416,8 +412,7 @@ func runtimeConfigurationChanged(before, after domain.Instance) bool {
 		before.GameMode != after.GameMode ||
 		before.Tickrate != after.Tickrate ||
 		before.MaxPlayers != after.MaxPlayers ||
-		before.ExtraArgs != after.ExtraArgs ||
-		before.RuntimeImage != after.RuntimeImage
+		before.ExtraArgs != after.ExtraArgs
 }
 
 func (s *Server) updateInstance(w http.ResponseWriter, r *http.Request) {

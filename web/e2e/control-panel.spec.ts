@@ -50,11 +50,18 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   const mobile = testInfo.project.name === "mobile";
   const suffix = mobile ? "Mobile" : "Desktop";
   const instanceName = `E2E ${suffix}`;
+  const secondInstanceName = `E2E ${suffix} Alt`;
   const port = mobile ? 27115 : 27015;
+  const secondPort = port + 20;
   const packageAName = `fixture-${suffix.toLowerCase()}-a.zip`;
   const packageBName = `fixture-${suffix.toLowerCase()}-b.zip`;
   const initialExtraArgs = `-strictportbind +hostname "E2E ${suffix}"`;
+  const secondExtraArgs = `+hostname "E2E ${suffix} Alt"`;
   const changedExtraArgs = `+hostname "E2E ${suffix} Changed"`;
+  const instanceCard = (name: string) =>
+    page.locator("article.card").filter({
+      has: page.getByRole("heading", { name, exact: true }),
+    });
   let vpkChunks = 0;
   page.on("request", (request) => {
     if (
@@ -151,10 +158,42 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   });
   await page.getByRole("button", { name: "创建", exact: true }).click();
 
-  let card = page.locator("article.card").filter({ hasText: instanceName });
+  let card = instanceCard(instanceName);
   await expect(card).toContainText("未安装");
   await expect(card).toContainText(packageAName);
   await expect(card).toContainText("待应用");
+
+  await page.getByRole("button", { name: "创建实例" }).click();
+  await page.getByLabel("名称").fill(secondInstanceName);
+  await page.getByLabel("游戏端口").fill(String(secondPort));
+  await page.getByLabel("SourceTV 端口").fill(String(secondPort + 5));
+  await page.getByLabel("插件端口").fill(String(secondPort + 6));
+  await page.getByLabel("插件包").selectOption({
+    label: `${packageBName} · ${packageBName}`,
+  });
+  await page.getByLabel("额外 SRCDS 启动项").fill(secondExtraArgs);
+  await expect(page.getByLabel("启动指令预览")).toContainText(
+    `-port ${secondPort}`,
+  );
+  await expect(page.getByLabel("启动指令预览")).toContainText(
+    secondExtraArgs,
+  );
+  await page.getByRole("button", { name: "创建", exact: true }).click();
+
+  let secondCard = instanceCard(secondInstanceName);
+  await expect(secondCard).toContainText(packageBName);
+  await expect(secondCard).toContainText("待应用");
+  const secondStartJob = await captureJob(page, "/actions", () =>
+    secondCard.getByRole("button", { name: "启动" }).click(),
+  );
+  await waitForJob(page, secondStartJob.ID);
+  await page.reload();
+  secondCard = instanceCard(secondInstanceName);
+  await expect(secondCard).toContainText("运行中");
+  await expect(secondCard).toContainText(packageBName);
+  await expect(secondCard).not.toContainText("待应用");
+
+  card = instanceCard(instanceName);
   const startJob = await captureJob(page, "/actions", () =>
     card.getByRole("button", { name: "启动" }).click(),
   );
@@ -163,39 +202,47 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await expect(page.getByRole("heading", { name: "服务器作战室" })).toBeVisible();
   await waitForJob(page, startJob.ID);
   await page.reload();
-  card = page.locator("article.card").filter({ hasText: instanceName });
+  card = instanceCard(instanceName);
   await expect(card).toContainText("运行中");
   await expect(card).toContainText(packageAName);
   await expect(card).not.toContainText("待应用");
 
-  const initiallySaved = await page.evaluate(async (name) => {
+  const savedAssignments = await page.evaluate(async ({ firstName, secondName }) => {
     const [instancesResponse, packagesResponse] = await Promise.all([
       fetch("/api/instances"),
       fetch("/api/packages"),
     ]);
     const instances = await instancesResponse.json();
     const packages = await packagesResponse.json();
-    const item = instances.find(
-      (candidate: any) => (candidate.name ?? candidate.Name) === name,
-    );
     const packageName = (id: string) =>
       packages.find((candidate: any) => (candidate.id ?? candidate.ID) === id)
         ?.filename;
-    const selected = item.package_id ?? item.SelectedPackageID;
-    const applied = item.applied_package_id ?? item.PackageVersion;
-    return {
-      id: item.id ?? item.ID,
-      extraArgs: item.extra_args ?? item.ExtraArgs,
-      selected,
-      applied,
-      selectedName: packageName(selected),
-      appliedName: packageName(applied),
+    const snapshot = (name: string) => {
+      const item = instances.find(
+        (candidate: any) => (candidate.name ?? candidate.Name) === name,
+      );
+      const selected = item.package_id ?? item.SelectedPackageID;
+      const applied = item.applied_package_id ?? item.PackageVersion;
+      return {
+        id: item.id ?? item.ID,
+        extraArgs: item.extra_args ?? item.ExtraArgs,
+        selected,
+        applied,
+        selectedName: packageName(selected),
+        appliedName: packageName(applied),
+      };
     };
-  }, instanceName);
+    return { first: snapshot(firstName), second: snapshot(secondName) };
+  }, { firstName: instanceName, secondName: secondInstanceName });
+  const initiallySaved = savedAssignments.first;
   expect(initiallySaved.extraArgs).toBe(initialExtraArgs);
   expect(initiallySaved.selected).toBe(initiallySaved.applied);
   expect(initiallySaved.selectedName).toBe(packageAName);
   expect(initiallySaved.appliedName).toBe(packageAName);
+  expect(savedAssignments.second.extraArgs).toBe(secondExtraArgs);
+  expect(savedAssignments.second.selected).toBe(savedAssignments.second.applied);
+  expect(savedAssignments.second.selectedName).toBe(packageBName);
+  expect(savedAssignments.second.appliedName).toBe(packageBName);
 
   await card
     .getByRole("button", { name: `配置 ${instanceName}` })
@@ -214,9 +261,12 @@ test("real HTTP administration journey survives refresh and streams recovery sta
     "PUT",
   );
   expect(reconfigureJob.Type).toBe("reconfigure");
+  card = instanceCard(instanceName);
+  await expect(card).toContainText(packageBName);
+  await expect(card).toContainText("待应用");
   await waitForJob(page, reconfigureJob.ID);
   await page.reload();
-  card = page.locator("article.card").filter({ hasText: instanceName });
+  card = instanceCard(instanceName);
   await expect(card).toContainText(packageBName);
   await expect(card).not.toContainText("待应用");
 
@@ -249,7 +299,7 @@ test("real HTTP administration journey survives refresh and streams recovery sta
 
   await page.reload();
   await expect(page.getByRole("heading", { name: "服务器作战室" })).toBeVisible();
-  card = page.locator("article.card").filter({ hasText: instanceName });
+  card = instanceCard(instanceName);
   await expect(card).toContainText("运行中");
 
   await card.getByRole("button", { name: "控制台" }).click();
