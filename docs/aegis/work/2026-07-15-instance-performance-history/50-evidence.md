@@ -35,6 +35,7 @@
 - Task 6 residual: production JS is about 587 kB minified / 177 kB gzip and triggers Vite's 500 kB warning. Recharts is immediately visible core UI; no lazy split was added without measured startup evidence.
 - Task 7 E2E RED: the first `npm run e2e` run failed both desktop and mobile before reaching the new metrics assertions because the preserved journey implicitly expected `coop`/8 while the current create form defaults to `versus`/32. This exposed test isolation drift, not a product defect. After explicitly selecting the intended values, a focused desktop run reached the new layout assertion and failed with expected fixed wrapper height 220 versus the deployed CSS contract of 210 pixels (190 on mobile). The assertion was corrected to the actual responsive fixed-height contract; no product file was changed.
 - Task 7 E2E GREEN: fresh `npm run e2e` passed 2/2 projects/tests in 27.9 seconds (desktop 10.9 seconds, mobile 10.9 seconds). The real HTTP fixture journey verified login, overview navigation, running state, map `c2m1_highway`, players `1 / 8`, selected package, stop/config/console/player actions, CPU `12.5%`, memory `768 MiB / 2 GiB (37.5%)`, RX/TX rates and totals, disk read/write rates and totals, PID 24, uptime `1h 0s`, A2S `2.5 ms`, a two-point history preserving first-point null gaps and second-point zero rates, default CPU mode, all four `aria-pressed` mode transitions, network and disk legends, fixed chart heights, card/control/action bounds and absence of horizontal page overflow on desktop and 390-pixel mobile viewports.
+- Task 7 overview-boundary follow-up GREEN: fresh `npm run e2e` passed 2/2 projects/tests in 27.7 seconds (desktop 11.0 seconds, mobile 10.7 seconds) without a product change. While still on Overview, the test individually proved all four mode buttons and every available action button stay within the instance card and current viewport with one-pixel tolerance, retain `scrollWidth <= clientWidth`, and remain accompanied by an in-card chart wrapper/control group. It also proved both `document.documentElement` and `document.body` have `scrollWidth <= clientWidth` in desktop and 390-pixel mobile projects; the later Jobs-page overflow check is retained as separate preserved-journey coverage.
 
 ## Regression evidence
 
@@ -43,7 +44,7 @@
 - `go test -count=1 -tags=e2e ./cmd/e2e-fixture` — exit 0; one package passed.
 - `cd web && npm test -- --run` — exit 0; 3/3 files and 46/46 tests passed in 7.61 seconds.
 - `cd web && npm run build` — exit 0; 2,342 modules transformed; production JS 587.41 kB / 176.94 kB gzip and CSS 17.97 kB / 4.67 kB gzip. Vite emitted the known chunk-size warning.
-- `cd web && npm run e2e` — exit 0; 2/2 tests passed in 27.9 seconds across desktop and mobile projects.
+- Latest `cd web && npm run e2e` — exit 0; 2/2 tests passed in 27.7 seconds across desktop and mobile projects.
 - `docker compose --env-file .env.example config --quiet` — exit 0 with no diagnostics.
 - Linux amd64, `CGO_ENABLED=0` cross-builds of `./cmd/panel` and `./cmd/socket-proxy` — exit 0; temporary outputs were 17,186,282 and 9,760,910 bytes and were removed immediately (`removed=True`).
 

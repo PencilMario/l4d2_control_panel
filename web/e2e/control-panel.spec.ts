@@ -276,6 +276,10 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await expect(chart).toHaveAttribute("data-series-count", "2");
 
   const cardLayout = await card.evaluate((element) => {
+    const bounds = (node: Element) => {
+      const box = node.getBoundingClientRect();
+      return { left: box.left, top: box.top, right: box.right, bottom: box.bottom };
+    };
     const cardBox = element.getBoundingClientRect();
     const performanceBox = element.querySelector(".performance-panel")!.getBoundingClientRect();
     const chartBox = element.querySelector(".performance-chart")!.getBoundingClientRect();
@@ -293,13 +297,38 @@ test("real HTTP administration journey survives refresh and streams recovery sta
       modesRight: modesBox.right,
       actionsLeft: actionsBox.left,
       actionsRight: actionsBox.right,
-      actionsFit: Array.from(element.querySelectorAll(".actions button")).every(
-        (button) => button.scrollWidth <= button.clientWidth,
+      modeButtons: Array.from(element.querySelectorAll(".performance-modes button")).map(
+        (button) => ({ ...bounds(button), textFits: button.scrollWidth <= button.clientWidth }),
+      ),
+      actionButtons: Array.from(element.querySelectorAll(".actions button")).map(
+        (button) => ({ ...bounds(button), textFits: button.scrollWidth <= button.clientWidth }),
       ),
     };
   });
+  const overviewOverflow = await page.evaluate(() => ({
+    documentScrollWidth: document.documentElement.scrollWidth,
+    documentClientWidth: document.documentElement.clientWidth,
+    bodyScrollWidth: document.body.scrollWidth,
+    bodyClientWidth: document.body.clientWidth,
+  }));
+  const viewport = page.viewportSize()!;
+  const assertInsideCardAndViewport = (box: {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+    textFits: boolean;
+  }) => {
+    expect.soft(box.left).toBeGreaterThanOrEqual(cardLayout.cardLeft - 1);
+    expect.soft(box.right).toBeLessThanOrEqual(cardLayout.cardRight + 1);
+    expect.soft(box.left).toBeGreaterThanOrEqual(-1);
+    expect.soft(box.right).toBeLessThanOrEqual(viewport.width + 1);
+    expect.soft(box.top).toBeGreaterThanOrEqual(-1);
+    expect.soft(box.bottom).toBeLessThanOrEqual(viewport.height + 1);
+    expect.soft(box.textFits).toBe(true);
+  };
   expect.soft(cardLayout.cardLeft).toBeGreaterThanOrEqual(0);
-  expect.soft(cardLayout.cardRight).toBeLessThanOrEqual(page.viewportSize()!.width);
+  expect.soft(cardLayout.cardRight).toBeLessThanOrEqual(viewport.width);
   expect.soft(cardLayout.performanceLeft).toBeGreaterThanOrEqual(cardLayout.cardLeft);
   expect.soft(cardLayout.performanceRight).toBeLessThanOrEqual(cardLayout.cardRight);
   expect.soft(cardLayout.chartLeft).toBeGreaterThanOrEqual(cardLayout.cardLeft);
@@ -309,7 +338,13 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   expect.soft(cardLayout.modesRight).toBeLessThanOrEqual(cardLayout.cardRight);
   expect.soft(cardLayout.actionsLeft).toBeGreaterThanOrEqual(cardLayout.cardLeft);
   expect.soft(cardLayout.actionsRight).toBeLessThanOrEqual(cardLayout.cardRight);
-  expect.soft(cardLayout.actionsFit).toBe(true);
+  expect.soft(cardLayout.modeButtons).toHaveLength(4);
+  expect.soft(cardLayout.actionButtons.length).toBeGreaterThan(0);
+  for (const button of [...cardLayout.modeButtons, ...cardLayout.actionButtons]) {
+    assertInsideCardAndViewport(button);
+  }
+  expect.soft(overviewOverflow.documentScrollWidth).toBeLessThanOrEqual(overviewOverflow.documentClientWidth);
+  expect.soft(overviewOverflow.bodyScrollWidth).toBeLessThanOrEqual(overviewOverflow.bodyClientWidth);
 
   const savedAssignments = await page.evaluate(async ({ firstName, secondName }) => {
     const [instancesResponse, packagesResponse] = await Promise.all([
