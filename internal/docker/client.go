@@ -118,7 +118,7 @@ type statsResponse struct {
 
 func (e *Engine) Stats(ctx context.Context, containerID string) (ResourceStats, error) {
 	var raw statsResponse
-	if err := e.do(ctx, http.MethodGet, "/containers/"+url.PathEscape(containerID)+"/stats", url.Values{"stream": []string{"false"}, "one-shot": []string{"true"}}, nil, &raw); err != nil {
+	if err := e.do(ctx, http.MethodGet, "/containers/"+url.PathEscape(containerID)+"/stats", url.Values{"stream": []string{"false"}}, nil, &raw); err != nil {
 		return ResourceStats{}, err
 	}
 	cpuDelta := raw.CPUStats.CPUUsage.Total - raw.PreCPUStats.CPUUsage.Total

@@ -1,4 +1,11 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, type Instance } from "./App";
@@ -20,8 +27,50 @@ const instance: Instance = {
   cpu: 31,
   memory: 2.4,
 };
+const apiInstance = {
+  ID: "1",
+  NodeID: "local",
+  Name: "深夜战役",
+  ContainerID: "container-1",
+  GamePort: 27015,
+  sourcetv_port: 27020,
+  plugin_ports: [27021],
+  StartMap: "c2m1_highway",
+  GameMode: "coop",
+  Tickrate: 100,
+  MaxPlayers: 8,
+  extra_args: "-strictportbind",
+  RuntimeImage: "runtime",
+  applied_package_id: "package-a",
+  package_id: "package-a",
+  DesiredState: "running",
+  ActualState: "running",
+  CreatedAt: "2026-07-15T00:00:00Z",
+  UpdatedAt: "2026-07-15T00:00:00Z",
+};
+const stoppedOverview = {
+  actual_state: "stopped",
+  container_running: false,
+  map: "",
+  players: null,
+  max_players: null,
+  cpu_percent: null,
+  memory_bytes: null,
+  issues: [],
+};
+const runningZeroOverview = {
+  actual_state: "running",
+  container_running: true,
+  map: "c5m1_waterfront",
+  players: 0,
+  max_players: 8,
+  cpu_percent: 0,
+  memory_bytes: 0,
+  issues: [],
+};
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 describe("App", () => {
@@ -45,6 +94,89 @@ describe("App", () => {
     expect(screen.getByText("c2m1_highway")).toBeInTheDocument();
     expect(screen.getByText(/TV 27020.*插件 27021/)).toBeInTheDocument();
     expect(screen.getByText(/coop-a\.zip.*v1/)).toBeInTheDocument();
+  });
+  it("uses the live overview state instead of persisted running state", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input);
+        calls.push(path);
+        const value =
+          path === "/api/session"
+            ? { authenticated: true }
+            : path === "/api/instances"
+              ? [apiInstance]
+              : path === "/api/instances/1/overview"
+                ? stoppedOverview
+                : path === "/api/packages"
+                  ? []
+                  : path === "/api/health"
+                    ? { ok: true }
+                    : { error: { message: "unexpected request" } };
+        return new Response(JSON.stringify(value), {
+          status: "error" in value ? 404 : 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+
+    render(<App />);
+
+    const card = (await screen.findByText("深夜战役")).closest("article");
+    expect(card).not.toBeNull();
+    expect(await within(card!).findByText("已停止")).toBeInTheDocument();
+    expect(within(card!).getByText("-- / --")).toBeInTheDocument();
+    expect(within(card!).getAllByText("--")).toHaveLength(2);
+    expect(card).toHaveClass("stopped");
+    const playerTotal = screen.getByText("在线玩家").closest("article");
+    expect(playerTotal).not.toBeNull();
+    expect(within(playerTotal!).getByText("--")).toBeInTheDocument();
+    expect(screen.getByText("实时观测状态")).toBeInTheDocument();
+    expect(calls).toContain("/api/instances/1/overview");
+    expect(calls).not.toContain("/api/instances/1/players");
+    expect(calls).not.toContain("/api/instances/1/resources");
+  });
+  it("polls overview observations and preserves legitimate zero metrics", async () => {
+    let refresh: (() => void) | undefined;
+    vi.spyOn(window, "setInterval").mockImplementation((handler: TimerHandler) => {
+      refresh = handler as () => void;
+      return 1;
+    });
+    const observations = [stoppedOverview, runningZeroOverview];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input);
+        const value =
+          path === "/api/session"
+            ? { authenticated: true }
+            : path === "/api/instances"
+              ? [apiInstance]
+              : path === "/api/instances/1/overview"
+                ? observations.shift() || runningZeroOverview
+                : path === "/api/packages"
+                  ? []
+                  : { ok: true };
+        return new Response(JSON.stringify(value), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+
+    render(<App />);
+    expect(await screen.findByText("-- / --")).toBeInTheDocument();
+    expect(refresh).toBeTypeOf("function");
+
+    await act(async () => {
+      refresh!();
+    });
+
+    expect(await screen.findByText("0 / 8")).toBeInTheDocument();
+    expect(screen.getByText("0.0%")).toBeInTheDocument();
+    expect(screen.getByText("0.00 GB")).toBeInTheDocument();
+    expect(screen.getByText("运行中")).toBeInTheDocument();
   });
   it("opens the existing instance configuration from its card", async () => {
     render(

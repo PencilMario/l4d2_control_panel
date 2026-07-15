@@ -115,6 +115,9 @@ func (fixtureConsole) AttachSupervisor(context.Context, string) (io.ReadWriteClo
 
 type fixturePlayers struct{}
 
+func (fixturePlayers) Summary(context.Context, string) (players.Summary, error) {
+	return players.Summary{Map: "c2m1_highway", Players: 1, MaxPlayers: 8}, nil
+}
 func (fixturePlayers) Online(context.Context, string) (players.Snapshot, error) {
 	return players.Snapshot{
 		Map:        "c2m1_highway",
@@ -135,6 +138,7 @@ func (fixturePlayers) Ban(context.Context, string, int, int) error {
 
 type fixtureResources struct{}
 
+func (fixtureResources) Running(context.Context, string) (bool, error) { return true, nil }
 func (fixtureResources) Stats(context.Context, string) (docker.ResourceStats, error) {
 	return docker.ResourceStats{CPUPercent: 12.5, MemoryBytes: 768 << 20}, nil
 }

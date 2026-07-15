@@ -21,8 +21,10 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
+	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
+	"github.com/not0721here/l4d2-control-panel/internal/players"
 	"github.com/not0721here/l4d2-control-panel/internal/scheduler"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 	"github.com/not0721here/l4d2-control-panel/internal/updates"
@@ -37,6 +39,35 @@ func (f *fakeLifecycle) Rebuild(context.Context, string) error      { f.action =
 func (f *fakeLifecycle) Delete(context.Context, string, bool) error { f.action = "delete"; return nil }
 
 type fakeAttacher struct{ peer net.Conn }
+
+type overviewPlayers struct {
+	summary players.Summary
+	calls   int
+}
+
+func (p *overviewPlayers) Summary(context.Context, string) (players.Summary, error) {
+	p.calls++
+	return p.summary, nil
+}
+func (*overviewPlayers) Online(context.Context, string) (players.Snapshot, error) {
+	return players.Snapshot{}, nil
+}
+func (*overviewPlayers) Kick(context.Context, string, int) error     { return nil }
+func (*overviewPlayers) Ban(context.Context, string, int, int) error { return nil }
+
+type overviewResources struct {
+	running    bool
+	stats      docker.ResourceStats
+	statsCalls int
+}
+
+func (r *overviewResources) Running(context.Context, string) (bool, error) {
+	return r.running, nil
+}
+func (r *overviewResources) Stats(context.Context, string) (docker.ResourceStats, error) {
+	r.statsCalls++
+	return r.stats, nil
+}
 
 type fakeScheduleDispatcher struct{}
 
@@ -176,6 +207,95 @@ func TestCreateAndListInstance(t *testing.T) {
 	if err != nil || len(events) != 1 || events[0].Target != "/api/instances" || events[0].Result != "201" {
 		t.Fatalf("audit=%#v err=%v", events, err)
 	}
+}
+
+func TestInstanceOverviewUsesLiveDockerAndA2SObservations(t *testing.T) {
+	t.Run("running", func(t *testing.T) {
+		s, db := testServer(t)
+		defer db.Close()
+		instance := domain.Instance{ID: "live", NodeID: "local", Name: "Live", ContainerID: "container-live", GamePort: 27015, StartMap: "configured", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateStopped}
+		if err := db.CreateInstance(context.Background(), instance); err != nil {
+			t.Fatal(err)
+		}
+		playerSource := &overviewPlayers{summary: players.Summary{Map: "c5m1_waterfront", Players: 3, MaxPlayers: 12}}
+		resourceSource := &overviewResources{running: true, stats: docker.ResourceStats{CPUPercent: 37.5, MemoryBytes: 1610612736}}
+		s = New(db, s.auth, WithPlayers(playerSource), WithResources(resourceSource))
+
+		response := authenticatedJSON(t, s, loginCookie(t, s), http.MethodGet, "/api/instances/live/overview", "")
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+		var body struct {
+			ActualState      domain.InstanceState `json:"actual_state"`
+			ContainerRunning bool                 `json:"container_running"`
+			Map              string               `json:"map"`
+			Players          *int                 `json:"players"`
+			MaxPlayers       *int                 `json:"max_players"`
+			CPUPercent       *float64             `json:"cpu_percent"`
+			MemoryBytes      *uint64              `json:"memory_bytes"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.ActualState != domain.StateRunning || !body.ContainerRunning || body.Map != "c5m1_waterfront" || body.Players == nil || *body.Players != 3 || body.MaxPlayers == nil || *body.MaxPlayers != 12 || body.CPUPercent == nil || *body.CPUPercent != 37.5 || body.MemoryBytes == nil || *body.MemoryBytes != 1610612736 {
+			t.Fatalf("overview=%s", response.Body.String())
+		}
+		if playerSource.calls != 1 || resourceSource.statsCalls != 1 {
+			t.Fatalf("playerCalls=%d statsCalls=%d", playerSource.calls, resourceSource.statsCalls)
+		}
+	})
+
+	t.Run("stopped", func(t *testing.T) {
+		s, db := testServer(t)
+		defer db.Close()
+		instance := domain.Instance{ID: "stale", NodeID: "local", Name: "Stale", ContainerID: "container-stale", GamePort: 27016, StartMap: "configured", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}
+		if err := db.CreateInstance(context.Background(), instance); err != nil {
+			t.Fatal(err)
+		}
+		playerSource := &overviewPlayers{}
+		resourceSource := &overviewResources{running: false}
+		s = New(db, s.auth, WithPlayers(playerSource), WithResources(resourceSource))
+
+		response := authenticatedJSON(t, s, loginCookie(t, s), http.MethodGet, "/api/instances/stale/overview", "")
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+		var body struct {
+			ActualState      domain.InstanceState `json:"actual_state"`
+			ContainerRunning bool                 `json:"container_running"`
+			Players          *int                 `json:"players"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.ActualState != domain.StateStopped || body.ContainerRunning || body.Players != nil || playerSource.calls != 0 || resourceSource.statsCalls != 0 {
+			t.Fatalf("overview=%s playerCalls=%d statsCalls=%d", response.Body.String(), playerSource.calls, resourceSource.statsCalls)
+		}
+	})
+
+	t.Run("missing container", func(t *testing.T) {
+		s, db := testServer(t)
+		defer db.Close()
+		instance := domain.Instance{ID: "missing", NodeID: "local", Name: "Missing", GamePort: 27017, StartMap: "configured", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}
+		if err := db.CreateInstance(context.Background(), instance); err != nil {
+			t.Fatal(err)
+		}
+		s = New(db, s.auth)
+
+		response := authenticatedJSON(t, s, loginCookie(t, s), http.MethodGet, "/api/instances/missing/overview", "")
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+		var body struct {
+			ActualState domain.InstanceState `json:"actual_state"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.ActualState != domain.StateOrphaned {
+			t.Fatalf("overview=%s", response.Body.String())
+		}
+	})
 }
 
 func TestCreateRejectsInvalidPort(t *testing.T) {

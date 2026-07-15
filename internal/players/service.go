@@ -38,9 +38,29 @@ type Snapshot struct {
 	Players    []OnlinePlayer `json:"players"`
 	MaxPlayers int            `json:"max_players"`
 }
+type Summary struct {
+	Map        string `json:"map"`
+	Players    int    `json:"players"`
+	MaxPlayers int    `json:"max_players"`
+}
 
 func NewService(instances InstanceRepository, query Query, console Console, host string) *Service {
 	return &Service{instances: instances, query: query, console: console, host: host}
+}
+func (s *Service) Summary(ctx context.Context, id string) (Summary, error) {
+	instance, err := s.instances.Instance(ctx, id)
+	if err != nil {
+		return Summary{}, err
+	}
+	if instance.ContainerID == "" {
+		return Summary{}, errors.New("instance container unavailable")
+	}
+	address := net.JoinHostPort(s.host, strconv.Itoa(instance.GamePort))
+	info, err := s.query.Info(address)
+	if err != nil {
+		return Summary{}, err
+	}
+	return Summary{Map: info.Map, Players: info.Players, MaxPlayers: info.MaxPlayers}, nil
 }
 func (s *Service) Online(ctx context.Context, id string) (Snapshot, error) {
 	instance, err := s.instances.Instance(ctx, id)

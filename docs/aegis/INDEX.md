@@ -14,3 +14,4 @@
 ## Active Work
 
 - [Instance startup and package implementation](work/2026-07-15-instance-startup-packages/00-intent.md)
+- [Overview live status and metrics repair](work/2026-07-15-overview-live-status/00-intent.md)

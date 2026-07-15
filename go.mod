@@ -7,6 +7,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/robfig/cron/v3 v3.0.1
+	github.com/rumblefrog/go-a2s v1.0.3
 	golang.org/x/crypto v0.54.0
 	modernc.org/sqlite v1.38.2
 )

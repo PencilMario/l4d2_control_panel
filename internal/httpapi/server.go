@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -76,6 +77,7 @@ type ConsoleAttacher interface {
 func WithConsole(attacher ConsoleAttacher) Option { return func(s *Server) { s.console = attacher } }
 
 type PlayerService interface {
+	Summary(context.Context, string) (players.Summary, error)
 	Online(context.Context, string) (players.Snapshot, error)
 	Kick(context.Context, string, int) error
 	Ban(context.Context, string, int, int) error
@@ -101,6 +103,7 @@ func WithScheduler(service *scheduler.Service) Option {
 func WithSecrets(service *secrets.Service) Option { return func(s *Server) { s.secrets = service } }
 
 type ResourceProvider interface {
+	Running(context.Context, string) (bool, error)
 	Stats(context.Context, string) (docker.ResourceStats, error)
 }
 
@@ -132,6 +135,7 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 			writeJSON(w, http.StatusOK, map[string]bool{"authenticated": true})
 		})
 		r.Get("/api/instances", s.listInstances)
+		r.Get("/api/instances/{id}/overview", s.instanceOverview)
 		r.Post("/api/instances", s.createInstance)
 		r.Put("/api/instances/{id}", s.updateInstance)
 		r.Delete("/api/instances/{id}", s.deleteInstance)
@@ -367,6 +371,102 @@ func (s *Server) instanceResources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, stats)
+}
+
+type instanceOverview struct {
+	ActualState      domain.InstanceState `json:"actual_state"`
+	ContainerRunning bool                 `json:"container_running"`
+	Map              string               `json:"map,omitempty"`
+	Players          *int                 `json:"players"`
+	MaxPlayers       *int                 `json:"max_players"`
+	CPUPercent       *float64             `json:"cpu_percent"`
+	MemoryBytes      *uint64              `json:"memory_bytes"`
+	Issues           []string             `json:"issues,omitempty"`
+}
+
+func (s *Server) instanceOverview(w http.ResponseWriter, r *http.Request) {
+	instance, err := s.store.Instance(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "instance_not_found", "instance not found")
+		return
+	}
+	result := instanceOverview{ActualState: instance.ActualState}
+	if instance.ContainerID == "" {
+		if instance.ActualState == domain.StateRunning || instance.DesiredState == domain.StateRunning {
+			result.ActualState = domain.StateOrphaned
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	if s.resources == nil {
+		writeError(w, http.StatusServiceUnavailable, "resources_unavailable", "resource provider unavailable")
+		return
+	}
+	running, err := s.resources.Running(r.Context(), instance.ContainerID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "runtime_probe_failed", err.Error())
+		return
+	}
+	result.ContainerRunning = running
+	if !running {
+		result.ActualState = stoppedObservationState(instance.ActualState)
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+
+	var stats docker.ResourceStats
+	var summary players.Summary
+	var statsErr, summaryErr error
+	var wait sync.WaitGroup
+	wait.Add(2)
+	go func() {
+		defer wait.Done()
+		stats, statsErr = s.resources.Stats(r.Context(), instance.ContainerID)
+	}()
+	go func() {
+		defer wait.Done()
+		if s.players == nil {
+			summaryErr = errors.New("player provider unavailable")
+			return
+		}
+		summary, summaryErr = s.players.Summary(r.Context(), instance.ID)
+	}()
+	wait.Wait()
+
+	if statsErr == nil {
+		result.CPUPercent = &stats.CPUPercent
+		result.MemoryBytes = &stats.MemoryBytes
+	} else {
+		result.Issues = append(result.Issues, "resources: "+statsErr.Error())
+	}
+	if summaryErr == nil {
+		result.ActualState = domain.StateRunning
+		result.Map = summary.Map
+		result.Players = &summary.Players
+		result.MaxPlayers = &summary.MaxPlayers
+	} else {
+		result.ActualState = unhealthyObservationState(instance.ActualState)
+		result.Issues = append(result.Issues, "a2s: "+summaryErr.Error())
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func stoppedObservationState(current domain.InstanceState) domain.InstanceState {
+	switch current {
+	case domain.StateUninstalled, domain.StateInstalling, domain.StateUpdating, domain.StateRollingBack, domain.StateFaulted, domain.StateOrphaned:
+		return current
+	default:
+		return domain.StateStopped
+	}
+}
+
+func unhealthyObservationState(current domain.InstanceState) domain.InstanceState {
+	switch current {
+	case domain.StateInstalling, domain.StateStarting, domain.StateUpdating, domain.StateRollingBack:
+		return current
+	default:
+		return domain.StateFaulted
+	}
 }
 
 type instanceInput struct {

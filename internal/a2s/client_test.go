@@ -86,6 +86,44 @@ func TestInfoAcceptsDirectResponse(t *testing.T) {
 	}
 }
 
+func TestPlayersCollectsSplitResponse(t *testing.T) {
+	server, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	go func() {
+		buffer := make([]byte, 1400)
+		n, addr, readErr := server.ReadFrom(buffer)
+		if readErr != nil || n < 9 || buffer[4] != 0x55 {
+			return
+		}
+		_, _ = server.WriteTo([]byte{0xff, 0xff, 0xff, 0xff, 0x41, 1, 2, 3, 4}, addr)
+		n, addr, readErr = server.ReadFrom(buffer)
+		if readErr != nil || n < 9 || buffer[4] != 0x55 {
+			return
+		}
+		response := playerResponse()
+		parts := [][]byte{response[:12], response[12:]}
+		for number, part := range parts {
+			packet := []byte{0xfe, 0xff, 0xff, 0xff}
+			packet = binary.LittleEndian.AppendUint32(packet, 42)
+			packet = append(packet, byte(len(parts)), byte(number))
+			packet = binary.LittleEndian.AppendUint16(packet, 1248)
+			packet = append(packet, part...)
+			_, _ = server.WriteTo(packet, addr)
+		}
+	}()
+
+	players, err := (Client{Timeout: time.Second}).Players(server.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(players) != 1 || players[0].Name != "Coach" || players[0].Score != 12 || players[0].Duration != 90 {
+		t.Fatalf("players=%#v", players)
+	}
+}
+
 func infoResponse() []byte {
 	payload := append([]byte{0xff, 0xff, 0xff, 0xff, 0x49, 17}, z("Test Server")...)
 	payload = append(payload, z("c2m1_highway")...)
@@ -93,6 +131,14 @@ func infoResponse() []byte {
 	payload = append(payload, z("Left 4 Dead 2")...)
 	payload = binary.LittleEndian.AppendUint16(payload, 550)
 	return append(payload, 4, 8, 0, 'd', 'l', 0, 0, 1, 0)
+}
+
+func playerResponse() []byte {
+	payload := []byte{0xff, 0xff, 0xff, 0xff, 0x44, 1, 0}
+	payload = append(payload, z("Coach")...)
+	payload = binary.LittleEndian.AppendUint32(payload, 12)
+	payload = binary.LittleEndian.AppendUint32(payload, math.Float32bits(90))
+	return payload
 }
 
 func z(value string) []byte { return append([]byte(value), 0) }

@@ -32,6 +32,42 @@ func (f *fakeConsole) PlayerCommand(_ context.Context, _ string, command string)
 	f.command = command
 	return nil
 }
+
+type summaryQuery struct{ playerCalls int }
+
+func (*summaryQuery) Info(string) (a2s.Info, error) {
+	return a2s.Info{Map: "c5m1_waterfront", Players: 3, MaxPlayers: 12}, nil
+}
+func (q *summaryQuery) Players(string) ([]a2s.Player, error) {
+	q.playerCalls++
+	return nil, nil
+}
+
+type summaryConsole struct{ statusCalls int }
+
+func (c *summaryConsole) Status(context.Context, string) (string, error) {
+	c.statusCalls++
+	return "", nil
+}
+func (*summaryConsole) PlayerCommand(context.Context, string, string) error { return nil }
+
+func TestSummaryUsesA2SInfoWithoutDetailedPlayerOrConsoleQueries(t *testing.T) {
+	query := &summaryQuery{}
+	console := &summaryConsole{}
+	service := NewService(fakeInstances{domain.Instance{ID: "abc", ContainerID: "container", GamePort: 27015}}, query, console, "127.0.0.1")
+
+	summary, err := service.Summary(context.Background(), "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Map != "c5m1_waterfront" || summary.Players != 3 || summary.MaxPlayers != 12 {
+		t.Fatalf("summary=%#v", summary)
+	}
+	if query.playerCalls != 0 || console.statusCalls != 0 {
+		t.Fatalf("playerCalls=%d statusCalls=%d", query.playerCalls, console.statusCalls)
+	}
+}
+
 func TestServiceJoinsA2SWithStatusUserIDAndExecutesBan(t *testing.T) {
 	console := &fakeConsole{}
 	service := NewService(fakeInstances{domain.Instance{ID: "abc", ContainerID: "container", GamePort: 27015}}, fakeQuery{}, console, "127.0.0.1")

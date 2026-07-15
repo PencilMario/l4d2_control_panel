@@ -218,6 +218,9 @@ func TestGameUpdateKeepsUnclassifiedMaintenanceContainerForRetry(t *testing.T) {
 
 func TestStatsCalculatesCPUAndMemory(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("stream") != "false" || r.URL.Query().Has("one-shot") {
+			t.Fatalf("query=%s", r.URL.RawQuery)
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"cpu_stats": map[string]any{"cpu_usage": map[string]any{"total_usage": 300.0, "percpu_usage": []int{1, 2}}, "system_cpu_usage": 1000.0}, "precpu_stats": map[string]any{"cpu_usage": map[string]any{"total_usage": 100.0}, "system_cpu_usage": 500.0}, "memory_stats": map[string]any{"usage": 1073741824.0, "stats": map[string]any{"cache": 268435456.0}}})
 	}))
 	defer server.Close()

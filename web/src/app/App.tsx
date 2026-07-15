@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -37,9 +38,23 @@ import {
 } from "./InstanceConfigModal";
 import "../styles/app.css";
 export type Instance = ConfigurableInstance & {
-  players: number;
-  cpu: number;
-  memory: number;
+  players: number | null;
+  cpu: number | null;
+  memory: number | null;
+  observed_state?: string;
+  container_running?: boolean;
+  observed_max_players?: number | null;
+  current_map?: string;
+};
+type InstanceOverview = {
+  actual_state: string;
+  container_running: boolean;
+  map: string;
+  players: number | null;
+  max_players: number | null;
+  cpu_percent: number | null;
+  memory_bytes: number | null;
+  issues?: string[];
 };
 type Props = {
   initialInstances?: Instance[];
@@ -87,27 +102,41 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
       ? { status: "online", message: "测试数据已加载" }
       : { status: "checking", message: "正在检查 Docker API…" },
   );
-  const loadInstances = async () => {
+  const loadInstances = useCallback(async () => {
     const base = (await api<any[]>("/api/instances")).map(normalizeInstance);
     const enriched = await Promise.all(
       base.map(async (instance) => {
-        if (instance.actual_state !== "running") return instance;
-        const [resources, players] = await Promise.all([
-          api<any>(`/api/instances/${instance.id}/resources`).catch(() => null),
-          api<any>(`/api/instances/${instance.id}/players`).catch(() => null),
-        ]);
-        return {
-          ...instance,
-          cpu: resources?.cpu_percent ?? 0,
-          memory: resources?.memory_bytes
-            ? resources.memory_bytes / (1 << 30)
-            : 0,
-          players: players?.players?.length ?? 0,
-        };
+        try {
+          const overview = await api<InstanceOverview>(
+            `/api/instances/${instance.id}/overview`,
+          );
+          return {
+            ...instance,
+            observed_state: overview.actual_state,
+            container_running: overview.container_running,
+            observed_max_players: overview.max_players,
+            current_map: overview.map || undefined,
+            cpu: overview.cpu_percent,
+            memory:
+              overview.memory_bytes === null
+                ? null
+                : overview.memory_bytes / (1 << 30),
+            players: overview.players,
+          };
+        } catch {
+          return {
+            ...instance,
+            observed_state: "unknown",
+            observed_max_players: null,
+            players: null,
+            cpu: null,
+            memory: null,
+          };
+        }
       }),
     );
     setInstances(enriched);
-  };
+  }, []);
   const loadPackages = async () => {
     setPackages(await api<PackageVersion[]>("/api/packages"));
   };
@@ -132,6 +161,11 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
       })
       .catch(() => setAuth("no"));
   }, []);
+  useEffect(() => {
+    if (injected || auth !== "yes") return;
+    const timer = window.setInterval(() => void loadInstances(), 5_000);
+    return () => window.clearInterval(timer);
+  }, [auth, injected, loadInstances]);
   const queue = async (path: string, body: any) => {
     const created = await api<Job>(path, {
       method: "POST",
@@ -186,7 +220,9 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
         }}
       />
     );
-  const running = instances.filter((x) => x.actual_state === "running").length;
+  const running = instances.filter(
+    (x) => displayState(x) === "running",
+  ).length;
   return (
     <div className="shell">
       <aside>
@@ -422,6 +458,9 @@ function Overview({
   const packagesByID = new globalThis.Map(
     packages.map((item) => [item.id, item]),
   );
+  const totalPlayers = instances.some((instance) => instance.players === null)
+    ? "--"
+    : String(instances.reduce((total, instance) => total + (instance.players ?? 0), 0));
   const saveConfig = async (
     values: InstanceConfigValues,
     instance?: Instance,
@@ -447,12 +486,12 @@ function Overview({
           icon={<Activity />}
           label="运行实例"
           value={`${running} / ${instances.length}`}
-          note="实时期望状态"
+          note="实时观测状态"
         />
         <Metric
           icon={<Users />}
           label="在线玩家"
-          value={String(instances.reduce((n, x) => n + x.players, 0))}
+          value={totalPlayers}
           note="A2S 查询"
         />
         <Metric
@@ -484,12 +523,18 @@ function Overview({
             const selectedPackage = packagesByID.get(x.package_id);
             const packagePending =
               Boolean(x.package_id) && x.package_id !== x.applied_package_id;
+            const state = displayState(x);
+            const containerRunning = x.container_running ?? state === "running";
+            const observedCapacity =
+              x.observed_max_players === undefined
+                ? x.max_players
+                : x.observed_max_players;
             return (
-              <article className={`card ${x.actual_state}`} key={x.id}>
+              <article className={`card ${state}`} key={x.id}>
                 <div className="card-top">
                   <span className="status">
                     <i></i>
-                    {stateLabel(x.actual_state)}
+                    {stateLabel(state)}
                   </span>
                   <button
                     className="icon-btn"
@@ -522,8 +567,8 @@ function Overview({
                 <div className="map">
                   <Map />
                   <span>
-                    <small>启动地图</small>
-                    <b>{x.start_map}</b>
+                    <small>{x.current_map ? "当前地图" : "启动地图"}</small>
+                    <b>{x.current_map || x.start_map}</b>
                   </span>
                   <em>{x.game_mode.toUpperCase()}</em>
                 </div>
@@ -531,27 +576,31 @@ function Overview({
                   <span>
                     <small>玩家</small>
                     <b>
-                      {x.players} / {x.max_players}
+                      {x.players === null ? "--" : x.players}
+                      {" / "}
+                      {observedCapacity === null ? "--" : observedCapacity}
                     </b>
                   </span>
                   <span>
                     <small>CPU</small>
-                    <b>{x.cpu.toFixed(1)}%</b>
+                    <b>{x.cpu === null ? "--" : `${x.cpu.toFixed(1)}%`}</b>
                   </span>
                   <span>
                     <small>内存</small>
-                    <b>{x.memory.toFixed(2)} GB</b>
+                    <b>
+                      {x.memory === null ? "--" : `${x.memory.toFixed(2)} GB`}
+                    </b>
                   </span>
                 </div>
                 <div className="bar">
                   <i
                     style={{
-                      width: x.actual_state === "running" ? "100%" : "2%",
+                      width: state === "running" ? "100%" : "2%",
                     }}
                   />
                 </div>
                 <div className="actions">
-                  {x.actual_state === "running" ? (
+                  {containerRunning ? (
                     <button
                       aria-label={`停止 ${x.name}`}
                       onClick={() => setPending(x)}
@@ -1737,6 +1786,8 @@ function Metric({
     </article>
   );
 }
+const displayState = (instance: Instance) =>
+  instance.observed_state ?? instance.actual_state;
 const stateLabel = (s: string) =>
   ({
     running: "运行中",
@@ -1744,6 +1795,7 @@ const stateLabel = (s: string) =>
     uninstalled: "未安装",
     faulted: "故障",
     orphaned: "孤立",
+    unknown: "状态未知",
   })[s] || s;
 const formatBytes = (v: number) =>
   v > 1 << 30
