@@ -7,6 +7,7 @@
 - [New instance SRCDS defaults](specs/2026-07-15-new-instance-srcds-defaults-design.md)
 - [Private overlay file manager and console follow behavior](specs/2026-07-15-private-file-manager-console-follow-design.md)
 - [Instance performance information and one-hour history](specs/2026-07-15-instance-performance-history-design.md)
+- [Instance selective game and plugin package reinstall](specs/2026-07-15-instance-selective-reinstall-design.md)
 
 ## Implementation Plans
 
