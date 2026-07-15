@@ -391,7 +391,7 @@ type instanceOverview struct {
 	ContainerRunningKnown bool                 `json:"container_running_known"`
 	SampledAt             *time.Time           `json:"sampled_at"`
 	RunID                 *string              `json:"run_id"`
-	Map                   *string              `json:"map"`
+	Map                   string               `json:"map,omitempty"`
 	Players               *int                 `json:"players"`
 	MaxPlayers            *int                 `json:"max_players"`
 	CPUPercent            *float64             `json:"cpu_percent"`
@@ -468,7 +468,9 @@ func overviewFromSnapshot(actualState domain.InstanceState, snapshot metrics.Sna
 		result.ContainerRunning = *snapshot.ContainerRunning
 		result.ContainerRunningKnown = true
 	}
-	result.Map = snapshot.Map
+	if snapshot.Map != nil {
+		result.Map = *snapshot.Map
+	}
 	for _, issue := range snapshot.Issues {
 		result.Issues = append(result.Issues, issue.Source+": "+issue.Message)
 	}

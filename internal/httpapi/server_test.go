@@ -236,7 +236,7 @@ func TestInstanceOverviewUsesSamplerObservations(t *testing.T) {
 		zeroUint := uint64(0)
 		playersOnline := 0
 		maxPlayers := 8
-		gameMap := ""
+		gameMap := "c5m1_waterfront"
 		sampledAt := time.Date(2026, 7, 15, 12, 30, 45, 123456789, time.FixedZone("fixture", 8*60*60))
 		performance := &overviewPerformance{found: true, latest: metrics.Snapshot{
 			Timestamp: sampledAt, RunID: "run-7", ContainerRunning: &running,
@@ -256,7 +256,7 @@ func TestInstanceOverviewUsesSamplerObservations(t *testing.T) {
 		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 			t.Fatal(err)
 		}
-		if body["actual_state"] != string(domain.StateRunning) || body["container_running"] != true || body["container_running_known"] != true || body["sampled_at"] != sampledAt.UTC().Format(time.RFC3339Nano) || body["run_id"] != "run-7" || body["map"] != "" || body["players"] != float64(0) || body["max_players"] != float64(8) || body["cpu_percent"] != float64(0) || body["memory_bytes"] != float64(0) || body["memory_limit_bytes"] != float64(2<<30) || body["memory_percent"] != float64(0) || body["network_rx_bytes_per_sec"] != 12.5 || body["network_tx_bytes_per_sec"] != float64(0) || body["network_rx_bytes"] != float64(100) || body["network_tx_bytes"] != float64(0) || body["block_read_bytes_per_sec"] != float64(0) || body["block_write_bytes_per_sec"] != 1.5 || body["block_read_bytes"] != float64(0) || body["block_write_bytes"] != float64(200) || body["pids"] != float64(0) || body["uptime_seconds"] != float64(90) || body["a2s_latency_ms"] != float64(0) {
+		if body["actual_state"] != string(domain.StateRunning) || body["container_running"] != true || body["container_running_known"] != true || body["sampled_at"] != sampledAt.UTC().Format(time.RFC3339Nano) || body["run_id"] != "run-7" || body["map"] != "c5m1_waterfront" || body["players"] != float64(0) || body["max_players"] != float64(8) || body["cpu_percent"] != float64(0) || body["memory_bytes"] != float64(0) || body["memory_limit_bytes"] != float64(2<<30) || body["memory_percent"] != float64(0) || body["network_rx_bytes_per_sec"] != 12.5 || body["network_tx_bytes_per_sec"] != float64(0) || body["network_rx_bytes"] != float64(100) || body["network_tx_bytes"] != float64(0) || body["block_read_bytes_per_sec"] != float64(0) || body["block_write_bytes_per_sec"] != 1.5 || body["block_read_bytes"] != float64(0) || body["block_write_bytes"] != float64(200) || body["pids"] != float64(0) || body["uptime_seconds"] != float64(90) || body["a2s_latency_ms"] != float64(0) {
 			t.Fatalf("overview=%s", response.Body.String())
 		}
 		if _, ok := body["network_rx_bytes_per_second"]; ok {
@@ -318,6 +318,41 @@ func TestInstanceOverviewUsesSamplerObservations(t *testing.T) {
 		}
 		if body.ActualState != domain.StateStopped || body.ContainerRunning || body.Players != nil {
 			t.Fatalf("overview=%s", response.Body.String())
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil {
+			t.Fatal(err)
+		}
+		if _, exists := fields["map"]; exists {
+			t.Fatalf("unavailable map must be omitted: %s", response.Body.String())
+		}
+	})
+
+	t.Run("valid empty map follows legacy omission", func(t *testing.T) {
+		s, db := testServer(t)
+		defer db.Close()
+		instance := domain.Instance{ID: "empty-map", NodeID: "local", Name: "Empty Map", ContainerID: "container-empty-map", GamePort: 27022, StartMap: "configured", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}
+		if err := db.CreateInstance(context.Background(), instance); err != nil {
+			t.Fatal(err)
+		}
+		running := true
+		gameMap := ""
+		playersOnline, maxPlayers := 0, 8
+		performance := &overviewPerformance{found: true, latest: metrics.Snapshot{Timestamp: time.Now(), ContainerRunning: &running, Map: &gameMap, Players: &playersOnline, MaxPlayers: &maxPlayers}}
+		s = New(db, s.auth, WithPerformance(performance))
+		response := authenticatedJSON(t, s, loginCookie(t, s), http.MethodGet, "/api/instances/empty-map/overview", "")
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil {
+			t.Fatal(err)
+		}
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+		if _, exists := fields["map"]; exists {
+			t.Fatalf("empty map must follow legacy omission: %s", response.Body.String())
+		}
+		if string(fields["players"]) != "0" || string(fields["cpu_percent"]) != "null" {
+			t.Fatalf("other null and zero semantics changed: %s", response.Body.String())
 		}
 	})
 
