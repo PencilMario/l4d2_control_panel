@@ -129,6 +129,9 @@ func main() {
 	}
 	privateManager := content.NewPrivateManager(cfg.DataRoot, 1<<20)
 	privateUploadManager := content.NewPrivateUploadManager(cfg.DataRoot, 2<<30)
+	if err := privateUploadManager.RecoverAll(); err != nil {
+		log.Printf("private upload recovery: %v", err)
+	}
 	updateCoordinator := &updates.Coordinator{Lifecycle: life, Deployer: updatePipeline, Instances: db}
 	gameCoordinator := &updates.GameCoordinator{Root: cfg.DataRoot, Instances: db, Lifecycle: life, Updater: engine, Private: privateManager}
 	dispatcher := automation.Dispatcher{Jobs: jobManager, Players: playerService, Packages: packageManager, PackagesUpdate: updateCoordinator, GameUpdate: gameCoordinator, Releases: releases.Client{}, Maintenance: maintenance.New(cfg.DataRoot), Secrets: secretService}

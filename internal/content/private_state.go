@@ -462,21 +462,30 @@ func privateDiff(current map[string]manifestEntry, applied privateManifest) Priv
 }
 
 func (m *PrivateManager) ApplyChanges(ctx context.Context, instanceID string) error {
-	return m.applyPrivate(ctx, instanceID, false, true)
+	return m.applyPrivate(ctx, instanceID, false, true, nil)
+}
+
+func (m *PrivateManager) ApplyChangesWithProgress(ctx context.Context, instanceID string, progress func(string)) error {
+	return m.applyPrivate(ctx, instanceID, false, true, progress)
 }
 
 func (m *PrivateManager) RebaseAndApply(ctx context.Context, instanceID string) error {
-	return m.applyPrivate(ctx, instanceID, true, true)
+	return m.applyPrivate(ctx, instanceID, true, true, nil)
 }
 
-func (m *PrivateManager) applyPrivate(ctx context.Context, instanceID string, rebase, prune bool) error {
+func (m *PrivateManager) applyPrivate(ctx context.Context, instanceID string, rebase, prune bool, progress func(string)) error {
 	lock := m.instanceLock(instanceID)
 	lock.Lock()
 	defer lock.Unlock()
-	return m.applyPrivateLocked(ctx, instanceID, rebase, prune)
+	return m.applyPrivateLocked(ctx, instanceID, rebase, prune, progress)
 }
 
-func (m *PrivateManager) applyPrivateLocked(ctx context.Context, instanceID string, rebase, prune bool) error {
+func (m *PrivateManager) applyPrivateLocked(ctx context.Context, instanceID string, rebase, prune bool, reporters ...func(string)) error {
+	report := func(stage string) {
+		if len(reporters) > 0 && reporters[0] != nil {
+			reporters[0](stage)
+		}
+	}
 	if err := validateInstanceID(instanceID); err != nil {
 		return err
 	}
@@ -516,6 +525,7 @@ func (m *PrivateManager) applyPrivateLocked(ctx context.Context, instanceID stri
 	}
 	sort.Strings(paths)
 	work := filepath.Join(base, "backups", "private", "apply-"+uuid.NewString())
+	report("snapshot")
 	journal := privateApplyJournal{Version: 1, InstanceID: instanceID, Stage: "prepared"}
 	if _, statErr := os.Stat(manifestPath); statErr == nil {
 		journal.ManifestExisted = true
@@ -585,6 +595,7 @@ func (m *PrivateManager) applyPrivateLocked(ctx context.Context, instanceID stri
 		return rollback(err)
 	}
 	if rebase {
+		report("restore-lower")
 		lower = lowerManifest{Version: 1, Entries: map[string]bool{}}
 		_ = os.RemoveAll(filepath.Join(lowerRoot, "tree"))
 		for _, path := range paths {
@@ -597,6 +608,7 @@ func (m *PrivateManager) applyPrivateLocked(ctx context.Context, instanceID stri
 			}
 		}
 	} else {
+		report("restore-lower")
 		for path, entry := range current {
 			if _, wasApplied := old.Entries[path]; !wasApplied {
 				if _, known := lower.Entries[path]; !known {
@@ -611,6 +623,7 @@ func (m *PrivateManager) applyPrivateLocked(ctx context.Context, instanceID stri
 		return rollback(err)
 	}
 	mutations := 0
+	report("apply-private")
 	for _, path := range paths {
 		entry, nowPrivate := current[path]
 		if nowPrivate && entry.Kind == "directory" {
@@ -654,6 +667,7 @@ func (m *PrivateManager) applyPrivateLocked(ctx context.Context, instanceID stri
 		return rollback(err)
 	}
 	now := time.Now().UTC()
+	report("commit")
 	next := privateManifest{Version: privateManifestVersion, AppliedAt: now, Entries: current}
 	if err = m.writePrivateManifest(instanceID, next); err != nil {
 		return rollback(err)

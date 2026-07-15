@@ -131,6 +131,7 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 	r.Get("/api/health", s.health)
 	r.Group(func(r chi.Router) {
 		r.Use(s.requireAuth)
+		r.Use(s.requireExistingPrivateInstance)
 		r.Use(s.auditMutations)
 		r.Post("/api/auth/logout", s.logout)
 		r.Get("/api/session", func(w http.ResponseWriter, _ *http.Request) {
@@ -975,6 +976,11 @@ func (s *Server) writePrivateUpload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 503, "content_unavailable", "private upload manager unavailable")
 		return
 	}
+	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0]))
+	if mediaType != "application/offset+octet-stream" && mediaType != "application/octet-stream" {
+		writeError(w, 415, "unsupported_media_type", "upload chunks require application/offset+octet-stream")
+		return
+	}
 	session, err := s.privateUploads.Recover(chi.URLParam(r, "uploadID"))
 	if err != nil || session.InstanceID != chi.URLParam(r, "id") {
 		writeError(w, 404, "upload_not_found", "upload session not found")
@@ -985,7 +991,7 @@ func (s *Server) writePrivateUpload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 422, "invalid_offset", "numeric Upload-Offset required")
 		return
 	}
-	written, err := s.privateUploads.Write(session.ID, offset, http.MaxBytesReader(w, r.Body, 64<<20))
+	written, err := s.privateUploads.Write(session.ID, offset, http.MaxBytesReader(w, r.Body, session.Size-session.Offset+1))
 	if err != nil {
 		writeError(w, 409, "upload_offset_error", err.Error())
 		return
@@ -1048,7 +1054,10 @@ func (s *Server) applyPrivate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	job, ok := s.startJob(w, r, id, "apply_private", func(ctx context.Context, _ jobs.Reporter) error { return s.private.ApplyChanges(ctx, id) })
+	job, ok := s.startJob(w, r, id, "apply_private", func(ctx context.Context, reporter jobs.Reporter) error {
+		percent := map[string]int{"snapshot": 10, "restore-lower": 35, "apply-private": 65, "commit": 90}
+		return s.private.ApplyChangesWithProgress(ctx, id, func(stage string) { reporter.Progress(stage, percent[stage], stage) })
+	})
 	if !ok {
 		return
 	}
@@ -1295,6 +1304,24 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		if err != nil || !s.auth.Valid(c.Value) {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "authentication required")
 			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+func (s *Server) requireExistingPrivateInstance(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/instances/") && strings.Contains(r.URL.Path, "/private") {
+			id := chi.URLParam(r, "id")
+			if id == "" { // URL params are populated after route matching; derive only for this middleware.
+				parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/instances/"), "/")
+				if len(parts) > 0 {
+					id = parts[0]
+				}
+			}
+			if _, err := s.store.Instance(r.Context(), id); err != nil {
+				writeError(w, 404, "instance_not_found", "instance not found")
+				return
+			}
 		}
 		next.ServeHTTP(w, r)
 	})

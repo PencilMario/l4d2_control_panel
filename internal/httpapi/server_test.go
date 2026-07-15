@@ -51,6 +51,9 @@ func (f *fakeAttacher) AttachSupervisor(context.Context, string) (io.ReadWriteCl
 func TestPrivateFileAPIContract(t *testing.T) {
 	s, db := testServer(t)
 	t.Cleanup(func() { _ = db.Close() })
+	if err := db.CreateInstance(context.Background(), domain.Instance{ID: "abc", NodeID: "local", Name: "abc"}); err != nil {
+		t.Fatal(err)
+	}
 	root := t.TempDir()
 	private := content.NewPrivateManager(root, 1<<20)
 	s = New(db, s.auth, WithContent(nil, private, nil, nil, nil), WithPrivateUploads(content.NewPrivateUploadManager(root, 8<<20)))
@@ -64,6 +67,9 @@ func TestPrivateFileAPIContract(t *testing.T) {
 		w := httptest.NewRecorder()
 		s.Handler().ServeHTTP(w, r)
 		return w
+	}
+	if w := do(http.MethodPost, "/api/instances/missing/private/directories", `{"path":"cfg"}`); w.Code != 404 || !strings.Contains(w.Body.String(), `"code":"instance_not_found"`) {
+		t.Fatalf("missing instance: %d %s", w.Code, w.Body.String())
 	}
 	if w := do(http.MethodPost, "/api/instances/abc/private/directories", `{"path":"cfg"}`); w.Code != 201 {
 		t.Fatalf("mkdir: %d %s", w.Code, w.Body.String())
@@ -86,6 +92,16 @@ func TestPrivateFileAPIContract(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPatch, "/api/instances/abc/private/uploads/"+session.ID, strings.NewReader("abcdef"))
 	r.AddCookie(cookie)
 	r.Header.Set("Upload-Offset", "0")
+	r.Header.Set("Content-Type", "text/plain")
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != 415 {
+		t.Fatalf("media type: %d %s", w.Code, w.Body.String())
+	}
+	r = httptest.NewRequest(http.MethodPatch, "/api/instances/abc/private/uploads/"+session.ID, strings.NewReader("abcdef"))
+	r.AddCookie(cookie)
+	r.Header.Set("Upload-Offset", "0")
+	r.Header.Set("Content-Type", "application/offset+octet-stream")
 	w = httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, r)
 	if w.Code != 204 || w.Header().Get("Upload-Offset") != "6" {
@@ -487,6 +503,9 @@ func TestStopActionRequiresConfirmation(t *testing.T) {
 func TestContentReadRoutesReturnUnavailableWithoutManagers(t *testing.T) {
 	s, db := testServer(t)
 	defer db.Close()
+	if err := db.CreateInstance(context.Background(), domain.Instance{ID: "abc", NodeID: "local", Name: "abc"}); err != nil {
+		t.Fatal(err)
+	}
 	cookie := loginCookie(t, s)
 	for _, path := range []string{
 		"/api/content/vpk/missing.vpk/download",
@@ -507,6 +526,9 @@ func TestContentReadRoutesReturnUnavailableWithoutManagers(t *testing.T) {
 func TestContentReadRoutesAndJobFeed(t *testing.T) {
 	s, db := testServer(t)
 	defer db.Close()
+	if err := db.CreateInstance(context.Background(), domain.Instance{ID: "abc", NodeID: "local", Name: "abc"}); err != nil {
+		t.Fatal(err)
+	}
 	root := t.TempDir()
 	uploads, err := content.NewUploadManager(root)
 	if err != nil {
