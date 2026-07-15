@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,9 +18,13 @@ type fakeInstances struct {
 	mu    sync.Mutex
 	items []domain.Instance
 	err   error
+	fn    func(context.Context) ([]domain.Instance, error)
 }
 
-func (f *fakeInstances) Instances(context.Context) ([]domain.Instance, error) {
+func (f *fakeInstances) Instances(ctx context.Context) ([]domain.Instance, error) {
+	if f.fn != nil {
+		return f.fn(ctx)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]domain.Instance(nil), f.items...), f.err
@@ -56,13 +61,15 @@ func (f *fakeRuntime) Stats(ctx context.Context, _ string) (docker.ResourceStats
 }
 
 type fakeTraffic struct {
-	mu             sync.Mutex
-	totals         traffic.Totals
-	err            error
-	registered     []traffic.Session
-	stopped        []traffic.Session
-	respectContext bool
-	deadlineSeen   bool
+	mu               sync.Mutex
+	totals           traffic.Totals
+	err              error
+	registered       []traffic.Session
+	stopped          []traffic.Session
+	respectContext   bool
+	deadlineSeen     bool
+	stopFn           func(context.Context, string, string) error
+	stopDeadlineSeen bool
 }
 
 func (f *fakeTraffic) Register(_ context.Context, s traffic.Session) error {
@@ -71,11 +78,17 @@ func (f *fakeTraffic) Register(_ context.Context, s traffic.Session) error {
 	f.registered = append(f.registered, s)
 	return f.err
 }
-func (f *fakeTraffic) Stop(_ context.Context, id, run string) error {
+func (f *fakeTraffic) Stop(ctx context.Context, id, run string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.stopped = append(f.stopped, traffic.Session{InstanceID: id, RunID: run})
-	return f.err
+	_, f.stopDeadlineSeen = ctx.Deadline()
+	stopFn := f.stopFn
+	err := f.err
+	f.mu.Unlock()
+	if stopFn != nil {
+		return stopFn(ctx, id, run)
+	}
+	return err
 }
 func (f *fakeTraffic) Totals(ctx context.Context, _ string) (traffic.Totals, error) {
 	f.mu.Lock()
@@ -501,4 +514,77 @@ func hasIssue(issues []Issue, source string) bool {
 		}
 	}
 	return false
+}
+
+func TestInstanceEnumerationDeadlinePreservesKnownCache(t *testing.T) {
+	now := time.Now().UTC()
+	s, instances, _, _, _, _ := testSampler(now)
+	s.Sample(context.Background())
+	instances.fn = func(ctx context.Context) ([]domain.Instance, error) {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("Instances context has no deadline")
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	s.enumerationTimeout = 20 * time.Millisecond
+	started := time.Now()
+	s.Sample(context.Background())
+	if time.Since(started) > 200*time.Millisecond {
+		t.Fatal("enumeration timeout did not bound Sample")
+	}
+	if _, ok := s.Latest("one"); !ok || len(s.History("one")) == 0 {
+		t.Fatal("failed enumeration pruned known cache")
+	}
+}
+
+func TestRemovedInstanceStopHasDeadlineAndCannotBlockPruning(t *testing.T) {
+	now := time.Now().UTC()
+	s, instances, _, network, _, _ := testSampler(now)
+	s.Sample(context.Background())
+	instances.items = nil
+	network.stopFn = func(ctx context.Context, _, _ string) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	s.cleanupTimeout = 20 * time.Millisecond
+	started := time.Now()
+	s.Sample(context.Background())
+	if time.Since(started) > 200*time.Millisecond || !network.stopDeadlineSeen {
+		t.Fatalf("cleanup duration=%v deadline=%v", time.Since(started), network.stopDeadlineSeen)
+	}
+	if _, ok := s.Latest("one"); ok || len(s.History("one")) != 0 {
+		t.Fatal("timed out cleanup retained removed instance")
+	}
+}
+
+func TestStartContinuesAfterEnumerationTimeout(t *testing.T) {
+	now := time.Now().UTC()
+	s, instances, _, _, _, clock := testSampler(now)
+	var calls atomic.Int32
+	instances.fn = func(ctx context.Context) ([]domain.Instance, error) {
+		if calls.Add(1) == 1 {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return append([]domain.Instance(nil), instances.items...), nil
+	}
+	s.enumerationTimeout = 20 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.Start(ctx)
+	deadline := time.After(time.Second)
+	for calls.Load() < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("initial enumeration not called")
+		default:
+		}
+	}
+	clock.Advance(5 * time.Second)
+	waitLatest(t, s, "one", now.Add(5*time.Second))
+	cancel()
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 }

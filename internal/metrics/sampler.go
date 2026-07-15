@@ -97,24 +97,26 @@ type Sampler struct {
 	players   PlayerProvider
 	clock     Clock
 
-	mu              sync.RWMutex
-	latest          map[string]Snapshot
-	history         map[string][]Snapshot
-	previous        map[string]counterSample
-	runs            map[string]string
-	workerCount     int
-	instanceTimeout time.Duration
-	startOnce       sync.Once
-	stopOnce        sync.Once
-	cancel          context.CancelFunc
-	done            chan struct{}
+	mu                 sync.RWMutex
+	latest             map[string]Snapshot
+	history            map[string][]Snapshot
+	previous           map[string]counterSample
+	runs               map[string]string
+	workerCount        int
+	instanceTimeout    time.Duration
+	enumerationTimeout time.Duration
+	cleanupTimeout     time.Duration
+	startOnce          sync.Once
+	stopOnce           sync.Once
+	cancel             context.CancelFunc
+	done               chan struct{}
 }
 
 func New(instances InstanceSource, runtime RuntimeProvider, trafficProvider TrafficProvider, playerProvider PlayerProvider, clock Clock) *Sampler {
 	if clock == nil {
 		clock = realClock{}
 	}
-	return &Sampler{instances: instances, runtime: runtime, traffic: trafficProvider, players: playerProvider, clock: clock, latest: map[string]Snapshot{}, history: map[string][]Snapshot{}, previous: map[string]counterSample{}, runs: map[string]string{}, workerCount: maxConcurrentInstances, instanceTimeout: instanceTimeout, done: make(chan struct{})}
+	return &Sampler{instances: instances, runtime: runtime, traffic: trafficProvider, players: playerProvider, clock: clock, latest: map[string]Snapshot{}, history: map[string][]Snapshot{}, previous: map[string]counterSample{}, runs: map[string]string{}, workerCount: maxConcurrentInstances, instanceTimeout: instanceTimeout, enumerationTimeout: instanceTimeout, cleanupTimeout: instanceTimeout, done: make(chan struct{})}
 }
 
 func (s *Sampler) Start(ctx context.Context) {
@@ -156,7 +158,9 @@ func (s *Sampler) Stop(ctx context.Context) error {
 }
 
 func (s *Sampler) Sample(ctx context.Context) {
-	instances, err := s.instances.Instances(ctx)
+	enumerationCtx, cancelEnumeration := context.WithTimeout(ctx, s.enumerationTimeout)
+	instances, err := s.instances.Instances(enumerationCtx)
+	cancelEnumeration()
 	if err != nil {
 		return
 	}
@@ -424,9 +428,14 @@ func (s *Sampler) prune(ctx context.Context, present map[string]struct{}) {
 		}
 	}
 	s.mu.RUnlock()
+	cleanupCtx, cancelCleanup := context.WithTimeout(ctx, s.cleanupTimeout)
+	defer cancelCleanup()
 	for id, runID := range removed {
 		if runID != "" {
-			if err := s.traffic.Stop(ctx, id, runID); err != nil {
+			stopCtx, cancelStop := context.WithTimeout(cleanupCtx, s.cleanupTimeout)
+			err := s.traffic.Stop(stopCtx, id, runID)
+			cancelStop()
+			if err != nil {
 				log.Printf("metrics: stop removed instance %s traffic session: %v", id, err)
 			}
 		}
