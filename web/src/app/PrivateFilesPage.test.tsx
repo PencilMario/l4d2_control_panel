@@ -15,7 +15,11 @@ const json = (value: unknown, status = 200) =>
     headers: { "Content-Type": "application/json" },
   });
 
-function mockPrivateAPI(options?: { error?: boolean; binaryOnly?: boolean }) {
+function mockPrivateAPI(options?: {
+  error?: boolean;
+  binaryOnly?: boolean;
+  importResponse?: Promise<Response>;
+}) {
   let modified = false;
   const calls: Array<{ path: string; init?: RequestInit }> = [];
   const fetchMock = vi.fn(
@@ -68,6 +72,15 @@ function mockPrivateAPI(options?: { error?: boolean; binaryOnly?: boolean }) {
           },
         ]);
       }
+      if (path.endsWith("/private/archive") && !init?.method) {
+        return new Response(new Uint8Array([80, 75, 5, 6]), {
+          status: 200,
+          headers: { "Content-Type": "application/zip" },
+        });
+      }
+      if (path.endsWith("/private/archive?confirm=true") && init?.method === "POST") {
+        return options?.importResponse ?? new Response(null, { status: 204 });
+      }
       if (path.includes("/private/file/cfg/server.cfg") && !init?.method) {
         return new Response("hostname smoke", { status: 200 });
       }
@@ -100,6 +113,106 @@ afterEach(() => {
 });
 
 describe("PrivateFilesPage", () => {
+  it("explains and performs a full workspace ZIP replacement without applying", async () => {
+    const { calls } = mockPrivateAPI();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const queue = vi.fn();
+    render(<PrivateFilesPage instances={[instance]} queue={queue} />);
+    await screen.findByRole("treeitem", { name: "cfg" });
+    const file = new File(
+      [new Uint8Array([80, 75, 3, 4])],
+      "replacement.zip",
+      { type: "application/zip" },
+    );
+    fireEvent.change(screen.getByLabelText("导入 ZIP"), {
+      target: { files: [file] },
+    });
+    await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
+    const warning = String(confirm.mock.calls[0][0]);
+    expect(warning).toContain("replacement.zip");
+    expect(warning).toContain("深夜战役");
+    expect(warning).toContain(
+      "ZIP 中不存在的现有文件和未应用更改将被删除，不会保留",
+    );
+    expect(warning).toContain("历史应用快照不受影响");
+    expect(warning).toContain("不会自动应用到游戏目录");
+    expect(
+      await screen.findByText("工作区已完全替换，请检查差异后应用更改。"),
+    ).toBeVisible();
+    const imported = calls.find(({ path, init }) =>
+      path.endsWith("/private/archive?confirm=true") && init?.method === "POST"
+    );
+    expect(imported?.init?.body).toBe(file);
+    expect((imported?.init?.headers as Record<string, string>)["Content-Type"]).toBe(
+      "application/zip",
+    );
+    expect(queue).not.toHaveBeenCalled();
+  });
+
+  it("cancels ZIP import before sending a request", async () => {
+    const { calls } = mockPrivateAPI();
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(<PrivateFilesPage instances={[instance]} queue={vi.fn()} />);
+    await screen.findByRole("treeitem", { name: "cfg" });
+    fireEvent.change(screen.getByLabelText("导入 ZIP"), {
+      target: { files: [new File(["zip"], "cancel.zip", { type: "application/zip" })] },
+    });
+    await Promise.resolve();
+    expect(calls.some(({ path }) => path.includes("/private/archive"))).toBe(false);
+  });
+
+  it("exports the selected workspace as a ZIP download", async () => {
+    const { calls } = mockPrivateAPI();
+    const createObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:private-zip");
+    const revokeObjectURL = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    render(<PrivateFilesPage instances={[instance]} queue={vi.fn()} />);
+    await userEvent.click(await screen.findByRole("button", { name: "导出 ZIP" }));
+    expect(await screen.findByText("私有文件 ZIP 已导出")).toBeVisible();
+    expect(calls.some(({ path, init }) =>
+      path.endsWith("/instances/abc/private/archive") && !init?.method
+    )).toBe(true);
+    expect(createObjectURL.mock.calls[0][0]).toMatchObject({
+      size: 4,
+      type: "application/zip",
+    });
+    expect(click).toHaveBeenCalledTimes(1);
+    expect((click.mock.contexts[0] as HTMLAnchorElement).download)
+      .toBe("private-files-abc.zip");
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:private-zip");
+  });
+
+  it("keeps an in-flight ZIP import owned by its original instance", async () => {
+    let finishImport!: (response: Response) => void;
+    const importResponse = new Promise<Response>((resolve) => {
+      finishImport = resolve;
+    });
+    const { calls } = mockPrivateAPI({ importResponse });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(
+      <PrivateFilesPage
+        instances={[instance, { ...instance, id: "def", name: "黎明战役" }]}
+        queue={vi.fn()}
+      />,
+    );
+    await screen.findByRole("treeitem", { name: "cfg" });
+    const importInput = screen.getByLabelText("导入 ZIP");
+    fireEvent.change(importInput, {
+      target: { files: [new File(["zip"], "abc.zip", { type: "application/zip" })] },
+    });
+    await waitFor(() => expect(calls.some(({ path }) =>
+      path.includes("/instances/abc/private/archive?confirm=true")
+    )).toBe(true));
+    await userEvent.selectOptions(screen.getByLabelText("目标实例"), "def");
+    finishImport(new Response(null, { status: 204 }));
+    await waitFor(() => expect(importInput).not.toBeDisabled());
+    expect(calls.some(({ path }) =>
+      path.includes("/instances/def/private/archive?confirm=true")
+    )).toBe(false);
+    expect(screen.queryByText("工作区已完全替换，请检查差异后应用更改。"))
+      .not.toBeInTheDocument();
+  });
+
   it("stages edits and applies them only from the status bar", async () => {
     mockPrivateAPI();
     const queue = vi.fn().mockResolvedValue(undefined);

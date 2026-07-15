@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -178,6 +179,8 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Get("/api/instances/{id}/private", s.listPrivate)
 		r.Get("/api/instances/{id}/private/tree", s.privateTree)
 		r.Get("/api/instances/{id}/private/diff", s.privateDiff)
+		r.Get("/api/instances/{id}/private/archive", s.exportPrivateArchive)
+		r.Post("/api/instances/{id}/private/archive", s.importPrivateArchive)
 		r.Post("/api/instances/{id}/private/directories", s.makePrivateDirectory)
 		r.Post("/api/instances/{id}/private/move", s.movePrivate)
 		r.Post("/api/instances/{id}/private/uploads", s.beginPrivateUpload)
@@ -1208,6 +1211,73 @@ func (s *Server) privateDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, item)
+}
+func (s *Server) exportPrivateArchive(w http.ResponseWriter, r *http.Request) {
+	if s.private == nil {
+		writeError(w, http.StatusServiceUnavailable, "content_unavailable", "private manager unavailable")
+		return
+	}
+	temporary, err := os.CreateTemp("", "l4d2-private-files-*.zip")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "private_archive_error", "ZIP 导出失败")
+		return
+	}
+	name := temporary.Name()
+	defer func() {
+		_ = temporary.Close()
+		_ = os.Remove(name)
+	}()
+	if err = s.private.ExportZIP(r.Context(), chi.URLParam(r, "id"), temporary); err != nil {
+		writeError(w, http.StatusInternalServerError, "private_archive_error", "ZIP 导出失败")
+		return
+	}
+	if _, err = temporary.Seek(0, io.SeekStart); err != nil {
+		writeError(w, http.StatusInternalServerError, "private_archive_error", "ZIP 导出失败")
+		return
+	}
+	info, err := temporary.Stat()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "private_archive_error", "ZIP 导出失败")
+		return
+	}
+	filename := "private-files-" + chi.URLParam(r, "id") + ".zip"
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	http.ServeContent(w, r, filename, info.ModTime(), temporary)
+}
+func (s *Server) importPrivateArchive(w http.ResponseWriter, r *http.Request) {
+	if s.private == nil {
+		writeError(w, http.StatusServiceUnavailable, "content_unavailable", "private manager unavailable")
+		return
+	}
+	if r.URL.Query().Get("confirm") != "true" {
+		writeError(w, http.StatusPreconditionRequired, "confirmation_required", "ZIP 导入会完全替换当前私有文件工作区，需要确认")
+		return
+	}
+	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0]))
+	if mediaType != "application/zip" {
+		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "仅支持 ZIP 文件")
+		return
+	}
+	limits := content.DefaultPrivateArchiveLimits
+	body := http.MaxBytesReader(w, r.Body, limits.MaxCompressedBytes)
+	err := s.private.ImportZIP(r.Context(), chi.URLParam(r, "id"), body, limits)
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, content.ErrPrivateArchiveTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, "archive_too_large", "ZIP 超出允许的大小或压缩限制")
+	case errors.Is(err, content.ErrPrivateArchivePath):
+		writeError(w, http.StatusUnprocessableEntity, "invalid_archive_path", "ZIP 包含不安全的文件路径")
+	case errors.Is(err, content.ErrPrivateArchiveConflict):
+		writeError(w, http.StatusConflict, "archive_path_conflict", "ZIP 包含重复或冲突的文件路径")
+	case errors.Is(err, content.ErrPrivateArchiveUnsupported):
+		writeError(w, http.StatusUnprocessableEntity, "unsupported_archive_entry", "ZIP 包含不支持的加密、链接或特殊条目")
+	case errors.Is(err, content.ErrPrivateArchiveInvalid):
+		writeError(w, http.StatusUnprocessableEntity, "invalid_private_archive", "ZIP 格式或目录结构无效")
+	default:
+		writeError(w, http.StatusInternalServerError, "private_archive_error", "ZIP 导入失败，原工作区未更改")
+	}
 }
 func (s *Server) makePrivateDirectory(w http.ResponseWriter, r *http.Request) {
 	if s.private == nil {

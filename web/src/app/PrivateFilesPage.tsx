@@ -15,6 +15,7 @@ import {
   Download,
   Edit3,
   File,
+  FileArchive,
   FilePlus2,
   Folder,
   FolderPlus,
@@ -27,7 +28,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { api, type Job } from "../api/client";
+import { api, apiBlob, type Job } from "../api/client";
 import type { Instance } from "./App";
 
 export type PrivateEntry = {
@@ -474,6 +475,55 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
     await reload();
   };
 
+  const importZIP = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    const owner = instanceID;
+    if (!file || !owner) return;
+    const ownerName = instances.find((item) => item.id === owner)?.name || owner;
+    const warning = `将 ${file.name} 导入 ${ownerName}。\n\n导入会完全替换当前私有文件工作区。ZIP 中不存在的现有文件和未应用更改将被删除，不会保留；历史应用快照不受影响。导入后不会自动应用到游戏目录。`;
+    if (!window.confirm(warning)) return;
+    await run(async () => {
+      await api<void>(
+        `/api/instances/${owner}/private/archive?confirm=true`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/zip" },
+          body: file,
+        },
+      );
+      if (owner !== instanceIDRef.current) return;
+      setSelectedPath("");
+      setEditor("");
+      setEditing(false);
+      setHistory(null);
+      setActiveUpload(null);
+      setUploadStatus("");
+      setStatus("工作区已完全替换，请检查差异后应用更改。");
+      await reload();
+    });
+  };
+
+  const exportZIP = async () => {
+    const owner = instanceID;
+    if (!owner) return;
+    await run(async () => {
+      const archive = await apiBlob(`/api/instances/${owner}/private/archive`);
+      const objectURL = URL.createObjectURL(archive);
+      try {
+        const anchor = document.createElement("a");
+        anchor.href = objectURL;
+        anchor.download = `private-files-${owner}.zip`;
+        document.body.append(anchor);
+        anchor.click();
+        anchor.remove();
+      } finally {
+        URL.revokeObjectURL(objectURL);
+      }
+      if (owner === instanceIDRef.current) setStatus("私有文件 ZIP 已导出");
+    });
+  };
+
   const children = useMemo(() => buildChildren(entries), [entries]);
   const selected = entries.find((entry) => entry.path === selectedPath);
   const hasChanges = diff.changes.length > 0;
@@ -512,9 +562,23 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
       <div className="private-toolbar" role="toolbar" aria-label="私有文件工具栏">
         <label className="private-icon-button" title="上传文件">
           <Upload aria-hidden="true" />
-          <span>上传</span>
+          <span>上传文件</span>
           <input aria-label="上传文件" type="file" onChange={uploadFile} disabled={!instanceID || busy} />
         </label>
+        <label className="private-icon-button" title="导入 ZIP">
+          <FileArchive aria-hidden="true" />
+          <span>导入 ZIP</span>
+          <input
+            aria-label="导入 ZIP"
+            type="file"
+            accept=".zip,application/zip"
+            onChange={importZIP}
+            disabled={!instanceID || busy}
+          />
+        </label>
+        <button title="导出 ZIP" onClick={() => void exportZIP()} disabled={!instanceID || busy}>
+          <Download />导出 ZIP
+        </button>
         <button title="新建文件" onClick={() => void run(makeFile)} disabled={!instanceID || busy}><FilePlus2 />新建文件</button>
         <button title="新建目录" onClick={() => void run(makeDirectory)} disabled={!instanceID || busy}><FolderPlus />新建目录</button>
         <button title="刷新" onClick={() => void reload()} disabled={!instanceID || loading}><RefreshCw />刷新</button>

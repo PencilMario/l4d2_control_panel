@@ -33,6 +33,13 @@ export async function apiText(
   const response = await request(path, init);
   return response.text();
 }
+export async function apiBlob(
+  path: string,
+  init: RequestInit = {},
+): Promise<Blob> {
+  const response = await request(path, init);
+  return response.blob();
+}
 export const normalizeInstance = (value: any) => ({
   id: value.id ?? value.ID,
   name: value.name ?? value.Name,

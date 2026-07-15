@@ -1211,32 +1211,53 @@ func (m *PrivateManager) Snapshots(_ context.Context, instanceID string) ([]Priv
 }
 
 func (m *PrivateManager) Recover(ctx context.Context) error {
+	instances := filepath.Join(m.root, "instances")
+	entries, err := os.ReadDir(instances)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
 	var result error
-	for _, kind := range []string{"apply-*", "restore-*"} {
-		paths, err := filepath.Glob(filepath.Join(m.root, "instances", "*", "backups", "private", kind, "journal.json"))
-		if err != nil {
+	for _, entry := range entries {
+		if !entry.IsDir() || validateInstanceID(entry.Name()) != nil {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
 			return errors.Join(result, err)
 		}
-		for _, journalPath := range paths {
-			if err := ctx.Err(); err != nil {
-				return errors.Join(result, err)
-			}
-			work := filepath.Dir(journalPath)
-			base := filepath.Dir(filepath.Dir(filepath.Dir(work)))
-			instanceID := filepath.Base(base)
-			lock := m.instanceLock(instanceID)
-			lock.Lock()
-			var recoverErr error
-			if strings.HasPrefix(filepath.Base(work), "restore-") {
-				recoverErr = m.recoverPrivateRestoreLocked(journalPath, base, instanceID)
-			} else {
-				recoverErr = m.recoverPrivateJournalLocked(journalPath, base, instanceID)
-			}
-			lock.Unlock()
-			result = errors.Join(result, recoverErr)
+		instanceID := entry.Name()
+		base := filepath.Join(instances, instanceID)
+		pending, pendingErr := privateRecoveryPending(base)
+		if pendingErr != nil {
+			result = errors.Join(result, pendingErr)
+			continue
 		}
+		if !pending {
+			continue
+		}
+		lock := m.instanceLock(instanceID)
+		lock.Lock()
+		recoverErr := m.recoverPrivateInstanceLocked(ctx, instanceID, base)
+		lock.Unlock()
+		result = errors.Join(result, recoverErr)
 	}
 	return result
+}
+
+func privateRecoveryPending(base string) (bool, error) {
+	root := filepath.Join(base, "backups", "private")
+	for _, kind := range []string{"apply-*", "restore-*"} {
+		works, err := filepath.Glob(filepath.Join(root, kind))
+		if err != nil {
+			return false, err
+		}
+		if len(works) > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (m *PrivateManager) recoverPrivateInstanceLocked(ctx context.Context, instanceID, base string) error {
@@ -1256,6 +1277,31 @@ func (m *PrivateManager) recoverPrivateInstanceLocked(ctx context.Context, insta
 				result = errors.Join(result, m.recoverPrivateJournalLocked(path, base, instanceID))
 			}
 		}
+	}
+	works, err := filepath.Glob(filepath.Join(base, "backups", "private", "restore-*"))
+	if err != nil {
+		return errors.Join(result, err)
+	}
+	for _, work := range works {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(result, err)
+		}
+		name := filepath.Base(work)
+		if _, err := uuid.Parse(strings.TrimPrefix(name, "restore-")); err != nil {
+			continue
+		}
+		journal := filepath.Join(work, "journal.json")
+		if _, err := os.Lstat(journal); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			result = errors.Join(result, err)
+			continue
+		}
+		if err := rejectSymlinkParents(filepath.Join(base, "backups", "private"), work); err != nil {
+			result = errors.Join(result, err)
+			continue
+		}
+		result = errors.Join(result, os.RemoveAll(work))
 	}
 	return result
 }
@@ -1374,22 +1420,26 @@ func (m *PrivateManager) RestoreSnapshot(ctx context.Context, instanceID, snapsh
 	}
 	work := filepath.Join(base, "backups", "private", "restore-"+uuid.NewString())
 	staging := filepath.Join(work, "staged")
+	if err := copyPrivateRestoreTree(source, staging); err != nil {
+		m.cleanupPrivate(base, "restore-prejournal", func() error { return os.RemoveAll(work) })
+		return err
+	}
+	return m.replacePrivateWorkspaceLocked(instanceID, base, work, staging)
+}
+
+func (m *PrivateManager) replacePrivateWorkspaceLocked(instanceID, base, work, staging string) (err error) {
 	preJournal := true
 	defer func() {
 		if preJournal {
 			m.cleanupPrivate(base, "restore-prejournal", func() error { return os.RemoveAll(work) })
 		}
 	}()
-	if err := copyPrivateRestoreTree(source, staging); err != nil {
-		return err
-	}
 	workspace := filepath.Join(base, "private")
 	backup := filepath.Join(work, "old")
 	hadOld := false
-	if _, err := os.Stat(workspace); err == nil {
+	if _, err = os.Stat(workspace); err == nil {
 		hadOld = true
 	} else if !errors.Is(err, os.ErrNotExist) {
-		_ = os.RemoveAll(work)
 		return err
 	}
 	journal := privateRestoreJournal{Version: 1, InstanceID: instanceID, Stage: "prepared", HadOld: hadOld}
