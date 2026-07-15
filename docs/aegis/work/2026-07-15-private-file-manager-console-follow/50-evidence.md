@@ -1,6 +1,6 @@
 # EvidenceBundleDraft
 
-Updated: 2026-07-15 19:25 +08:00
+Updated: 2026-07-15 19:38 +08:00
 
 This bundle records verified Task 7 evidence. It is not the final whole-branch review or an authoritative completion signal.
 
@@ -11,7 +11,8 @@ This bundle records verified Task 7 evidence. It is not the final whole-branch r
 - Upload/API contract: `37bf165` through `b86e5aa`.
 - Independent Tab and console follow: `7c3bf72`, `b558a08`, `614b55e`, `d46dd9a`, `2724573`.
 - Browser acceptance: `828782a`, `da6a3e2`, with evidence checkpoint `7697c2f`.
-- Task 7 documentation is committed separately as `docs: 记录私有文件管理验证`; its SHA is the commit containing this file.
+- Task 7 documentation: `2384176`, with wording correction `6be2080`.
+- Final-review upload identity fix: `4a79f45`.
 
 ## Verification matrix
 
@@ -20,7 +21,7 @@ Run from `E:\GithubKu\l4d2_control_panel\.worktrees\private-file-manager-console
 | Command | Result |
 | --- | --- |
 | `go test ./internal/content ./internal/updates ./internal/httpapi ./cmd/panel -count=1` | PASS on the third exact run: all four packages passed. The first run failed only during `testing.TempDir` cleanup (`shared-vpk: The directory is not empty`); the second failed at a different `internal/content` temporary file with Windows `used by another process`. The other three packages passed on all three runs. |
-| `$env:GOTMPDIR=<worktree>/.tmp-go-test; go test -p 1 ./internal/content ./internal/updates ./internal/httpapi ./cmd/panel -count=1` | PASS: all four packages. This is a diagnostic retry with a dedicated temp root and serial package scheduling, not a replacement for the two exact-command failure records. |
+| `$tmp = Join-Path (Get-Location) '.tmp-go-test'; $null = New-Item -ItemType Directory -Force -Path $tmp; $env:GOTMPDIR = $tmp; go test -p 1 ./internal/content ./internal/updates ./internal/httpapi ./cmd/panel -count=1` | PASS: all four packages. This is a directly executable PowerShell diagnostic retry with a dedicated temp root and serial package scheduling, not a replacement for the two exact-command failure records. |
 | `go test ./... -count=1` | PASS on the first run: all packages passed; packages without tests were reported normally. This run also passed `internal/content`, bounding the preceding failures to intermittent Windows temp/file-lock behavior. |
 | `cd web; npm test -- --run` | PASS: 4 files, 52 tests. |
 | `cd web; npm run build` | PASS: TypeScript and Vite production build; 1,781 modules transformed. |
@@ -28,12 +29,21 @@ Run from `E:\GithubKu\l4d2_control_panel\.worktrees\private-file-manager-console
 | `cd web; npm run e2e -- --project=mobile` | PASS: Playwright `mobile`, 1/1 test. |
 | `go test -tags=e2e ./cmd/e2e-fixture` | PASS (Go reported cached). |
 
+After final review produced `4a79f45`, fresh verification from `web` recorded:
+
+| Command | Result |
+| --- | --- |
+| `npm test -- --run` | PASS: 4 files, 54 tests, including exact instance/target-path/file-fingerprint resume identity and legacy fingerprint cleanup. |
+| `npm run build` | PASS: TypeScript and Vite production build; 1,781 modules transformed. |
+
 ## Retirement and ownership audit
 
 - `rg -n "保存并立即应用|private\.Apply\(" web/src internal` returned no matches: the old immediate-apply UI and blind `private.Apply` call are retired from product source.
 - `rg -n "RebaseAndApply|ApplyChanges" internal` shows the public private-manager methods in `internal/content/private_state.go`; production manual apply enters through `internal/httpapi/server.go` and `ApplyChangesWithProgress`, while lower-layer deployment enters through `internal/updates/pipeline.go` and the leased `PrivateTransaction.RebaseAndApply` path. Remaining direct calls are compatibility delegation or tests.
 - `rg -n "game/left4dead2|os\.Symlink|exec\.Command" web/src/app/PrivateFilesPage.tsx internal/content --glob "private*.go"` found only adversarial `os.Symlink` test fixtures. The UI and private upload implementation expose no game path, create no symlink and execute no command.
-- `git status --short` was clean before documentation edits. The final diff/status inspection after edits is recorded by the Task 7 commit review.
+- `git branch --show-current` returned `feat/private-file-manager-console-follow`.
+- `git rev-parse HEAD` returned `4a79f45834da5edbe0d9797c1e1c211e7142dbfa` before this documentation follow-up.
+- `git status --short --branch` returned only `## feat/private-file-manager-console-follow`, proving the worktree was clean at `4a79f45` before these documentation edits.
 
 ## User journey covered
 

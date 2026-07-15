@@ -72,7 +72,7 @@ Changing startup values or the selected package on an installed instance creates
 
 Each instance has an independent **Private Files** Tab. File edits, uploads, renames and deletions are staged in the instance workspace; **Apply changes** commits the complete staged diff as one background Job. After a successful apply, snapshot pruning makes a best-effort attempt to retain the latest 20 snapshots by default. A prune failure is reported diagnostically without failing the committed apply, so retention can temporarily exceed 20. Restoring a snapshot also runs transactionally, and deleting a private override restores the current package/shared/Valve lower-layer file when one exists instead of leaving stale private content behind.
 
-Uploads are chunked and resumable for the same instance, destination path, size and digest. The browser resumes from the server-confirmed offset after interruption and refreshes the workspace only after completion; upload sessions do not expose game paths or command execution.
+Uploads are chunked and resumable only when the instance, target path and complete file fingerprint match. The fingerprint includes the file name, size, last-modified time and digest. The browser resumes from the server-confirmed offset after interruption and refreshes the workspace only after completion; upload sessions do not expose game paths or command execution.
 
 The instance console follows the latest output while the viewport is at the bottom. Scrolling up pauses following without discarding incoming output; returning to the bottom resumes it. Reconnect replay follows the same rule, so user-selected history is not pulled away by live or replayed lines.
 
@@ -131,4 +131,4 @@ The Linux fault-injection acceptance uses disposable, unlabelled containers and 
 
 On Windows, antivirus/file-indexing can transiently lock Go's randomly named test executables under `%TEMP%`. If affected, set `GOTMPDIR` to a dedicated temporary directory and run packages serially with `go test -p 1`; do not weaken product code to accommodate the local test host.
 
-See [the approved design](docs/aegis/specs/2026-07-14-l4d2-control-panel-design.md), [implementation plan](docs/aegis/plans/2026-07-14-l4d2-control-panel.md) and [evidence bundle](docs/aegis/work/2026-07-14-l4d2-control-panel/50-evidence.md).
+See the overall [approved design](docs/aegis/specs/2026-07-14-l4d2-control-panel-design.md), [implementation plan](docs/aegis/plans/2026-07-14-l4d2-control-panel.md) and [evidence bundle](docs/aegis/work/2026-07-14-l4d2-control-panel/50-evidence.md). Private file management and console follow have a separate [approved design](docs/aegis/specs/2026-07-15-private-file-manager-console-follow-design.md), [implementation plan](docs/aegis/plans/2026-07-15-private-file-manager-console-follow.md) and [evidence bundle](docs/aegis/work/2026-07-15-private-file-manager-console-follow/50-evidence.md).
