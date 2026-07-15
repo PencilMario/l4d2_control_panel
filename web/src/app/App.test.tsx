@@ -68,6 +68,13 @@ const runningZeroOverview = {
   memory_bytes: 0,
   issues: [],
 };
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -90,6 +97,37 @@ describe("App", () => {
     expect(merged[0].cpu_percent).toBe(1);
     expect(merged[719].cpu_percent).toBe(999);
   });
+  it("orders history by instant, keeps stable ties, ignores invalid timestamps and caps newest points", () => {
+    const point = (at: string, run_id: string, cpu_percent: number) => ({
+      at,
+      run_id,
+      cpu_percent,
+      memory_percent: null,
+      network_rx_bytes_per_sec: null,
+      network_tx_bytes_per_sec: null,
+      block_read_bytes_per_sec: null,
+      block_write_bytes_per_sec: null,
+    });
+    const offsets = mergePerformanceHistory([], [
+      point("2026-07-15T12:00:00Z", "tie-first", 1),
+      point("2026-07-15T13:00:00+01:00", "tie-second", 2),
+      point("2026-07-15T13:00:00+02:00", "earlier", 3),
+      point("not-a-timestamp", "invalid", 4),
+    ]);
+    expect(offsets.map((item) => item.run_id)).toEqual([
+      "earlier",
+      "tie-first",
+      "tie-second",
+    ]);
+
+    const many = Array.from({ length: 721 }, (_, index) =>
+      point(new Date(Date.UTC(2026, 6, 15, 0, 0, index)).toISOString(), `run-${index}`, index),
+    ).reverse();
+    const capped = mergePerformanceHistory([], many);
+    expect(capped).toHaveLength(720);
+    expect(capped[0].cpu_percent).toBe(1);
+    expect(capped[719].cpu_percent).toBe(720);
+  });
   it("removes histories for deleted instances", () => {
     const point = { at: "2026-07-15T12:00:00Z", run_id: "run-1", cpu_percent: null, memory_percent: null, network_rx_bytes_per_sec: null, network_tx_bytes_per_sec: null, block_read_bytes_per_sec: null, block_write_bytes_per_sec: null };
     expect(prunePerformanceHistory({ present: [point], deleted: [point] }, new Set(["present"]))).toEqual({ present: [point] });
@@ -97,8 +135,8 @@ describe("App", () => {
 
   it("fetches history once and appends overview samples on the existing poll", async () => {
     let refresh: (() => void) | undefined;
-    vi.spyOn(window, "setInterval").mockImplementation((handler: TimerHandler) => {
-      refresh = handler as () => void;
+    vi.spyOn(window, "setInterval").mockImplementation((handler: TimerHandler, timeout?: number) => {
+      if (timeout === 5_000) refresh = handler as () => void;
       return 1;
     });
     let overviewIndex = 0;
@@ -119,6 +157,58 @@ describe("App", () => {
     await act(async () => refresh!());
     await waitFor(() => expect(screen.getByTestId("performance-chart")).toHaveAttribute("data-point-count", "3"));
     expect(calls.filter((path) => path.endsWith("/performance-history"))).toHaveLength(1);
+  });
+  it("does not let an older poll restore deleted instances or stale history ownership", async () => {
+    let refresh: (() => void) | undefined;
+    vi.spyOn(window, "setInterval").mockImplementation(
+      (handler: TimerHandler, timeout?: number) => {
+        if (timeout === 5_000) refresh = handler as () => void;
+        return 1;
+      },
+    );
+    const oldOverview = deferred<Response>();
+    const oldHistory = deferred<Response>();
+    let instanceLists = 0;
+    let historyCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/session") return new Response('{"authenticated":true}', { status: 200, headers: { "Content-Type": "application/json" } });
+      if (path === "/api/instances") {
+        instanceLists += 1;
+        return new Response(JSON.stringify(instanceLists === 2 ? [] : [apiInstance]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (path === "/api/instances/1/overview") {
+        if (instanceLists === 1) return oldOverview.promise;
+        return new Response(JSON.stringify({ ...runningZeroOverview, sampled_at: "2026-07-15T12:00:20Z", run_id: "run-new", container_running_known: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (path === "/api/instances/1/performance-history") {
+        historyCalls += 1;
+        if (historyCalls === 1) return oldHistory.promise;
+        return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      const value = path === "/api/packages" ? [] : { ok: true };
+      return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+
+    render(<App />);
+    await waitFor(() => expect(historyCalls).toBe(1));
+    await act(async () => refresh!());
+    expect(await screen.findByText("尚无实例。创建第一个 Host 网络服务器。")).toBeInTheDocument();
+
+    oldOverview.resolve(new Response(JSON.stringify({ ...runningZeroOverview, sampled_at: "2026-07-15T12:00:05Z", run_id: "run-old", container_running_known: true }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    oldHistory.resolve(new Response(JSON.stringify([{ at: "2026-07-15T12:00:00Z", run_id: "run-old", cpu_percent: 99, memory_percent: null, network_rx_bytes_per_sec: null, network_tx_bytes_per_sec: null, block_read_bytes_per_sec: null, block_write_bytes_per_sec: null }]), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.queryByText("深夜战役")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("performance-chart")).not.toBeInTheDocument();
+
+    await act(async () => refresh!());
+    await waitFor(() => expect(instanceLists).toBe(3));
+    await waitFor(() => expect(historyCalls).toBe(2));
+    expect(await screen.findByText("深夜战役")).toBeInTheDocument();
+    expect(await screen.findByTestId("performance-chart")).toHaveAttribute("data-point-count", "1");
   });
 
   it("keeps overview samples when the initial history request fails", async () => {

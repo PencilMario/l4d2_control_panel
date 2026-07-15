@@ -123,13 +123,25 @@ export function mergePerformanceHistory(
   existing: PerformanceHistoryPoint[],
   incoming: PerformanceHistoryPoint[],
 ): PerformanceHistoryPoint[] {
-  const points = new globalThis.Map<string, PerformanceHistoryPoint>();
-  for (const point of [...existing, ...incoming]) {
-    points.set(`${point.at}\u0000${point.run_id}`, point);
+  const points = new globalThis.Map<
+    string,
+    { point: PerformanceHistoryPoint; timestamp: number; index: number }
+  >();
+  for (const [index, point] of [...existing, ...incoming].entries()) {
+    const timestamp = Date.parse(point.at);
+    if (!Number.isFinite(timestamp)) continue;
+    const key = `${point.at}\u0000${point.run_id}`;
+    const previous = points.get(key);
+    points.set(key, {
+      point,
+      timestamp,
+      index: previous?.index ?? index,
+    });
   }
   return [...points.values()]
-    .sort((a, b) => a.at.localeCompare(b.at))
-    .slice(-720);
+    .sort((a, b) => a.timestamp - b.timestamp || a.index - b.index)
+    .slice(-720)
+    .map(({ point }) => point);
 }
 
 export function prunePerformanceHistory(
@@ -185,6 +197,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
     {},
   );
   const historyRequested = useRef(new Set<string>());
+  const loadGeneration = useRef(0);
   const [pending, setPending] = useState<Instance | null>(null);
   const [page, setPage] = useState<Page>("overview");
   const [terminal, setTerminal] = useState<Instance | null>(null);
@@ -197,7 +210,10 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
       : { status: "checking", message: "正在检查 Docker API…" },
   );
   const loadInstances = useCallback(async () => {
+    const generation = ++loadGeneration.current;
+    const isCurrent = () => generation === loadGeneration.current;
     const base = (await api<any[]>("/api/instances")).map(normalizeInstance);
+    if (!isCurrent()) return;
     const liveIDs = new Set(base.map((instance) => instance.id));
     for (const id of historyRequested.current) {
       if (!liveIDs.has(id)) historyRequested.current.delete(id);
@@ -205,26 +221,32 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
     const historyRequests = base
       .filter((instance) => !historyRequested.current.has(instance.id))
       .map(async (instance) => {
+        if (!isCurrent()) return;
         historyRequested.current.add(instance.id);
-        setHistoryLoading((current) => ({ ...current, [instance.id]: true }));
+        setHistoryLoading((current) =>
+          isCurrent() ? { ...current, [instance.id]: true } : current,
+        );
         try {
           const history = await api<PerformanceHistoryPoint[]>(
             `/api/instances/${instance.id}/performance-history`,
           );
-          setPerformanceHistory((current) => ({
-            ...current,
-            [instance.id]: mergePerformanceHistory(
-              current[instance.id] || [],
-              Array.isArray(history) ? history : [],
-            ),
-          }));
+          setPerformanceHistory((current) =>
+            isCurrent()
+              ? {
+                  ...current,
+                  [instance.id]: mergePerformanceHistory(
+                    current[instance.id] || [],
+                    Array.isArray(history) ? history : [],
+                  ),
+                }
+              : current,
+          );
         } catch {
           // A failed initial history request must not erase collected samples.
         } finally {
-          setHistoryLoading((current) => ({
-            ...current,
-            [instance.id]: false,
-          }));
+          setHistoryLoading((current) =>
+            isCurrent() ? { ...current, [instance.id]: false } : current,
+          );
         }
       });
     const enrichedPromise = Promise.all(
@@ -297,7 +319,9 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
       enrichedPromise,
       Promise.allSettled(historyRequests),
     ]);
+    if (!isCurrent()) return;
     setPerformanceHistory((current) => {
+      if (!isCurrent()) return current;
       const next = prunePerformanceHistory(current, liveIDs);
       for (const instance of enriched) {
         if (!instance.sampled_at) continue;
@@ -306,7 +330,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
       }
       return next;
     });
-    setInstances(enriched);
+    setInstances((current) => (isCurrent() ? enriched : current));
   }, []);
   const loadPackages = async () => {
     setPackages(await api<PackageVersion[]>("/api/packages"));
@@ -335,8 +359,17 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
   useEffect(() => {
     if (injected || auth !== "yes") return;
     const timer = window.setInterval(() => void loadInstances(), 5_000);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      loadGeneration.current += 1;
+    };
   }, [auth, injected, loadInstances]);
+  useEffect(
+    () => () => {
+      loadGeneration.current += 1;
+    },
+    [],
+  );
   const queue = async (path: string, body: any) => {
     const created = await api<Job>(path, {
       method: "POST",
