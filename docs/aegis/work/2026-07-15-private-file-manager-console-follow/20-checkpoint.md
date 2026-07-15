@@ -63,7 +63,7 @@ Nothing.
 
 ## ResumeStateHint
 
-Read this checkpoint, the intent, baseline read set, approved spec, plan and evidence. Confirm the worktree branch and diff agree with this checkpoint. Resume controller-owned verification-before-completion only.
+All planned tasks, reviews and controller-owned verification are complete. Preserve the branch/worktree until the user chooses merge, PR, keep or discard.
 
 ## DriftCheckDraft
 
@@ -76,4 +76,4 @@ Read this checkpoint, the intent, baseline read set, approved spec, plan and evi
 - Task 2 residual: Windows normal symlinks are covered; junction/reparse subtype reporting remains dependent on Go runtime behavior.
 - Intermittent Windows TempDir cleanup/file-lock noise occurred across unrelated tests; required fresh and repeated focused suites passed.
 - Task 3 residual Minor: per-upload session mutex registry does not evict UUID locks.
-- Decision: whole-branch review passed with no Critical or Important findings; continue to controller-owned final verification, with no authoritative completion claimed.
+- Decision: whole-branch review and controller verification passed; proceed only with the user's selected branch-integration option.

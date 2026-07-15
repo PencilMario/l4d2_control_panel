@@ -80,15 +80,26 @@ Desktop and mobile Playwright exercised the real HTTP fixture journey, including
 - No real Docker daemon, SteamCMD install/update, live SRCDS process or real existing-data migration was exercised in Task 7. Desktop/mobile acceptance used the tagged fixture.
 - No real Linux filesystem, ENOSPC injection or daemon-restart acceptance was run.
 
+## Controller completion-candidate verification
+
+- `go test -p 1 ./... -count=1` passed all Go packages in a fresh sequential run.
+- `go test ./internal/updates -run TestPipelineRollbackDoesNotPrunePrivateSnapshots -count=10` passed all 10 repetitions after an earlier Windows TempDir cleanup interruption.
+- `go vet ./...` passed with no output.
+- `go test -tags=e2e ./cmd/e2e-fixture -count=1` passed.
+- `cd web; npm test -- --run` passed 4 files and 54 tests.
+- `cd web; npm run build` passed; Vite transformed 1,781 modules.
+- Desktop Playwright passed 1/1 in 20.4 seconds; mobile passed 1/1 in 20.8 seconds, run sequentially.
+- `git diff --check` passed and `git status --short` was empty before this evidence update.
+
 ## DriftCheckDraft
 
 - Scope: Task 7 changed README and Aegis work records; final reviews added `4a79f45`, `82cdfba` and `dad4357` product corrections.
 - Compatibility: the private upload API is unchanged; client resume matching is tighter, legacy upload fingerprints are discarded, controlled shared links remain supported, and legacy instances receive a conservative baseline.
 - Retirement: old immediate apply, blind apply callers and the runtime supervisor copy owner are retired; `PrivateManager` remains the transactional apply/rebase/recovery owner.
-- Decision: the second whole-branch review found no Critical or Important issues; controller-owned completion-candidate verification remains pending.
+- Decision: the second whole-branch review found no Critical or Important issues and controller-owned completion-candidate verification passed.
 
 ## Confidence and authority
 
 Confidence: B. Core automated regression and desktop/mobile user journeys have direct fresh evidence, with bounded Windows-host and real-runtime gaps above.
 
-Authority: verified Task 7 evidence only. Final spec compliance, code quality and whole-branch completion are not granted here.
+Authority: verified implementation evidence and advisory merge readiness. Branch integration remains a user choice.
