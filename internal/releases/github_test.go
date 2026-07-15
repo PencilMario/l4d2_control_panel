@@ -18,12 +18,14 @@ import (
 
 func TestFetchLatestSelectsAssetAndStoresPackage(t *testing.T) {
 	raw := packageBytes()
+	downloads := 0
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/owner/repo/releases/latest":
 			fmt.Fprintf(w, `{"tag_name":"v2.0","assets":[{"name":"plugins.zip","browser_download_url":%q}]}`, server.URL+"/plugins.zip")
 		case "/plugins.zip":
+			downloads++
 			w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
 			_, _ = w.Write(raw)
 		default:
@@ -33,12 +35,16 @@ func TestFetchLatestSelectsAssetAndStoresPackage(t *testing.T) {
 	defer server.Close()
 	manager, _ := content.NewPackageManager(t.TempDir())
 	client := Client{BaseURL: server.URL, HTTP: server.Client(), MaxBytes: 1 << 20}
-	item, err := client.FetchLatest(context.Background(), "owner/repo", `^plugins\.zip$`, "secret", manager)
+	result, err := client.FetchLatest(context.Background(), "owner/repo", `^plugins\.zip$`, "secret", manager)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item.Version != "v2.0" || item.Filename != "plugins.zip" {
-		t.Fatalf("item=%#v", item)
+	if !result.Updated || result.Package.Version != "v2.0" || result.Package.Filename != "plugins.zip" || result.Package.SourceRepository != "owner/repo" {
+		t.Fatalf("result=%#v", result)
+	}
+	second, err := client.FetchLatest(context.Background(), "owner/repo", `^plugins\.zip$`, "secret", manager)
+	if err != nil || second.Updated || second.Package.ID != result.Package.ID || downloads != 1 {
+		t.Fatalf("second=%#v downloads=%d err=%v", second, downloads, err)
 	}
 }
 
@@ -96,6 +102,12 @@ func TestInterruptedReleaseDownloadUsesManagedTemporaryArtifact(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("temporary downloads were not cleaned: %v", entries)
+	}
+}
+
+func TestDefaultClientAllowsLargeReleaseDownloads(t *testing.T) {
+	if timeout := (Client{}).httpClient().Timeout; timeout < 10*time.Minute {
+		t.Fatalf("timeout=%s", timeout)
 	}
 }
 func packageBytes() []byte {

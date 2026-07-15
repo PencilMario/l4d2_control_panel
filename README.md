@@ -24,8 +24,11 @@ docker compose --env-file .env up -d --build
 
 Both control services use host networking but bind loopback only:
 
-- Panel: `127.0.0.1:${L4D2_PANEL_HTTP_PORT:-8080}`
-- restricted Docker proxy: `127.0.0.1:${L4D2_PANEL_DOCKER_PROXY_PORT:-23750}`
+- Panel: `0.0.0.0:${L4D2_PANEL_HTTP_PORT:-18081}` (published from container port `8080`)
+- restricted Docker proxy: `socket-proxy:23750` on the private Compose network only
+
+For direct HTTP access, set `L4D2_PANEL_SECURE_COOKIE=false`. Keep the default
+`true` when the Panel is served through HTTPS.
 
 `L4D2_PANEL_GAME_HOST` is intentionally required. Some Source servers bind UDP on all interfaces but do not answer A2S sent to loopback; the Panel uses this address for health and player queries.
 
@@ -33,13 +36,18 @@ Put HTTPS in front of the Panel. For example, Caddy can proxy WebSocket and SSE 
 
 ```caddyfile
 panel.example.com {
-    reverse_proxy 127.0.0.1:8080
+    reverse_proxy 127.0.0.1:18081
 }
 ```
 
 Session cookies are `Secure`, `HttpOnly` and `SameSite=Strict`; use the HTTPS origin for normal browser operation. The Panel does not manage firewall rules.
 
-If registry or Steam downloads require a proxy, set `L4D2_PANEL_DOWNLOAD_PROXY` in `.env`. Digest-pinned `NODE_IMAGE`, `GO_IMAGE`, `ALPINE_IMAGE` and an alternate `STEAMCMD_IMAGE` can also be supplied without changing the Docker daemon.
+If GitHub Release or Steam downloads require a proxy, set
+`L4D2_PANEL_DOWNLOAD_PROXY` in `.env`. The Panel uses it as `HTTP_PROXY` and
+`HTTPS_PROXY`, and passes it to SteamCMD maintenance containers. Override
+`L4D2_PANEL_NO_PROXY` only when additional internal hosts must bypass it.
+Digest-pinned `NODE_IMAGE`, `GO_IMAGE`, `ALPINE_IMAGE` and an alternate
+`STEAMCMD_IMAGE` can also be supplied without changing the Docker daemon.
 
 ## SteamCMD first install
 
@@ -83,8 +91,8 @@ Before exposing a new host, verify:
 
 ```sh
 docker compose --env-file .env ps
-curl --fail http://127.0.0.1:${L4D2_PANEL_HTTP_PORT:-8080}/api/health
-ss -ltn | grep -E '127\.0\.0\.1:(8080|23750)'
+curl --fail http://127.0.0.1:${L4D2_PANEL_HTTP_PORT:-18081}/api/health
+docker compose ps
 ```
 
 Then create an instance from the UI and confirm:

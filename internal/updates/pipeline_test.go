@@ -24,10 +24,41 @@ func TestHotUpdateAppliesAllowedFilesAndPrivateLast(t *testing.T) {
 		t.Fatalf("got %q", raw)
 	}
 }
+func TestUpdateStripsReleaseWrapperDirectory(t *testing.T) {
+	root := t.TempDir()
+	archive := zipFile(t, map[string]string{"release/cfg/plugin.cfg": "new"})
+	if err := New(root).Apply(context.Background(), "abc", archive, "v1", Hot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "instances", "abc", "game", "left4dead2", "cfg", "plugin.cfg")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "instances", "abc", "game", "left4dead2", "release")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("wrapper directory exists: %v", err)
+	}
+}
 func TestHotUpdateRejectsBinaryOutsideAllowlist(t *testing.T) {
 	pipeline := New(t.TempDir())
 	if err := pipeline.Apply(context.Background(), "abc", zipFile(t, map[string]string{"bin/server.so": "x"}), "v1", Hot); err == nil {
 		t.Fatal("unsafe hot update accepted")
+	}
+}
+func TestHotUpdateFiltersNonHotFilesFromMixedRelease(t *testing.T) {
+	root := t.TempDir()
+	archive := zipFile(t, map[string]string{
+		"release/cfg/plugin.cfg": "new",
+		"release/bin/server.so":  "binary",
+		"release/README.md":      "docs",
+	})
+	if err := New(root).Apply(context.Background(), "abc", archive, "v2", Hot); err != nil {
+		t.Fatal(err)
+	}
+	game := filepath.Join(root, "instances", "abc", "game", "left4dead2")
+	if raw, err := os.ReadFile(filepath.Join(game, "cfg", "plugin.cfg")); err != nil || string(raw) != "new" {
+		t.Fatalf("hot file=%q err=%v", raw, err)
+	}
+	if _, err := os.Stat(filepath.Join(game, "bin", "server.so")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("binary was applied: %v", err)
 	}
 }
 func TestFailureRollsBackReplacedFiles(t *testing.T) {

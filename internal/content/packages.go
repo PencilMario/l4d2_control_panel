@@ -16,15 +16,29 @@ import (
 
 type PackageManager struct{ directory string }
 type PackageVersion struct {
-	ID            string               `json:"id"`
-	Filename      string               `json:"filename"`
-	Version       string               `json:"version"`
-	Hash          string               `json:"sha256"`
-	Size          int64                `json:"size"`
-	HotCompatible bool                 `json:"hot_compatible"`
-	Files         []archivecheck.Entry `json:"files"`
-	ArchivePath   string               `json:"-"`
-	CreatedAt     time.Time            `json:"created_at"`
+	ID               string               `json:"id"`
+	Filename         string               `json:"filename"`
+	Version          string               `json:"version"`
+	SourceRepository string               `json:"source_repository,omitempty"`
+	Hash             string               `json:"sha256"`
+	Size             int64                `json:"size"`
+	HotCompatible    bool                 `json:"hot_compatible"`
+	Files            []archivecheck.Entry `json:"files"`
+	ArchivePath      string               `json:"-"`
+	CreatedAt        time.Time            `json:"created_at"`
+}
+
+func (m *PackageManager) FindSourceVersion(repository, version, filename string) (PackageVersion, bool, error) {
+	items, err := m.List()
+	if err != nil {
+		return PackageVersion{}, false, err
+	}
+	for _, item := range items {
+		if item.SourceRepository == repository && item.Version == version && item.Filename == filename {
+			return item, true, nil
+		}
+	}
+	return PackageVersion{}, false, nil
 }
 
 func NewPackageManager(root string) (*PackageManager, error) {
@@ -95,6 +109,7 @@ func (m *PackageManager) Get(id string) (PackageVersion, error) {
 	item.ArchivePath = filepath.Join(m.directory, id+".zip")
 	return item, nil
 }
+func (m *PackageManager) UpdateMetadata(item PackageVersion) error { return m.save(item) }
 func (m *PackageManager) List() ([]PackageVersion, error) {
 	entries, err := os.ReadDir(m.directory)
 	if err != nil {

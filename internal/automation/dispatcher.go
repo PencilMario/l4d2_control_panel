@@ -18,11 +18,16 @@ type Dispatcher struct {
 	Jobs           *jobs.Manager
 	Players        *players.Service
 	Packages       *content.PackageManager
-	PackagesUpdate *updates.Coordinator
+	PackagesUpdate interface {
+		ApplyPackage(context.Context, string, content.PackageVersion, updates.Mode) error
+	}
 	GameUpdate     *updates.GameCoordinator
 	Releases       releases.Client
-	Maintenance    *maintenance.Manager
-	Secrets        interface {
+	ReleaseFetcher interface {
+		FetchLatest(context.Context, string, string, string, *content.PackageManager) (releases.FetchResult, error)
+	}
+	Maintenance *maintenance.Manager
+	Secrets     interface {
 		Get(context.Context, string) (string, bool, error)
 	}
 }
@@ -32,66 +37,99 @@ func (d Dispatcher) Dispatch(ctx context.Context, task domain.ScheduledTask) err
 		return errors.New("job manager unavailable")
 	}
 	_, err := d.Jobs.Start(context.WithoutCancel(ctx), task.InstanceID, "scheduled_"+task.Type, func(run context.Context, reporter jobs.Reporter) error {
-		if task.OnlinePolicy != "force" && task.InstanceID != "" && d.Players != nil {
-			for {
-				snapshot, err := d.Players.Online(run, task.InstanceID)
-				if err == nil && len(snapshot.Players) == 0 {
-					break
-				}
-				if task.OnlinePolicy == "skip" {
-					return errors.New("scheduled task skipped because players are online")
-				}
-				select {
-				case <-run.Done():
-					return run.Err()
-				case <-time.After(time.Minute):
-				}
-			}
-		}
-		var input struct {
-			PackageID     string `json:"package_id"`
-			Repository    string `json:"repository"`
-			AssetPattern  string `json:"asset_pattern"`
-			RetentionDays int    `json:"retention_days"`
-		}
-		if task.Payload != "" {
-			if err := json.Unmarshal([]byte(task.Payload), &input); err != nil {
-				return err
-			}
-		}
-		switch task.Type {
-		case "game_update":
-			return d.GameUpdate.Update(run, task.InstanceID)
-		case "package_hot", "package_full":
-			item, err := d.Packages.Get(input.PackageID)
-			if err != nil {
-				return err
-			}
-			mode := updates.Hot
-			if task.Type == "package_full" {
-				mode = updates.Full
-			}
-			return d.PackagesUpdate.ApplyPackage(run, task.InstanceID, item, mode)
-		case "release_check":
-			token := ""
-			if d.Secrets != nil {
-				token, _, _ = d.Secrets.Get(run, "github_token")
-			}
-			_, err := d.Releases.FetchLatest(run, input.Repository, input.AssetPattern, token, d.Packages)
-			return err
-		case "backup":
-			_, err := d.Maintenance.Backup(run, task.InstanceID)
-			return err
-		case "cleanup":
-			days := input.RetentionDays
-			if days < 1 {
-				days = 30
-			}
-			_, err := d.Maintenance.Cleanup(run, time.Duration(days)*24*time.Hour)
-			return err
-		default:
-			return errors.New("unsupported scheduled task type")
-		}
+		return d.run(run, task)
 	})
 	return err
+}
+
+func (d Dispatcher) run(ctx context.Context, task domain.ScheduledTask) error {
+	var input struct {
+		PackageID     string `json:"package_id"`
+		Repository    string `json:"repository"`
+		AssetPattern  string `json:"asset_pattern"`
+		RetentionDays int    `json:"retention_days"`
+	}
+	if task.Payload != "" {
+		if err := json.Unmarshal([]byte(task.Payload), &input); err != nil {
+			return err
+		}
+	}
+	if task.Type == "release_hot" || task.Type == "release_full" {
+		fetcher := d.ReleaseFetcher
+		if fetcher == nil {
+			fetcher = d.Releases
+		}
+		token := ""
+		if d.Secrets != nil {
+			token, _, _ = d.Secrets.Get(ctx, "github_token")
+		}
+		result, err := fetcher.FetchLatest(ctx, input.Repository, input.AssetPattern, token, d.Packages)
+		if err != nil || !result.Updated {
+			return err
+		}
+		if err := d.waitForPlayers(ctx, task); err != nil {
+			return err
+		}
+		mode := updates.Hot
+		if task.Type == "release_full" {
+			mode = updates.Full
+		}
+		return d.PackagesUpdate.ApplyPackage(ctx, task.InstanceID, result.Package, mode)
+	}
+	if err := d.waitForPlayers(ctx, task); err != nil {
+		return err
+	}
+	switch task.Type {
+	case "game_update":
+		return d.GameUpdate.Update(ctx, task.InstanceID)
+	case "package_hot", "package_full":
+		item, err := d.Packages.Get(input.PackageID)
+		if err != nil {
+			return err
+		}
+		mode := updates.Hot
+		if task.Type == "package_full" {
+			mode = updates.Full
+		}
+		return d.PackagesUpdate.ApplyPackage(ctx, task.InstanceID, item, mode)
+	case "release_check":
+		token := ""
+		if d.Secrets != nil {
+			token, _, _ = d.Secrets.Get(ctx, "github_token")
+		}
+		_, err := d.Releases.FetchLatest(ctx, input.Repository, input.AssetPattern, token, d.Packages)
+		return err
+	case "backup":
+		_, err := d.Maintenance.Backup(ctx, task.InstanceID)
+		return err
+	case "cleanup":
+		days := input.RetentionDays
+		if days < 1 {
+			days = 30
+		}
+		_, err := d.Maintenance.Cleanup(ctx, time.Duration(days)*24*time.Hour)
+		return err
+	default:
+		return errors.New("unsupported scheduled task type")
+	}
+}
+
+func (d Dispatcher) waitForPlayers(ctx context.Context, task domain.ScheduledTask) error {
+	if task.OnlinePolicy == "force" || task.InstanceID == "" || d.Players == nil {
+		return nil
+	}
+	for {
+		snapshot, err := d.Players.Online(ctx, task.InstanceID)
+		if err == nil && len(snapshot.Players) == 0 {
+			return nil
+		}
+		if task.OnlinePolicy == "skip" {
+			return errors.New("scheduled task skipped because players are online")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Minute):
+		}
+	}
 }

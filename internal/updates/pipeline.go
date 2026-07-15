@@ -106,7 +106,7 @@ func (p *Pipeline) Begin(ctx context.Context, instanceID, archivePath, version s
 	}()
 
 	newManifest := manifest{Version: version, Files: map[string]string{}}
-	if err := extract(archivePath, staging, newManifest.Files); err != nil {
+	if err := extract(archivePath, staging, newManifest.Files, mode); err != nil {
 		return nil, err
 	}
 	old := readManifest(manifestPath)
@@ -348,17 +348,22 @@ func writeJournal(path string, value updateJournal) error {
 	return writeAtomic(path, raw, 0640)
 }
 
-func extract(path, destination string, hashes map[string]string) error {
+func extract(path, destination string, hashes map[string]string, mode Mode) error {
 	reader, err := zip.OpenReader(path)
 	if err != nil {
 		return err
 	}
 	defer reader.Close()
+	root := archivecheck.CommonRoot(reader.File)
 	for _, entry := range reader.File {
 		if entry.FileInfo().IsDir() {
 			continue
 		}
-		target, err := safepath.Join(destination, entry.Name)
+		name := archivecheck.NormalizePath(entry.Name, root)
+		if mode == Hot && !archivecheck.IsHotPath(name) {
+			continue
+		}
+		target, err := safepath.Join(destination, name)
 		if err != nil {
 			return err
 		}
@@ -384,7 +389,7 @@ func extract(path, destination string, hashes map[string]string) error {
 		if closeErr != nil {
 			return closeErr
 		}
-		hashes[filepath.ToSlash(entry.Name)] = hex.EncodeToString(digest.Sum(nil))
+		hashes[filepath.ToSlash(name)] = hex.EncodeToString(digest.Sum(nil))
 	}
 	return nil
 }

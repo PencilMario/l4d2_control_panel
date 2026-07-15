@@ -142,6 +142,16 @@ func TestProtectedRoutesRequireSession(t *testing.T) {
 	}
 }
 
+func TestLoginCookieSecurityCanBeDisabled(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	s = New(db, s.auth, WithSecureCookie(false))
+	cookie := loginCookie(t, s)
+	if cookie.Secure {
+		t.Fatal("HTTP deployments must be able to disable the Secure cookie attribute")
+	}
+}
+
 func TestCreateAndListInstance(t *testing.T) {
 	s, db := testServer(t)
 	defer db.Close()

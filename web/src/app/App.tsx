@@ -155,7 +155,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
         setJob(next);
         if (["succeeded", "failed", "interrupted"].includes(next.Status)) {
           clearInterval(timer);
-          void loadInstances();
+          void Promise.allSettled([loadInstances(), loadPackages()]);
         }
       } catch (reason) {
         clearInterval(timer);
@@ -765,6 +765,10 @@ type PrivateFileEntry = {
 const encodeRelativePath = (path: string) =>
   path.split("/").map(encodeURIComponent).join("/");
 const VPK_CHUNK_SIZE = 8 * 1024 * 1024;
+const DEFAULT_PLUGIN_REPOSITORY =
+  "PencilMario/L4D2-Not0721Here-CoopSvPlugins";
+const DEFAULT_PLUGIN_ASSET_PATTERN =
+  "^L4D2-Not0721Here-CoopSvPlugins-compiled\\.zip$";
 
 function ContentPage({
   instances,
@@ -787,6 +791,12 @@ function ContentPage({
   const [contentError, setContentError] = useState("");
   const [vpkUploadStatus, setVPKUploadStatus] = useState("");
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const [releaseRepository, setReleaseRepository] = useState(
+    DEFAULT_PLUGIN_REPOSITORY,
+  );
+  const [releaseAssetPattern, setReleaseAssetPattern] = useState(
+    DEFAULT_PLUGIN_ASSET_PATTERN,
+  );
   const loadVPK = () => api<any[]>("/api/content/vpk").then(setVpks);
   useEffect(() => {
     Promise.all([loadVPK(), reloadPackages()]).catch((reason) =>
@@ -982,6 +992,36 @@ function ContentPage({
           />
         }
       >
+        <form
+          className="release-source"
+          onSubmit={(event) => {
+            event.preventDefault();
+            runContentAction(() =>
+              queue("/api/packages/github", {
+                repository: releaseRepository,
+                asset_pattern: releaseAssetPattern,
+              }),
+            );
+          }}
+        >
+          <label>
+            GitHub 仓库
+            <input
+              value={releaseRepository}
+              onChange={(event) => setReleaseRepository(event.target.value)}
+              required
+            />
+          </label>
+          <label>
+            Release 资源规则
+            <input
+              value={releaseAssetPattern}
+              onChange={(event) => setReleaseAssetPattern(event.target.value)}
+              required
+            />
+          </label>
+          <button className="create">检查新版本</button>
+        </form>
         {packages.map((x) => (
           <div className="data-row" key={x.id}>
             <div>
@@ -1180,6 +1220,8 @@ function SchedulesPage({ instances }: { instances: Instance[] }) {
   const [scheduleError, setScheduleError] = useState("");
   const [scheduleStatus, setScheduleStatus] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [taskType, setTaskType] = useState("game_update");
+  const releaseTask = taskType === "release_hot" || taskType === "release_full";
   const load = async () => {
     const items = await api<any[]>("/api/schedules");
     setTasks(items.map(normalizeScheduledTask));
@@ -1198,12 +1240,17 @@ function SchedulesPage({ instances }: { instances: Instance[] }) {
         method: "POST",
         body: JSON.stringify({
           instance_id: data.get("instance"),
-          type: data.get("type"),
+          type: taskType,
           cron: data.get("cron"),
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           online_policy: data.get("policy"),
           enabled: true,
-          payload: "{}",
+          payload: releaseTask
+            ? JSON.stringify({
+                repository: data.get("repository"),
+                asset_pattern: data.get("asset_pattern"),
+              })
+            : "{}",
         }),
       });
       await load();
@@ -1232,13 +1279,33 @@ function SchedulesPage({ instances }: { instances: Instance[] }) {
         </label>
         <label>
           任务
-          <select name="type">
+          <select
+            aria-label="任务"
+            name="type"
+            value={taskType}
+            onChange={(event) => setTaskType(event.target.value)}
+          >
             <option value="game_update">游戏更新</option>
             <option value="package_hot">插件热更新</option>
+            <option value="package_full">插件完整更新</option>
+            <option value="release_hot">GitHub Release 热更新</option>
+            <option value="release_full">GitHub Release 完整更新</option>
             <option value="backup">备份</option>
             <option value="cleanup">清理</option>
           </select>
         </label>
+        {releaseTask ? (
+          <>
+            <label>
+              GitHub 仓库
+              <input name="repository" defaultValue={DEFAULT_PLUGIN_REPOSITORY} required />
+            </label>
+            <label>
+              Release 资源规则
+              <input name="asset_pattern" defaultValue={DEFAULT_PLUGIN_ASSET_PATTERN} required />
+            </label>
+          </>
+        ) : null}
         <label>
           Cron
           <input name="cron" defaultValue="0 4 * * *" />

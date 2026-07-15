@@ -51,6 +51,7 @@ type Server struct {
 	secrets           *secrets.Service
 	resources         ResourceProvider
 	system            SystemProvider
+	secureCookie      bool
 }
 
 type Lifecycle interface {
@@ -111,8 +112,10 @@ type SystemProvider interface {
 
 func WithSystem(provider SystemProvider) Option { return func(s *Server) { s.system = provider } }
 
+func WithSecureCookie(secure bool) Option { return func(s *Server) { s.secureCookie = secure } }
+
 func New(db *store.Store, a *auth.Service, options ...Option) *Server {
-	s := &Server{store: db, auth: a}
+	s := &Server{store: db, auth: a, secureCookie: true}
 	for _, option := range options {
 		option(s)
 	}
@@ -1061,14 +1064,14 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", err.Error())
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: token, Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode, MaxAge: 86400})
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: token, Path: "/", HttpOnly: true, Secure: s.secureCookie, SameSite: http.SameSiteStrictMode, MaxAge: 86400})
 	writeJSON(w, http.StatusOK, map[string]bool{"authenticated": true})
 }
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		s.auth.Logout(c.Value)
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/", HttpOnly: true, Secure: s.secureCookie, SameSite: http.SameSiteStrictMode, MaxAge: -1})
 	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) requireAuth(next http.Handler) http.Handler {

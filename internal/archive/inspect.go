@@ -32,16 +32,17 @@ func InspectZip(path string, limits Limits) (Manifest, error) {
 		return Manifest{}, err
 	}
 	defer r.Close()
-	m := Manifest{HotCompatible: true}
+	m := Manifest{}
 	if limits.MaxFileBytes == 0 {
 		limits.MaxFileBytes = 2 << 30
 	}
 	if limits.MaxCompressionRatio == 0 {
-		limits.MaxCompressionRatio = 200
+		limits.MaxCompressionRatio = 400
 	}
 	if len(r.File) > limits.MaxFiles {
 		return m, errors.New("archive file count limit exceeded")
 	}
+	root := CommonRoot(r.File)
 	for _, f := range r.File {
 		if f.Flags&1 != 0 {
 			return m, errors.New("encrypted archive entries are forbidden")
@@ -69,16 +70,54 @@ func InspectZip(path string, limits Limits) (Manifest, error) {
 		if m.TotalBytes > limits.MaxBytes {
 			return m, errors.New("archive expanded size limit exceeded")
 		}
-		name := strings.TrimPrefix(strings.ReplaceAll(f.Name, "\\", "/"), "./")
-		hot := false
-		for _, prefix := range hotPrefixes {
-			if strings.HasPrefix(name, prefix) {
-				hot = true
-				break
-			}
-		}
-		m.HotCompatible = m.HotCompatible && hot
+		name := NormalizePath(f.Name, root)
+		m.HotCompatible = m.HotCompatible || IsHotPath(name)
 		m.Entries = append(m.Entries, Entry{Path: name, Size: f.UncompressedSize64})
 	}
 	return m, nil
+}
+
+func IsHotPath(name string) bool {
+	for _, prefix := range hotPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func CommonRoot(files []*zip.File) string {
+	root := ""
+	gameRoots := map[string]bool{
+		"addons": true, "bin": true, "cfg": true, "download": true,
+		"maps": true, "materials": true, "media": true, "models": true,
+		"resource": true, "scripts": true, "sound": true,
+	}
+	for _, file := range files {
+		if file.FileInfo().IsDir() {
+			continue
+		}
+		name := strings.TrimPrefix(strings.ReplaceAll(file.Name, "\\", "/"), "./")
+		parts := strings.SplitN(name, "/", 2)
+		if len(parts) != 2 || parts[0] == "" {
+			return ""
+		}
+		if root == "" {
+			root = parts[0]
+			if gameRoots[strings.ToLower(root)] {
+				return ""
+			}
+		} else if root != parts[0] {
+			return ""
+		}
+	}
+	return root
+}
+
+func NormalizePath(name, root string) string {
+	name = strings.TrimPrefix(strings.ReplaceAll(name, "\\", "/"), "./")
+	if root != "" {
+		name = strings.TrimPrefix(name, root+"/")
+	}
+	return name
 }

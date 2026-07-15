@@ -25,7 +25,7 @@ type Service struct {
 	entries    map[string]cron.EntryID
 }
 
-var taskTypes = map[string]bool{"game_update": true, "package_hot": true, "package_full": true, "release_check": true, "backup": true, "cleanup": true}
+var taskTypes = map[string]bool{"game_update": true, "package_hot": true, "package_full": true, "release_check": true, "release_hot": true, "release_full": true, "backup": true, "cleanup": true}
 
 func NewService(repo Repository, dispatcher Dispatcher) *Service {
 	s := &Service{repo: repo, dispatcher: dispatcher, cron: cron.New(), entries: map[string]cron.EntryID{}}

@@ -898,6 +898,32 @@ textarea:focus-visible {
   border-top: 1px solid var(--line);
   padding: 14px 2px;
 }
+.release-source {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(260px, 1.35fr) auto;
+  gap: 10px;
+  align-items: end;
+  padding: 14px;
+  margin: 4px 0 10px;
+  background: #0a0f0d;
+  border-left: 3px solid var(--acid);
+}
+.release-source label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.release-source input {
+  min-width: 0;
+  background: #090c0b;
+  color: #eef3ef;
+  border: 1px solid #36413d;
+  padding: 9px;
+}
+.release-source button {
+  white-space: nowrap;
+}
 .data-row div {
   display: grid;
 }
@@ -1081,6 +1107,9 @@ textarea:focus-visible {
   }
   .instance-extra-args {
     grid-column: 1;
+  }
+  .release-source {
+    grid-template-columns: 1fr;
   }
 }
 @media (max-width: 600px) {

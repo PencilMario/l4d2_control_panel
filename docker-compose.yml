@@ -28,8 +28,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
-      LISTEN_ADDR: 127.0.0.1:${L4D2_PANEL_DOCKER_PROXY_PORT:-23750}
-    network_mode: host
+      LISTEN_ADDR: 0.0.0.0:23750
     read_only: true
     user: "0:0"
     cap_drop: [ALL]
@@ -48,18 +47,23 @@ services:
       socket-proxy:
         condition: service_started
     environment:
-      L4D2_PANEL_LISTEN: 127.0.0.1:${L4D2_PANEL_HTTP_PORT:-8080}
+      L4D2_PANEL_LISTEN: 0.0.0.0:8080
       L4D2_PANEL_GAME_HOST: ${L4D2_PANEL_GAME_HOST:?set the host address SRCDS answers on}
       L4D2_PANEL_DATA_ROOT: ${L4D2_PANEL_DATA_ROOT:-/srv/l4d2-panel}
       L4D2_PANEL_ADMIN_PASSWORD: ${L4D2_PANEL_ADMIN_PASSWORD:?set admin password}
-      DOCKER_HOST: tcp://127.0.0.1:${L4D2_PANEL_DOCKER_PROXY_PORT:-23750}
+      DOCKER_HOST: tcp://socket-proxy:23750
       L4D2_PANEL_DOWNLOAD_PROXY: ${L4D2_PANEL_DOWNLOAD_PROXY:-}
+      HTTP_PROXY: ${L4D2_PANEL_DOWNLOAD_PROXY:-}
+      HTTPS_PROXY: ${L4D2_PANEL_DOWNLOAD_PROXY:-}
+      NO_PROXY: ${L4D2_PANEL_NO_PROXY:-localhost,127.0.0.1,socket-proxy}
+      L4D2_PANEL_SECURE_COOKIE: ${L4D2_PANEL_SECURE_COOKIE:-true}
+    ports:
+      - "${L4D2_PANEL_HTTP_PORT:-18081}:8080"
     volumes:
       - ${L4D2_PANEL_DATA_ROOT:-/srv/l4d2-panel}:${L4D2_PANEL_DATA_ROOT:-/srv/l4d2-panel}
-    network_mode: host
     security_opt: [no-new-privileges:true]
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:${L4D2_PANEL_HTTP_PORT:-8080}/api/health"]
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/api/health"]
       interval: 15s
       timeout: 5s
       retries: 5

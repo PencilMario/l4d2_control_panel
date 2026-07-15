@@ -37,6 +37,20 @@ func TestInspectZipRejectsSingleFileAndCompressionBomb(t *testing.T) {
 		t.Fatal("compression bomb accepted")
 	}
 }
+
+func TestInspectZipStripsSingleCommonRoot(t *testing.T) {
+	archive := makeZip(t, map[string]string{
+		"release/addons/sourcemod/plugins/test.smx": "x",
+		"release/cfg/test.cfg":                      "y",
+	})
+	manifest, err := InspectZip(archive, Limits{MaxFiles: 10, MaxBytes: 100})
+	if err != nil || !manifest.HotCompatible {
+		t.Fatalf("manifest=%#v err=%v", manifest, err)
+	}
+	if manifest.Entries[0].Path == "release/addons/sourcemod/plugins/test.smx" {
+		t.Fatal("common release directory was not stripped")
+	}
+}
 func makeZip(t *testing.T, files map[string]string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "x.zip")
