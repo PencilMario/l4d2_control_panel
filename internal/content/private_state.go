@@ -60,8 +60,11 @@ type PrivateTarget struct {
 
 func (m *PrivateManager) TransactionTargets(_ context.Context, instanceID string) ([]PrivateTarget, error) {
 	lock := m.instanceLock(instanceID)
-	lock.RLock()
-	defer lock.RUnlock()
+	lock.Lock()
+	defer lock.Unlock()
+	if err := m.ensureBaselineLocked(instanceID); err != nil {
+		return nil, err
+	}
 	root, err := m.privateRoot(instanceID)
 	if err != nil {
 		return nil, err
@@ -90,14 +93,16 @@ func (m *PrivateManager) TransactionTargets(_ context.Context, instanceID string
 }
 
 type lowerManifest struct {
-	Version int             `json:"version"`
-	Entries map[string]bool `json:"entries"`
+	Version         int               `json:"version"`
+	Entries         map[string]bool   `json:"entries"`
+	ControlledLinks map[string]string `json:"controlled_links,omitempty"`
 }
 
 type applyJournalEntry struct {
 	Path    string `json:"path"`
 	Kind    string `json:"kind"`
 	Existed bool   `json:"existed"`
+	Target  string `json:"target,omitempty"`
 }
 
 type privateApplyJournal struct {
@@ -209,6 +214,26 @@ type privateManifest struct {
 	Version   int                      `json:"version"`
 	AppliedAt time.Time                `json:"applied_at"`
 	Entries   map[string]manifestEntry `json:"entries"`
+	Migration string                   `json:"migration,omitempty"`
+}
+
+func controlledSharedVPKTarget(path string) (string, bool) {
+	if strings.Contains(path, "\\") || filepath.IsAbs(path) || filepath.ToSlash(filepath.Clean(filepath.FromSlash(path))) != path {
+		return "", false
+	}
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 || parts[0] != "addons" || parts[1] == "" || filepath.Base(parts[1]) != parts[1] || !strings.HasSuffix(strings.ToLower(parts[1]), ".vpk") {
+		return "", false
+	}
+	return "/opt/l4d2/shared-vpk/" + parts[1], true
+}
+
+func validateControlledSharedVPK(path, target string) error {
+	want, ok := controlledSharedVPKTarget(path)
+	if !ok || filepath.ToSlash(target) != want {
+		return errors.New("invalid controlled shared VPK symlink")
+	}
+	return nil
 }
 
 type manifestEntry struct {
@@ -358,6 +383,70 @@ func (m *PrivateManager) writePrivateManifest(instanceID string, manifest privat
 	return atomicReplaceFile(temporaryName, path)
 }
 
+// ensureBaselineLocked migrates instances created before private-applied.json existed.
+// The caller must hold the instance write lock so no workspace mutation can race it.
+func (m *PrivateManager) ensureBaselineLocked(instanceID string) error {
+	manifestPath, err := m.manifestPath(instanceID)
+	if err != nil {
+		return err
+	}
+	if _, err = os.Lstat(manifestPath); err == nil {
+		_, err = m.readPrivateManifest(instanceID)
+		return err
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	workspace, err := m.privateRoot(instanceID)
+	if err != nil {
+		return err
+	}
+	entries, err := scanPrivateTree(workspace)
+	if err != nil {
+		return err
+	}
+	base := filepath.Join(m.root, "instances", instanceID)
+	game := filepath.Join(base, "game", "left4dead2")
+	lowerRoot := filepath.Join(base, "backups", "private", "lower")
+	lower, err := readLowerManifest(filepath.Join(lowerRoot, "state.json"))
+	if err != nil {
+		return err
+	}
+	for path, entry := range entries {
+		if entry.Kind != "file" {
+			continue
+		}
+		target, _ := safepath.Join(game, path)
+		if err := rejectSymlinkParents(game, filepath.Dir(target)); err != nil {
+			return err
+		}
+		info, statErr := os.Lstat(target)
+		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
+		}
+		if statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+			link, readErr := os.Readlink(target)
+			if readErr != nil {
+				return readErr
+			}
+			if err := validateControlledSharedVPK(path, link); err != nil {
+				return err
+			}
+			lower.Entries[path] = true
+			lower.ControlledLinks[path] = filepath.ToSlash(link)
+		}
+	}
+	if len(lower.Entries) > 0 {
+		if err := writeJSONAtomic(filepath.Join(lowerRoot, "state.json"), lower); err != nil {
+			return err
+		}
+	}
+	marker := "legacy-v1"
+	if len(entries) == 0 {
+		marker = "empty-v1"
+	}
+	return m.writePrivateManifest(instanceID, privateManifest{Version: privateManifestVersion, AppliedAt: time.Now().UTC(), Entries: entries, Migration: marker})
+}
+
 func isEmptyDirectory(path string, entries map[string]manifestEntry) bool {
 	prefix := path + "/"
 	for candidate := range entries {
@@ -374,8 +463,11 @@ func isDiffResource(path string, entry manifestEntry, entries map[string]manifes
 
 func (m *PrivateManager) Diff(_ context.Context, instanceID string) (PrivateDiff, error) {
 	lock := m.instanceLock(instanceID)
-	lock.RLock()
-	defer lock.RUnlock()
+	lock.Lock()
+	defer lock.Unlock()
+	if err := m.ensureBaselineLocked(instanceID); err != nil {
+		return PrivateDiff{}, err
+	}
 	root, err := m.privateRoot(instanceID)
 	if err != nil {
 		return PrivateDiff{}, err
@@ -493,6 +585,9 @@ func (m *PrivateManager) applyPrivateLocked(ctx context.Context, instanceID stri
 	if err := m.recoverPrivateInstanceLocked(ctx, instanceID, base); err != nil {
 		return err
 	}
+	if err := m.ensureBaselineLocked(instanceID); err != nil {
+		return err
+	}
 	workspace := filepath.Join(base, "private")
 	game := filepath.Join(base, "game", "left4dead2")
 	if err := rejectSymlinkParents(m.root, workspace); err != nil {
@@ -548,7 +643,7 @@ func (m *PrivateManager) applyPrivateLocked(ctx context.Context, instanceID stri
 		if joinErr != nil {
 			return joinErr
 		}
-		if err = rejectSymlinkParents(game, target); err != nil {
+		if err = rejectSymlinkParents(game, filepath.Dir(target)); err != nil {
 			return err
 		}
 		kind := "file"
@@ -564,11 +659,17 @@ func (m *PrivateManager) applyPrivateLocked(ctx context.Context, instanceID stri
 				if !info.IsDir() {
 					return errors.New("private directory target is not a directory")
 				}
+			} else if info.Mode()&os.ModeSymlink != 0 {
+				link, readErr := os.Readlink(target)
+				if readErr != nil || validateControlledSharedVPK(path, link) != nil {
+					return errors.New("private target is not a regular file or controlled shared VPK link")
+				}
+				entry.Kind, entry.Target = "controlled_symlink", filepath.ToSlash(link)
 			} else if !info.Mode().IsRegular() {
 				return errors.New("private target is not a regular file")
 			}
 			entry.Existed = true
-			if kind == "file" {
+			if kind == "file" && entry.Kind != "controlled_symlink" {
 				backup, _ := safepath.Join(filepath.Join(work, "game.before"), path)
 				if err = copyFileExact(target, backup); err != nil {
 					return err
@@ -596,7 +697,7 @@ func (m *PrivateManager) applyPrivateLocked(ctx context.Context, instanceID stri
 	}
 	if rebase {
 		report("restore-lower")
-		lower = lowerManifest{Version: 1, Entries: map[string]bool{}}
+		lower = lowerManifest{Version: 1, Entries: map[string]bool{}, ControlledLinks: map[string]string{}}
 		_ = os.RemoveAll(filepath.Join(lowerRoot, "tree"))
 		for _, path := range paths {
 			entry, ok := current[path]
@@ -635,7 +736,9 @@ func (m *PrivateManager) applyPrivateLocked(ctx context.Context, instanceID stri
 			err = copyFileExact(source, target)
 		} else if oldEntry, wasPrivate := old.Entries[path]; wasPrivate && oldEntry.Kind == "file" {
 			target, _ := safepath.Join(game, path)
-			if lower.Entries[path] {
+			if link := lower.ControlledLinks[path]; link != "" {
+				err = restoreControlledLink(target, path, link)
+			} else if lower.Entries[path] {
 				source, _ := safepath.Join(filepath.Join(lowerRoot, "tree"), path)
 				err = copyFileExact(source, target)
 			} else {
@@ -645,6 +748,7 @@ func (m *PrivateManager) applyPrivateLocked(ctx context.Context, instanceID stri
 				}
 			}
 			delete(lower.Entries, path)
+			delete(lower.ControlledLinks, path)
 		} else if oldEntry, wasPrivate := old.Entries[path]; wasPrivate && oldEntry.Kind == "directory" {
 			if !lower.Entries[path] {
 				target, _ := safepath.Join(game, path)
@@ -729,6 +833,10 @@ func (m *PrivateManager) BeginTransaction(ctx context.Context, instanceID string
 		lock.Unlock()
 		return nil, err
 	}
+	if err := m.ensureBaselineLocked(instanceID); err != nil {
+		lock.Unlock()
+		return nil, err
+	}
 	return &PrivateTransaction{manager: m, instanceID: instanceID, base: base, lock: lock}, nil
 }
 func (t *PrivateTransaction) Targets(ctx context.Context) ([]PrivateTarget, error) {
@@ -790,6 +898,9 @@ func (t *PrivateTransaction) Rollback() error {
 
 func captureLower(game, lowerRoot, path, kind string, lower *lowerManifest) error {
 	target, _ := safepath.Join(game, path)
+	if err := rejectSymlinkParents(game, filepath.Dir(target)); err != nil {
+		return err
+	}
 	info, err := os.Lstat(target)
 	if errors.Is(err, os.ErrNotExist) {
 		lower.Entries[path] = false
@@ -803,6 +914,21 @@ func captureLower(game, lowerRoot, path, kind string, lower *lowerManifest) erro
 			return errors.New("lower directory target is not a directory")
 		}
 		lower.Entries[path] = true
+		return nil
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		link, readErr := os.Readlink(target)
+		if readErr != nil {
+			return readErr
+		}
+		if err := validateControlledSharedVPK(path, link); err != nil {
+			return err
+		}
+		lower.Entries[path] = true
+		if lower.ControlledLinks == nil {
+			lower.ControlledLinks = map[string]string{}
+		}
+		lower.ControlledLinks[path] = filepath.ToSlash(link)
 		return nil
 	}
 	if !info.Mode().IsRegular() {
@@ -833,6 +959,8 @@ func rollbackPrivateApply(work, base string, journal privateApplyJournal) error 
 					result = errors.Join(result, err)
 				}
 			}
+		} else if entry.Existed && entry.Kind == "controlled_symlink" {
+			result = errors.Join(result, restoreControlledLink(target, entry.Path, entry.Target))
 		} else if entry.Existed {
 			source, _ := safepath.Join(filepath.Join(work, "game.before"), entry.Path)
 			result = errors.Join(result, copyFileExact(source, target))
@@ -863,7 +991,7 @@ func rollbackPrivateApply(work, base string, journal privateApplyJournal) error 
 func readLowerManifest(path string) (lowerManifest, error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return lowerManifest{Version: 1, Entries: map[string]bool{}}, nil
+		return lowerManifest{Version: 1, Entries: map[string]bool{}, ControlledLinks: map[string]string{}}, nil
 	}
 	if err != nil {
 		return lowerManifest{}, err
@@ -875,12 +1003,36 @@ func readLowerManifest(path string) (lowerManifest, error) {
 	if value.Version != 1 || value.Entries == nil {
 		return value, errors.New("invalid private lower manifest")
 	}
+	if value.ControlledLinks == nil {
+		value.ControlledLinks = map[string]string{}
+	}
 	for path := range value.Entries {
 		if err = validateManifestEntry(path, manifestEntry{Kind: "file", Hash: strings.Repeat("0", 64)}); err != nil {
 			return value, err
 		}
 	}
+	for path, target := range value.ControlledLinks {
+		if !value.Entries[path] {
+			return value, errors.New("controlled lower link must exist")
+		}
+		if err := validateControlledSharedVPK(path, target); err != nil {
+			return value, err
+		}
+	}
 	return value, nil
+}
+
+func restoreControlledLink(path, relative, target string) error {
+	if err := validateControlledSharedVPK(relative, target); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(path); err != nil {
+		return err
+	}
+	return os.Symlink(target, path)
 }
 
 func writeJSONAtomic(path string, value any) error {
@@ -1020,8 +1172,11 @@ func createPrivateSnapshot(base, workspace string, manifest privateManifest, sum
 
 func (m *PrivateManager) Snapshots(_ context.Context, instanceID string) ([]PrivateSnapshot, error) {
 	lock := m.instanceLock(instanceID)
-	lock.RLock()
-	defer lock.RUnlock()
+	lock.Lock()
+	defer lock.Unlock()
+	if err := m.ensureBaselineLocked(instanceID); err != nil {
+		return nil, err
+	}
 	if err := validateInstanceID(instanceID); err != nil {
 		return nil, err
 	}
@@ -1142,11 +1297,23 @@ func (m *PrivateManager) recoverPrivateJournalLocked(journalPath, base, instance
 		return errors.New("invalid private snapshot id")
 	}
 	for _, entry := range journal.Affected {
-		if entry.Kind != "file" && entry.Kind != "directory" {
+		if entry.Kind != "file" && entry.Kind != "directory" && entry.Kind != "controlled_symlink" {
 			return errors.New("invalid private apply journal kind")
 		}
-		if err = validateManifestEntry(entry.Path, manifestEntry{Kind: entry.Kind, Hash: func() string {
-			if entry.Kind == "file" {
+		manifestKind := entry.Kind
+		if entry.Kind == "controlled_symlink" {
+			manifestKind = "file"
+			if !entry.Existed {
+				return errors.New("controlled private apply link must exist")
+			}
+			if err := validateControlledSharedVPK(entry.Path, entry.Target); err != nil {
+				return err
+			}
+		} else if entry.Target != "" {
+			return errors.New("unexpected private apply link target")
+		}
+		if err = validateManifestEntry(entry.Path, manifestEntry{Kind: manifestKind, Hash: func() string {
+			if manifestKind == "file" {
 				return strings.Repeat("0", 64)
 			}
 			return ""
@@ -1172,6 +1339,9 @@ func (m *PrivateManager) RestoreSnapshot(ctx context.Context, instanceID, snapsh
 	}
 	base := filepath.Join(m.root, "instances", instanceID)
 	if err := m.recoverPrivateInstanceLocked(ctx, instanceID, base); err != nil {
+		return err
+	}
+	if err := m.ensureBaselineLocked(instanceID); err != nil {
 		return err
 	}
 	snapshot := filepath.Join(base, "backups", "private", "snapshots", snapshotID)

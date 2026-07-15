@@ -36,6 +36,23 @@ func TestRuntimeRequiresPanelProvisionedGame(t *testing.T) {
 	}
 }
 
+func TestSupervisorDoesNotDeployStagedPrivateContent(t *testing.T) {
+	raw, err := os.ReadFile("supervisor.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if strings.Contains(text, "shutil.copytree(private,game") || strings.Contains(text, "copytree(private, game") {
+		t.Fatal("supervisor must not copy staged private content into the persistent game tree")
+	}
+	if strings.Contains(text, "/opt/l4d2/private") {
+		t.Fatal("supervisor must not read staged private content when preparing the persistent game tree")
+	}
+	if !strings.Contains(text, "os.symlink(source,target)") {
+		t.Fatal("supervisor must retain shared VPK link creation")
+	}
+}
+
 func TestSourceTVCommandIsEnabledOnlyForDeclaredPort(t *testing.T) {
 	raw, err := os.ReadFile("supervisor.py")
 	if err != nil {

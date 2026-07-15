@@ -598,6 +598,26 @@ func TestValidateUpdateJournalRejectsTraversalWorkPath(t *testing.T) {
 		t.Fatal("outside work accepted")
 	}
 }
+func TestPipelineFailureRollbackRestoresControlledSharedVPKLink(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "instances", "abc", "game", "left4dead2", "addons", "shared.vpk")
+	if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
+		t.Fatal(err)
+	}
+	linkTarget := "/opt/l4d2/shared-vpk/shared.vpk"
+	if err := os.Symlink(linkTarget, target); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	p := New(root)
+	p.AfterDeploy = func() error { return errors.New("injected") }
+	if err := p.Apply(context.Background(), "abc", zipFile(t, map[string]string{"addons/shared.vpk": "package"}), "v1", Hot); err == nil {
+		t.Fatal("expected failure")
+	}
+	if got, err := os.Readlink(target); err != nil || filepath.ToSlash(got) != linkTarget {
+		t.Fatalf("link=%q err=%v", got, err)
+	}
+}
+
 func zipFile(t *testing.T, files map[string]string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "package.zip")

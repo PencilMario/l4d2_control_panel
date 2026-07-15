@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import collections, glob, json, os, pty, select, shlex, shutil, socket, sys, tempfile, threading, time
+import collections, glob, json, os, pty, select, shlex, socket, sys, tempfile, threading, time
 
 SOCKET = '/tmp/l4d2-supervisor.sock'
 STATUS = '/tmp/l4d2-supervisor.json'
@@ -108,13 +108,11 @@ def prepare_content():
     game=os.path.join(GAME,'left4dead2');addons=os.path.join(game,'addons');os.makedirs(addons,exist_ok=True)
     for source in glob.glob('/opt/l4d2/shared-vpk/*.vpk'):
         target=os.path.join(addons,os.path.basename(source))
-        if not os.path.exists(os.path.join('/opt/l4d2/private','addons',os.path.basename(source))):
-            try:
-                if os.path.lexists(target): os.unlink(target)
-                os.symlink(source,target)
-            except OSError: pass
-    private='/opt/l4d2/private'
-    if os.path.isdir(private): shutil.copytree(private,game,dirs_exist_ok=True,symlinks=False)
+        try:
+            if os.path.islink(target):
+                if os.readlink(target) != source: os.unlink(target);os.symlink(source,target)
+            elif not os.path.lexists(target): os.symlink(source,target)
+        except OSError: pass
 
 def require_game():
     if not os.path.isfile(os.path.join(GAME,'srcds_run')): raise RuntimeError('game content was not provisioned by the Panel')

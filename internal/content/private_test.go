@@ -86,6 +86,182 @@ func TestPrivateApplyDeleteRestoresCapturedLowerLayer(t *testing.T) {
 	}
 }
 
+func TestPrivateControlledSharedVPKCanBeOverriddenAndRestored(t *testing.T) {
+	root := t.TempDir()
+	m := NewPrivateManager(root, 1<<20)
+	ctx := context.Background()
+	target := filepath.Join(root, "instances", "abc", "game", "left4dead2", "addons", "shared.vpk")
+	if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
+		t.Fatal(err)
+	}
+	linkTarget := "/opt/l4d2/shared-vpk/shared.vpk"
+	if err := os.Symlink(linkTarget, target); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := m.Save(ctx, "abc", "addons/shared.vpk", []byte("private")); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ApplyChanges(ctx, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(target); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("private target info=%v err=%v", info, err)
+	}
+	if err := m.Delete(ctx, "abc", "addons/shared.vpk"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ApplyChanges(ctx, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.Readlink(target); err != nil || filepath.ToSlash(got) != linkTarget {
+		t.Fatalf("link=%q err=%v", got, err)
+	}
+}
+
+func TestPrivateRejectsArbitraryGameSymlink(t *testing.T) {
+	root := t.TempDir()
+	m := NewPrivateManager(root, 1<<20)
+	ctx := context.Background()
+	outside := filepath.Join(root, "outside")
+	if err := os.WriteFile(outside, []byte("safe"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "instances", "abc", "game", "left4dead2", "cfg", "server.cfg")
+	if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, target); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := m.Save(ctx, "abc", "cfg/server.cfg", []byte("private")); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ApplyChanges(ctx, "abc"); err == nil {
+		t.Fatal("arbitrary symlink accepted")
+	}
+	if raw, _ := os.ReadFile(outside); string(raw) != "safe" {
+		t.Fatalf("outside=%q", raw)
+	}
+}
+
+func TestPrivateMissingManifestMigratesLegacyBaseline(t *testing.T) {
+	root := t.TempDir()
+	m := NewPrivateManager(root, 1<<20)
+	ctx := context.Background()
+	workspace := filepath.Join(root, "instances", "abc", "private", "cfg", "legacy.cfg")
+	game := filepath.Join(root, "instances", "abc", "game", "left4dead2", "cfg", "legacy.cfg")
+	for _, path := range []string{workspace, game} {
+		if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("legacy"), 0640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if diff, err := m.Diff(ctx, "abc"); err != nil || diff.Summary != (DiffSummary{}) {
+		t.Fatalf("diff=%#v err=%v", diff, err)
+	}
+	if err := m.Delete(ctx, "abc", "cfg/legacy.cfg"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ApplyChanges(ctx, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(game); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy game copy remains: %v", err)
+	}
+}
+
+func TestPrivateNewSaveStillReportsAddedAfterEmptyBaseline(t *testing.T) {
+	root := t.TempDir()
+	m := NewPrivateManager(root, 1<<20)
+	ctx := context.Background()
+	if _, err := m.Save(ctx, "abc", "cfg/new.cfg", []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	if diff, err := m.Diff(ctx, "abc"); err != nil || diff.Summary.Added != 1 {
+		t.Fatalf("diff=%#v err=%v", diff, err)
+	}
+}
+
+func TestPrivateCorruptManifestIsNotReinitialized(t *testing.T) {
+	root := t.TempDir()
+	m := NewPrivateManager(root, 1<<20)
+	path, _ := m.manifestPath("abc")
+	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Tree(context.Background(), "abc"); err == nil {
+		t.Fatal("corrupt manifest was reinitialized")
+	}
+	if raw, _ := os.ReadFile(path); string(raw) != "{" {
+		t.Fatalf("manifest=%q", raw)
+	}
+}
+
+func TestPrivateLegacyBaselineCapturesControlledSharedVPKLink(t *testing.T) {
+	root := t.TempDir()
+	m := NewPrivateManager(root, 1<<20)
+	workspace := filepath.Join(root, "instances", "abc", "private", "addons", "shared.vpk")
+	target := filepath.Join(root, "instances", "abc", "game", "left4dead2", "addons", "shared.vpk")
+	for _, path := range []string{workspace, target} {
+		if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(workspace, []byte("legacy"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	linkTarget := "/opt/l4d2/shared-vpk/shared.vpk"
+	if err := os.Symlink(linkTarget, target); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := m.Tree(context.Background(), "abc"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Delete(context.Background(), "abc", "addons/shared.vpk"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ApplyChanges(context.Background(), "abc"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.Readlink(target); err != nil || filepath.ToSlash(got) != linkTarget {
+		t.Fatalf("link=%q err=%v", got, err)
+	}
+}
+
+func TestPrivateConcurrentFirstContactCreatesOneValidBaseline(t *testing.T) {
+	root := t.TempDir()
+	m := NewPrivateManager(root, 1<<20)
+	workspace := filepath.Join(root, "instances", "abc", "private", "cfg", "legacy.cfg")
+	if err := os.MkdirAll(filepath.Dir(workspace), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(workspace, []byte("legacy"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 16)
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); _, err := m.Diff(context.Background(), "abc"); errs <- err }()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifest, err := m.readPrivateManifest("abc")
+	if err != nil || len(manifest.Entries) != 2 || manifest.Migration != "legacy-v1" {
+		t.Fatalf("manifest=%#v err=%v", manifest, err)
+	}
+}
+
 func TestPrivateCompatibilityApplyUsesTransactionalSemantics(t *testing.T) {
 	root := t.TempDir()
 	m := NewPrivateManager(root, 1<<20)
@@ -490,6 +666,11 @@ func TestPrivateSnapshotFailureRollsBackApply(t *testing.T) {
 	if _, err := manager.Save(ctx, "abc", "cfg/a.cfg", []byte("private")); err != nil {
 		t.Fatal(err)
 	}
+	manifestPath := filepath.Join(root, "instances", "abc", "private-applied.json")
+	manifestBefore, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	setPrivateSnapshotFailureHook(func() error { return errors.New("snapshot failed") })
 	t.Cleanup(func() { setPrivateSnapshotFailureHook(nil) })
 	if err := manager.ApplyChanges(ctx, "abc"); err == nil {
@@ -498,8 +679,8 @@ func TestPrivateSnapshotFailureRollsBackApply(t *testing.T) {
 	if raw, err := os.ReadFile(target); err != nil || string(raw) != "package" {
 		t.Fatalf("game=%q err=%v", raw, err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "instances", "abc", "private-applied.json")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("manifest remains: %v", err)
+	if manifestAfter, err := os.ReadFile(manifestPath); err != nil || !bytes.Equal(manifestAfter, manifestBefore) {
+		t.Fatalf("manifest changed: %q err=%v", manifestAfter, err)
 	}
 	snapshots, err := manager.Snapshots(ctx, "abc")
 	if err != nil || len(snapshots) != 0 {

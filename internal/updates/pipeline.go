@@ -42,6 +42,7 @@ type journalEntry struct {
 	Path    string `json:"path"`
 	Existed bool   `json:"existed"`
 	Kind    string `json:"kind,omitempty"`
+	Target  string `json:"target,omitempty"`
 }
 
 type updateJournal struct {
@@ -172,16 +173,19 @@ func (p *Pipeline) Begin(ctx context.Context, instanceID, archivePath, version s
 			return nil, err
 		}
 		entry := journalEntry{Path: path}
-		if err := rejectSymlinkPath(game, target); err != nil {
+		if err := rejectSymlinkPath(game, filepath.Dir(target)); err != nil {
 			return nil, err
 		}
 		info, statErr := os.Lstat(target)
 		if statErr == nil {
-			if info.Mode()&os.ModeSymlink != 0 {
-				return nil, errors.New("symbolic links are forbidden")
-			}
 			entry.Existed = true
-			if info.IsDir() {
+			if info.Mode()&os.ModeSymlink != 0 {
+				link, readErr := os.Readlink(target)
+				if readErr != nil || validateControlledSharedVPK(path, link) != nil {
+					return nil, errors.New("symbolic links are forbidden")
+				}
+				entry.Kind, entry.Target = "controlled_symlink", filepath.ToSlash(link)
+			} else if info.IsDir() {
 				entry.Kind = "directory"
 			} else if info.Mode().IsRegular() {
 				entry.Kind = "file"
@@ -192,7 +196,9 @@ func (p *Pipeline) Begin(ctx context.Context, instanceID, archivePath, version s
 			if err != nil {
 				return nil, err
 			}
-			if entry.Kind == "directory" {
+			if entry.Kind == "controlled_symlink" {
+				// The exact link target is recorded in the journal; no file backup is needed.
+			} else if entry.Kind == "directory" {
 				if err := copyDirectory(target, destination); err != nil {
 					return nil, err
 				}
@@ -406,7 +412,10 @@ func (p *Pipeline) rollbackJournal(journalPath string, value updateJournal) erro
 			result = errors.Join(result, err)
 			continue
 		}
-		if entry.Existed {
+		if entry.Existed && entry.Kind == "controlled_symlink" {
+			sourceErr := restoreControlledSharedVPK(target, entry.Path, entry.Target)
+			result = errors.Join(result, sourceErr)
+		} else if entry.Existed {
 			source, sourceErr := safepath.Join(backup, entry.Path)
 			if sourceErr == nil && entry.Kind == "directory" {
 				sourceErr = copyDirectory(source, target)
@@ -532,8 +541,15 @@ func validateUpdateJournalPathAndValue(root, journalPath string, value updateJou
 			return errors.New("duplicate update journal affected path")
 		}
 		if entry.Existed {
-			if entry.Kind != "file" && entry.Kind != "directory" {
+			if entry.Kind != "file" && entry.Kind != "directory" && entry.Kind != "controlled_symlink" {
 				return errors.New("invalid update journal affected kind")
+			}
+			if entry.Kind == "controlled_symlink" {
+				if err := validateControlledSharedVPK(entry.Path, entry.Target); err != nil {
+					return err
+				}
+			} else if entry.Target != "" {
+				return errors.New("unexpected update journal link target")
 			}
 		} else if entry.Kind != "" {
 			return errors.New("unexpected kind for absent update target")
@@ -687,6 +703,33 @@ func rejectSymlinkPath(root, target string) error {
 		}
 	}
 	return nil
+}
+
+func validateControlledSharedVPK(path, target string) error {
+	if strings.Contains(path, "\\") || filepath.IsAbs(path) || filepath.ToSlash(filepath.Clean(filepath.FromSlash(path))) != path {
+		return errors.New("invalid controlled shared VPK path")
+	}
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 || parts[0] != "addons" || parts[1] == "" || filepath.Base(parts[1]) != parts[1] || !strings.HasSuffix(strings.ToLower(parts[1]), ".vpk") {
+		return errors.New("invalid controlled shared VPK path")
+	}
+	if filepath.ToSlash(target) != "/opt/l4d2/shared-vpk/"+parts[1] {
+		return errors.New("invalid controlled shared VPK target")
+	}
+	return nil
+}
+
+func restoreControlledSharedVPK(path, relative, target string) error {
+	if err := validateControlledSharedVPK(relative, target); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(path); err != nil {
+		return err
+	}
+	return os.Symlink(target, path)
 }
 
 func readJournal(path string) (updateJournal, error) {

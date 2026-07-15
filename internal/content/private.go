@@ -82,6 +82,9 @@ func (m *PrivateManager) Save(_ context.Context, instanceID, name string, data [
 	lock := m.instanceLock(instanceID)
 	lock.Lock()
 	defer lock.Unlock()
+	if err := m.ensureBaselineLocked(instanceID); err != nil {
+		return PrivateFile{}, err
+	}
 	return m.save(instanceID, name, data)
 }
 
@@ -146,6 +149,9 @@ func (m *PrivateManager) MakeDir(_ context.Context, instanceID, name string) err
 	lock := m.instanceLock(instanceID)
 	lock.Lock()
 	defer lock.Unlock()
+	if err := m.ensureBaselineLocked(instanceID); err != nil {
+		return err
+	}
 	root, err := m.privateRoot(instanceID)
 	if err != nil {
 		return err
@@ -164,6 +170,9 @@ func (m *PrivateManager) Move(_ context.Context, instanceID, from, to string, ov
 	lock := m.instanceLock(instanceID)
 	lock.Lock()
 	defer lock.Unlock()
+	if err := m.ensureBaselineLocked(instanceID); err != nil {
+		return err
+	}
 	root, err := m.privateRoot(instanceID)
 	if err != nil {
 		return err
@@ -253,8 +262,11 @@ func replacePath(source, target string, overwrite bool) error {
 
 func (m *PrivateManager) Tree(_ context.Context, instanceID string) ([]PrivateEntry, error) {
 	lock := m.instanceLock(instanceID)
-	lock.RLock()
-	defer lock.RUnlock()
+	lock.Lock()
+	defer lock.Unlock()
+	if err := m.ensureBaselineLocked(instanceID); err != nil {
+		return nil, err
+	}
 	root, err := m.privateRoot(instanceID)
 	if err != nil {
 		return nil, err
@@ -272,8 +284,11 @@ func (m *PrivateManager) Tree(_ context.Context, instanceID string) ([]PrivateEn
 }
 func (m *PrivateManager) History(_ context.Context, instanceID, name string) ([]PrivateFile, error) {
 	lock := m.instanceLock(instanceID)
-	lock.RLock()
-	defer lock.RUnlock()
+	lock.Lock()
+	defer lock.Unlock()
+	if err := m.ensureBaselineLocked(instanceID); err != nil {
+		return nil, err
+	}
 	if err := validateInstanceID(instanceID); err != nil {
 		return nil, err
 	}
@@ -335,8 +350,11 @@ func rejectSymlinkParents(root, target string) error {
 }
 func (m *PrivateManager) Read(_ context.Context, instanceID, name string) ([]byte, error) {
 	lock := m.instanceLock(instanceID)
-	lock.RLock()
-	defer lock.RUnlock()
+	lock.Lock()
+	defer lock.Unlock()
+	if err := m.ensureBaselineLocked(instanceID); err != nil {
+		return nil, err
+	}
 	if err := validateInstanceID(instanceID); err != nil {
 		return nil, err
 	}
@@ -352,8 +370,11 @@ func (m *PrivateManager) Read(_ context.Context, instanceID, name string) ([]byt
 }
 func (m *PrivateManager) List(_ context.Context, instanceID string) ([]PrivateFile, error) {
 	lock := m.instanceLock(instanceID)
-	lock.RLock()
-	defer lock.RUnlock()
+	lock.Lock()
+	defer lock.Unlock()
+	if err := m.ensureBaselineLocked(instanceID); err != nil {
+		return nil, err
+	}
 	if err := validateInstanceID(instanceID); err != nil {
 		return nil, err
 	}
@@ -400,6 +421,9 @@ func (m *PrivateManager) Delete(_ context.Context, instanceID, name string) erro
 	lock := m.instanceLock(instanceID)
 	lock.Lock()
 	defer lock.Unlock()
+	if err := m.ensureBaselineLocked(instanceID); err != nil {
+		return err
+	}
 	if err := rejectSymlinkParents(m.root, target); err != nil {
 		return err
 	}
