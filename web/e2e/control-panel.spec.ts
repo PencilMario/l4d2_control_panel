@@ -44,6 +44,42 @@ async function waitForJob(page: Page, id: string) {
   await expect.poll(() => jobStatus(page, id)).toBe("succeeded");
 }
 
+async function answerDialogs(page: Page, answers: Array<string | boolean>) {
+  let index = 0;
+  const handler = async (dialog: import("@playwright/test").Dialog) => {
+    const answer = answers[index++];
+    if (typeof answer === "string") await dialog.accept(answer);
+    else if (answer) await dialog.accept();
+    else await dialog.dismiss();
+    if (index === answers.length) page.off("dialog", handler);
+  };
+  page.on("dialog", handler);
+}
+
+async function consolePosition(page: Page) {
+  return page.locator(".terminal-modal pre").evaluate((output) => ({
+    top: output.scrollTop,
+    bottom: output.scrollHeight - output.clientHeight,
+    clientWidth: output.clientWidth,
+    scrollWidth: output.scrollWidth,
+  }));
+}
+
+async function privateTree(page: Page, mobile: boolean) {
+  if (mobile) {
+    const drawer = page.getByRole("dialog", { name: "私有文件目录" });
+    if (!(await drawer.isVisible())) {
+      await page.getByRole("button", { name: "打开文件树" }).click();
+    }
+    return drawer.getByRole("tree", { name: "私有文件树" });
+  }
+  return page.getByRole("tree", { name: "私有文件树" });
+}
+
+async function closePrivateTree(page: Page, mobile: boolean) {
+  if (mobile) await page.getByRole("button", { name: "关闭文件树" }).click();
+}
+
 test("real HTTP administration journey survives refresh and streams recovery state", async ({
   page,
 }, testInfo) => {
@@ -302,11 +338,160 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   card = instanceCard(instanceName);
   await expect(card).toContainText("运行中");
 
+  await page.getByRole("button", { name: "私有文件" }).click();
+  await expect(page.getByRole("heading", { name: "私有文件", exact: true })).toBeVisible();
+  await page.getByLabel("目标实例").selectOption(initiallySaved.id);
+
+  await answerDialogs(page, ["cfg"]);
+  await page.getByRole("button", { name: "新建目录" }).click();
+  await answerDialogs(page, ["cfg/seeded.cfg"]);
+  await page.getByRole("button", { name: "新建文件" }).click();
+  await page.getByLabel("文件内容").fill("private override\n");
+  await page.getByRole("button", { name: "保存到暂存区" }).click();
+  await expect(page.getByLabel("暂存更改状态")).toContainText("1 项更改未应用");
+  await expect(page.getByLabel("暂存更改状态")).toContainText("新增 1");
+
+  const firstPrivateApply = await captureJob(page, "/private/apply", () =>
+    page.getByRole("button", { name: "应用更改" }).click(),
+  );
+  await waitForJob(page, firstPrivateApply.ID);
+  await expect(page.getByRole("status")).toContainText("私有文件已应用");
+  await page.reload();
+  await page.getByRole("button", { name: "私有文件" }).click();
+  await page.getByLabel("目标实例").selectOption(initiallySaved.id);
+  let tree = await privateTree(page, mobile);
+  await tree.getByRole("treeitem", { name: "cfg", exact: true }).click();
+  await expect(tree.getByRole("treeitem", { name: "seeded.cfg" })).toBeVisible();
+
+  await answerDialogs(page, ["cfg/renamed.cfg", false]);
+  await tree.getByLabel("移动 seeded.cfg").click();
+  await expect(tree.getByRole("treeitem", { name: "renamed.cfg" })).toBeVisible();
+  await answerDialogs(page, ["cfg/seeded.cfg", false]);
+  await tree.getByLabel("移动 renamed.cfg").click();
+
+  const binary = Buffer.from([0, 1, 2, 3, 255, 128]);
+  await tree.getByRole("treeitem", { name: "cfg", exact: true }).click();
+  await closePrivateTree(page, mobile);
+  const privateUploadRequest = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().endsWith("/private/uploads"),
+  );
+  await page.getByLabel("上传文件").setInputFiles({
+    name: "binary.bin",
+    mimeType: "application/octet-stream",
+    buffer: binary,
+  });
+  const privateUploadResponse = await privateUploadRequest;
+  expect(privateUploadResponse.status(), await privateUploadResponse.text()).toBe(201);
+  await expect(page.getByText("上传完成 · 100%", { exact: true })).toBeVisible();
+  tree = await privateTree(page, mobile);
+  await tree.getByRole("treeitem", { name: "cfg", exact: true }).click();
+  await tree.getByRole("treeitem", { name: "binary.bin" }).click();
+  await closePrivateTree(page, mobile);
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("link", { name: "下载 binary.bin" }).click();
+  const download = await downloadPromise;
+  expect(await download.createReadStream().then(async (stream) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+    return Buffer.concat(chunks);
+  })).toEqual(binary);
+
+  const secondPrivateApply = await captureJob(page, "/private/apply", () =>
+    page.getByRole("button", { name: "应用更改" }).click(),
+  );
+  await waitForJob(page, secondPrivateApply.ID);
+  tree = await privateTree(page, mobile);
+  await expect(tree.getByRole("treeitem", { name: "seeded.cfg" })).toBeVisible();
+  await answerDialogs(page, [true]);
+  await tree.getByLabel("删除 seeded.cfg").click();
+  await closePrivateTree(page, mobile);
+  const deletePrivateApply = await captureJob(page, "/private/apply", () =>
+    page.getByRole("button", { name: "应用更改" }).click(),
+  );
+  await waitForJob(page, deletePrivateApply.ID);
+  const lowerDiagnostic = await page.evaluate(async (id) => {
+    const response = await fetch(`/__e2e/private-lower?id=${encodeURIComponent(id)}&path=cfg/seeded.cfg`);
+    return { status: response.status, body: await response.text() };
+  }, initiallySaved.id);
+  expect(lowerDiagnostic).toEqual({ status: 200, body: "fixture lower layer\n" });
+
+  await page.getByRole("button", { name: "历史快照" }).click();
+  const snapshots = page.getByRole("dialog", { name: "历史快照" });
+  await expect.poll(() => snapshots.locator(".private-snapshot-row").count()).toBeGreaterThanOrEqual(3);
+  await answerDialogs(page, [true]);
+  await snapshots.getByRole("button", { name: /^恢复 / }).nth(1).click();
+  await expect(page.getByText("快照已恢复到暂存区", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "刷新" }).click();
+  await expect(page.getByLabel("暂存更改状态")).toContainText("更改未应用");
+  const restorePrivateApply = await captureJob(page, "/private/apply", () =>
+    page.getByRole("button", { name: "应用更改" }).click(),
+  );
+  await waitForJob(page, restorePrivateApply.ID);
+
+  const privateLayout = await page.locator(".private-files-page").evaluate((root) => {
+    const layout = root.querySelector(".private-files-layout")!.getBoundingClientRect();
+    const workspace = root.querySelector(".private-workspace")!.getBoundingClientRect();
+    const status = root.querySelector(".private-change-bar")!.getBoundingClientRect();
+    return { layout, workspace, status, pageWidth: document.documentElement.scrollWidth, viewportWidth: window.innerWidth };
+  });
+  expect.soft(privateLayout.pageWidth).toBeLessThanOrEqual(privateLayout.viewportWidth);
+  expect.soft(privateLayout.layout.right).toBeLessThanOrEqual(privateLayout.viewportWidth);
+  expect.soft(privateLayout.workspace.right).toBeLessThanOrEqual(privateLayout.viewportWidth);
+  expect.soft(privateLayout.status.right).toBeLessThanOrEqual(privateLayout.viewportWidth);
+  if (mobile) {
+    const drawerTrigger = page.getByRole("button", { name: "打开文件树" });
+    await drawerTrigger.click();
+    const drawer = page.getByRole("dialog", { name: "私有文件目录" });
+    await expect(drawer).toBeVisible();
+    await expect(page.getByRole("button", { name: "关闭文件树" })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(drawerTrigger).toBeFocused();
+  }
+
+  await page.getByRole("button", { name: "总览" }).click();
+  card = instanceCard(instanceName);
+
   await card.getByRole("button", { name: "控制台" }).click();
-  await expect(page.locator(".terminal-modal pre")).toContainText("fixture console ready");
+  const consoleOutput = page.locator(".terminal-modal pre");
+  await expect(consoleOutput).toContainText("fixture overflow 119");
+  await expect.poll(async () => {
+    const position = await consolePosition(page);
+    return Math.abs(position.top - position.bottom);
+  }).toBeLessThanOrEqual(2);
+  expect.soft((await consolePosition(page)).scrollWidth).toBeLessThanOrEqual((await consolePosition(page)).clientWidth);
+
+  await consoleOutput.evaluate((output) => { output.scrollTop = 0; });
+  await page.evaluate(async (id) => {
+    await fetch(`/__e2e/console-output?id=${encodeURIComponent(id)}`, { method: "POST", body: "async held\n" });
+  }, initiallySaved.id);
+  await expect(consoleOutput).toContainText("async held");
+  expect((await consolePosition(page)).top).toBeLessThanOrEqual(2);
+
+  await consoleOutput.evaluate((output) => {
+    output.scrollTop = output.scrollHeight;
+    output.dispatchEvent(new Event("scroll"));
+  });
+  await expect.poll(async () => {
+    const position = await consolePosition(page);
+    return Math.abs(position.top - position.bottom);
+  }).toBeLessThanOrEqual(2);
+  await page.evaluate(async (id) => {
+    await fetch(`/__e2e/console-output?id=${encodeURIComponent(id)}`, { method: "POST", body: "async followed\n" });
+  }, initiallySaved.id);
+  await expect(consoleOutput).toContainText("async followed");
+  await expect.poll(async () => {
+    const position = await consolePosition(page);
+    return Math.abs(position.top - position.bottom);
+  }).toBeLessThanOrEqual(2);
+
+  await consoleOutput.evaluate((output) => { output.scrollTop = 0; });
   await page.locator(".terminal-modal input").fill("status");
   await page.locator(".terminal-modal").getByRole("button", { name: "发送" }).click();
   await expect(page.locator(".terminal-modal pre")).toContainText("echo:status");
+  await expect.poll(async () => {
+    const position = await consolePosition(page);
+    return Math.abs(position.top - position.bottom);
+  }).toBeLessThanOrEqual(2);
   await page.locator(".terminal-head button").click();
   await card.getByRole("button", { name: "控制台" }).click();
   await expect(page.locator(".terminal-modal pre")).toContainText("fixture console ready");
@@ -337,14 +522,6 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   });
   await expect(page.getByRole("status")).toContainText("VPK 上传完成");
   expect(vpkChunks).toBe(2);
-
-  await page.getByLabel("相对路径").fill(`cfg/${suffix.toLowerCase()}.cfg`);
-  await page.getByLabel("文本内容").fill("sm_cvar fixture 1");
-  const privateJob = await captureJob(page, "/private/apply", () =>
-    page.getByRole("button", { name: "保存并立即应用" }).click(),
-  );
-  await waitForJob(page, privateJob.ID);
-  await expect(page.getByText(`cfg/${suffix.toLowerCase()}.cfg`, { exact: true })).toBeVisible();
 
   const packageRow = page
     .locator(".data-row")

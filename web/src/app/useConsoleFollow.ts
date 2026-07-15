@@ -26,6 +26,9 @@ export function useConsoleFollow(outputVersion: unknown) {
 
   const forceFollow = useCallback(() => {
     following.current = true;
+    if (outputRef.current) {
+      outputRef.current.scrollTop = outputRef.current.scrollHeight;
+    }
     scrollToBottom();
   }, [scrollToBottom]);
 

@@ -77,6 +77,20 @@ describe("useConsoleFollow", () => {
     expect(result.current.isFollowing()).toBe(true);
   });
 
+  it("moves to the current bottom synchronously before asynchronous command output", () => {
+    const raf = installRaf();
+    const geometry = { scrollHeight: 400, clientHeight: 100, scrollTop: 20 };
+    const { result } = renderHook(() => useConsoleFollow(0));
+    attach(result.current.outputRef, geometry);
+
+    act(() => result.current.forceFollow());
+
+    expect(geometry.scrollTop).toBe(400);
+    geometry.scrollHeight = 418;
+    act(() => raf.flush());
+    expect(geometry.scrollTop).toBe(418);
+  });
+
   it("scrolls after appended output only while following", () => {
     const raf = installRaf();
     const geometry = { scrollHeight: 300, clientHeight: 100, scrollTop: 200 };
@@ -176,7 +190,7 @@ describe("useConsoleFollow", () => {
     expect(geometry.scrollTop).toBe(50);
   });
 
-  it("cancels a pending animation frame on unmount", () => {
+  it("cancels the pending correction frame on unmount", () => {
     const raf = installRaf();
     const geometry = { scrollHeight: 300, clientHeight: 100, scrollTop: 0 };
     const { result, unmount } = renderHook(() => useConsoleFollow(0));
@@ -186,6 +200,6 @@ describe("useConsoleFollow", () => {
     unmount();
     expect(cancelAnimationFrame).toHaveBeenCalled();
     act(() => raf.flush());
-    expect(geometry.scrollTop).toBe(0);
+    expect(geometry.scrollTop).toBe(300);
   });
 });

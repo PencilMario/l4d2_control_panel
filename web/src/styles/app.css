@@ -851,7 +851,11 @@ textarea:focus-visible {
   width: 17px;
 }
 .terminal-modal pre {
+  min-width: 0;
+  min-height: 0;
   overflow: auto;
+  overflow-anchor: none;
+  overflow-wrap: anywhere;
   margin: 0;
   padding: 18px;
   color: #bdc9c1;
