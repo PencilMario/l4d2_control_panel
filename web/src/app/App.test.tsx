@@ -610,6 +610,32 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "确认重新安装" })).toBeDisabled();
   });
 
+  it("does not request a package reinstall when the instance has no selected package", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('{"ID":"job-1","Status":"pending"}', {
+        status: 202,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App initialInstances={[{ ...instance, package_id: "", applied_package_id: "" }]} />);
+    await userEvent.click(screen.getByRole("button", { name: "更新" }));
+    expect(screen.getByRole("checkbox", { name: "重新安装游戏本体" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "重新安装实例插件包" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "重新安装实例插件包" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "确认重新安装" }));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/instances/1/game-update",
+      expect.objectContaining({
+        body: JSON.stringify({
+          confirm: true,
+          reinstall_game: true,
+          reinstall_package: false,
+        }),
+      }),
+    );
+  });
+
   it("confirms full package updates before submitting them", async () => {
     const calls: Array<[RequestInfo | URL, RequestInit | undefined]> = [];
     vi.stubGlobal(

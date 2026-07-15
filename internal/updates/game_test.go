@@ -145,11 +145,10 @@ func TestGameReinstallRollsBackCommittedPackageFailureWhileStopped(t *testing.T)
 
 func TestGameReinstallPackageRequiresSelectedPackage(t *testing.T) {
 	events := []string{}
-	want := errors.New("package missing")
 	repo := &gameRepo{instance: domain.Instance{ID: "abc", DesiredState: domain.StateStopped, ActualState: domain.StateStopped}}
-	coordinator := GameCoordinator{Instances: repo, Lifecycle: orderedLife{&events}, Private: privateApplier{&events}, Packages: gamePackages{err: want}, Deployer: gameDeployer{events: &events}}
+	coordinator := GameCoordinator{Instances: repo, Lifecycle: orderedLife{&events}, Private: privateApplier{&events}, Packages: gamePackages{err: errors.New("package source must not be called")}, Deployer: gameDeployer{events: &events}}
 	err := coordinator.Reinstall(context.Background(), "abc", ReinstallOptions{Package: true})
-	if !errors.Is(err, want) || repo.instance.ActualState != domain.StateFaulted {
+	if err == nil || err.Error() != "instance has no selected package" || repo.instance.ActualState != domain.StateFaulted {
 		t.Fatalf("err=%v instance=%#v", err, repo.instance)
 	}
 }

@@ -1643,8 +1643,9 @@ function ReinstallDialog({
   close: () => void;
   onConfirm: (game: boolean, packageOption: boolean) => void;
 }) {
+	const hasPackage = Boolean(instance.package_id);
   const [game, setGame] = useState(true);
-  const [packageOption, setPackageOption] = useState(true);
+  const [packageOption, setPackageOption] = useState(hasPackage);
   return (
     <div className="modal-wrap">
       <div
@@ -1674,9 +1675,10 @@ function ReinstallDialog({
               aria-label="重新安装实例插件包"
               type="checkbox"
               checked={packageOption}
+              disabled={!hasPackage}
               onChange={(event) => setPackageOption(event.target.checked)}
             />
-            <span><b>重新安装实例插件包</b><small>完整部署当前选中的插件包</small></span>
+            <span><b>重新安装实例插件包</b><small>{hasPackage ? "完整部署当前选中的插件包" : "该实例尚未选择插件包"}</small></span>
           </label>
         </fieldset>
         <div>

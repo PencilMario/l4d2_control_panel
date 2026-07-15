@@ -79,6 +79,9 @@ func (c GameCoordinator) Reinstall(ctx context.Context, id string, options Reins
 	}
 	var transaction Deployment
 	if options.Package {
+		if instance.SelectedPackageID == "" {
+			return c.fault(ctx, id, errors.New("instance has no selected package"))
+		}
 		if c.Packages == nil || c.Deployer == nil {
 			return c.fault(ctx, id, errors.New("package reinstall unavailable"))
 		}
