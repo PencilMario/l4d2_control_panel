@@ -46,7 +46,7 @@
 - `npm test -- --run`
 - `npm run build`
 
-- [ ] **Step 1: Write the failing default behavior test**
+- [x] **Step 1: Write the failing default behavior test**
 
 Add this test to `web/src/app/InstanceConfigModal.test.tsx`:
 
@@ -73,7 +73,7 @@ it("loads the approved SRCDS defaults for new instances", () => {
 });
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run from `web`:
 
@@ -83,7 +83,7 @@ npm test -- --run src/app/InstanceConfigModal.test.tsx
 
 Expected: the new test fails because the mode is `coop`, maximum players is `8`, and extra arguments are empty.
 
-- [ ] **Step 3: Implement the minimal new-instance defaults**
+- [x] **Step 3: Implement the minimal new-instance defaults**
 
 Change the relevant fields in `createDefaults` in `web/src/app/InstanceConfigModal.tsx` to:
 
@@ -95,7 +95,7 @@ extra_args:
   "-sv_lan 0 -ip 0.0.0.0 +sv_clockcorrection_msecs 25 -timeout 10 +sv_setmax 32 +servercfgfile server.cfg",
 ```
 
-- [ ] **Step 4: Run focused and regression verification**
+- [x] **Step 4: Run focused and regression verification**
 
 Run from `web`:
 
@@ -107,7 +107,7 @@ npm run build
 
 Expected: all commands exit successfully with no TypeScript, Vitest, or Vite errors.
 
-- [ ] **Step 5: Record evidence and commit**
+- [x] **Step 5: Record evidence and commit**
 
 Update `docs/aegis/work/2026-07-15-new-instance-srcds-defaults/40-atomic-tasks.md` with completed checkboxes and create `50-evidence.md` containing the RED and GREEN command results.
 

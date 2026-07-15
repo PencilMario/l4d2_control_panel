@@ -47,6 +47,27 @@ describe("InstanceConfigModal", () => {
     );
   });
 
+  it("loads the approved SRCDS defaults for new instances", () => {
+    render(
+      <InstanceConfigModal
+        mode="create"
+        packages={[packageA]}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("模式")).toHaveValue("versus");
+    expect(screen.getByLabelText("Tickrate")).toHaveValue(100);
+    expect(screen.getByLabelText("最大玩家")).toHaveValue(32);
+    expect(screen.getByLabelText("额外 SRCDS 启动项")).toHaveValue(
+      "-sv_lan 0 -ip 0.0.0.0 +sv_clockcorrection_msecs 25 -timeout 10 +sv_setmax 32 +servercfgfile server.cfg",
+    );
+    expect(screen.getByLabelText("启动指令预览")).toHaveTextContent(
+      "./srcds_run -game left4dead2 -console -port 27015 -tickrate 100 +map c2m1_highway +mp_gamemode versus -maxplayers 32 -sv_lan 0 -ip 0.0.0.0 +sv_clockcorrection_msecs 25 -timeout 10 +sv_setmax 32 +servercfgfile server.cfg",
+    );
+  });
+
   it("updates the command preview as defaults are edited", async () => {
     render(
       <InstanceConfigModal

@@ -42,10 +42,11 @@ const createDefaults = (packages: PackageVersion[]): InstanceConfigValues => ({
   sourcetv_port: 0,
   plugin_ports: [],
   start_map: "c2m1_highway",
-  game_mode: "coop",
+  game_mode: "versus",
   tickrate: 100,
-  max_players: 8,
-  extra_args: "",
+  max_players: 32,
+  extra_args:
+    "-sv_lan 0 -ip 0.0.0.0 +sv_clockcorrection_msecs 25 -timeout 10 +sv_setmax 32 +servercfgfile server.cfg",
   package_id: packages[0]?.id || "",
 });
 
