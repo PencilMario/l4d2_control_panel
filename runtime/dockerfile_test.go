@@ -20,30 +20,19 @@ func TestDockerfileReusesSteamCMDUser(t *testing.T) {
 	if !strings.Contains(text, "usermod -u 10001 steam") || !strings.Contains(text, "USER steam") {
 		t.Fatal("runtime must align persistent-data UID and run SRCDS as non-root")
 	}
-	supervisor, _ := os.ReadFile("supervisor.py")
-	if !strings.Contains(string(supervisor), "STEAM_USERNAME") || !strings.Contains(string(supervisor), "app_info_update") {
-		t.Fatal("runtime must support licensed SteamCMD installs")
-	}
 }
 
-func TestAnonymousFirstInstallBootstrapsWindowsBeforeLinuxValidate(t *testing.T) {
+func TestRuntimeRequiresPanelProvisionedGame(t *testing.T) {
 	raw, err := os.ReadFile("supervisor.py")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	windows := strings.Index(text, "'+@sSteamCmdForcePlatformType','windows'")
-	linux := strings.Index(text, "'+@sSteamCmdForcePlatformType','linux'")
-	if windows < 0 || linux < 0 || windows >= linux {
-		t.Fatal("anonymous first install must bootstrap the Windows depot before Linux validate")
+	if !strings.Contains(text, "def require_game") {
+		t.Fatal("runtime must require Panel-provisioned game content")
 	}
-	bootstrap := text[windows:linux]
-	if !strings.Contains(bootstrap, "'+app_update','222860'") {
-		t.Fatal("Windows bootstrap must install App 222860")
-	}
-	validate := text[linux:]
-	if !strings.Contains(validate, "'+app_update','222860','validate'") {
-		t.Fatal("Windows bootstrap must be followed by a Linux validation")
+	if strings.Contains(text, "def steamcmd_install_command") || strings.Contains(text, "subprocess.run(steamcmd_install_command()") {
+		t.Fatal("runtime must not install game content inside the game container")
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -16,13 +17,23 @@ type fakeEngine struct {
 	execOperation             string
 	containers                []docker.Container
 	removed                   bool
+	events                    *[]string
 }
 
 func (f *fakeEngine) Create(context.Context, docker.ContainerSpec) (string, error) {
 	f.created = true
+	if f.events != nil {
+		*f.events = append(*f.events, "create")
+	}
 	return "container-1", nil
 }
-func (f *fakeEngine) Start(context.Context, string) error { f.started = true; return nil }
+func (f *fakeEngine) Start(context.Context, string) error {
+	f.started = true
+	if f.events != nil {
+		*f.events = append(*f.events, "start")
+	}
+	return nil
+}
 func (f *fakeEngine) RunSupervisor(_ context.Context, _ string, op string) error {
 	f.execOperation = op
 	return nil
@@ -47,6 +58,76 @@ func (p *recordingPorts) Available(_ context.Context, _ string, ports []int) err
 type fixedSpace uint64
 
 func (s fixedSpace) Available(string) (uint64, error) { return uint64(s), nil }
+
+type fakeProvisioner struct {
+	repo   *store.Store
+	events *[]string
+	err    error
+}
+
+func (p fakeProvisioner) Prepare(ctx context.Context, value domain.Instance) error {
+	*p.events = append(*p.events, "prepare")
+	if p.err != nil {
+		return p.err
+	}
+	value.PackageVersion = value.SelectedPackageID
+	return p.repo.UpdateInstance(ctx, value)
+}
+
+func TestStartPreparesSelectedPackageBeforeCreatingContainer(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	value := domain.Instance{ID: "prepared", NodeID: "local", Name: "prepared", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", SelectedPackageID: "package-a", ActualState: domain.StateUninstalled}
+	if err := db.CreateInstance(context.Background(), value); err != nil {
+		t.Fatal(err)
+	}
+	events := []string{}
+	engine := &fakeEngine{events: &events}
+	service := New(db, engine, freePorts{}, root, WithProvisioner(fakeProvisioner{repo: db, events: &events}))
+	if err := service.Start(context.Background(), value.ID); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(events, ",") != "prepare,create,start" {
+		t.Fatalf("events=%v", events)
+	}
+	got, err := db.Instance(context.Background(), value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PackageVersion != "package-a" || got.ActualState != domain.StateRunning {
+		t.Fatalf("instance=%#v", got)
+	}
+}
+
+func TestStartDoesNotCreateContainerWhenProvisioningFails(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	value := domain.Instance{ID: "failed-prepare", NodeID: "local", Name: "failed prepare", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", SelectedPackageID: "package-a", ActualState: domain.StateUninstalled}
+	if err := db.CreateInstance(context.Background(), value); err != nil {
+		t.Fatal(err)
+	}
+	events := []string{}
+	engine := &fakeEngine{events: &events}
+	service := New(db, engine, freePorts{}, root, WithProvisioner(fakeProvisioner{repo: db, events: &events, err: errors.New("install failed")}))
+	if err := service.Start(context.Background(), value.ID); err == nil {
+		t.Fatal("expected provisioning failure")
+	}
+	got, err := db.Instance(context.Background(), value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if engine.created || got.ActualState != domain.StateFaulted {
+		t.Fatalf("engine=%#v instance=%#v", engine, got)
+	}
+}
 func TestStartCreatesContainerPersistsIDAndStarts(t *testing.T) {
 	root := t.TempDir()
 	db, err := store.Open(filepath.Join(root, "panel.db"))

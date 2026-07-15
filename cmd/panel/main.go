@@ -17,6 +17,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/maintenance"
 	"github.com/not0721here/l4d2-control-panel/internal/players"
 	"github.com/not0721here/l4d2-control-panel/internal/ports"
+	"github.com/not0721here/l4d2-control-panel/internal/provisioning"
 	"github.com/not0721here/l4d2-control-panel/internal/releases"
 	"github.com/not0721here/l4d2-control-panel/internal/scheduler"
 	"github.com/not0721here/l4d2-control-panel/internal/secrets"
@@ -96,6 +97,14 @@ func main() {
 		return username, password
 	}
 	engine := docker.NewEngine(dockerHost, docker.WithDownloadProxy(os.Getenv("L4D2_PANEL_DOWNLOAD_PROXY")), docker.WithSteamCredentials(steamCredentials))
+	updatePipeline := updates.New(cfg.DataRoot)
+	if err := updatePipeline.Recover(context.Background()); err != nil {
+		log.Fatal(err)
+	}
+	packageManager, err := content.NewPackageManager(cfg.DataRoot)
+	if err != nil {
+		log.Fatal(err)
+	}
 	portChecker := ports.Checker{Configured: func(ctx context.Context) ([]ports.Reservation, error) {
 		instances, err := db.Instances(ctx)
 		if err != nil {
@@ -104,11 +113,8 @@ func main() {
 		return ports.Reservations(instances), nil
 	}, Listening: ports.IsListening}
 	healthChecker := health.Checker{Host: cfg.GameHost, Query: a2s.Client{}, Probe: engine}
-	life := lifecycle.New(db, engine, portChecker, cfg.DataRoot, lifecycle.WithHealth(healthChecker), lifecycle.WithSpace(disk.Checker{}, 12<<30))
-	updatePipeline := updates.New(cfg.DataRoot)
-	if err := updatePipeline.Recover(context.Background()); err != nil {
-		log.Fatal(err)
-	}
+	instanceProvisioner := provisioning.Service{Root: cfg.DataRoot, Installer: engine, Packages: packageManager, Deployer: updatePipeline, Instances: db}
+	life := lifecycle.New(db, engine, portChecker, cfg.DataRoot, lifecycle.WithHealth(healthChecker), lifecycle.WithSpace(disk.Checker{}, 12<<30), lifecycle.WithProvisioner(instanceProvisioner))
 	if unknown, reconcileErr := life.Reconcile(context.Background()); reconcileErr != nil {
 		log.Printf("container reconciliation deferred: %v", reconcileErr)
 	} else if len(unknown) > 0 {
@@ -121,10 +127,6 @@ func main() {
 		log.Fatal(err)
 	}
 	privateManager := content.NewPrivateManager(cfg.DataRoot, 1<<20)
-	packageManager, err := content.NewPackageManager(cfg.DataRoot)
-	if err != nil {
-		log.Fatal(err)
-	}
 	updateCoordinator := &updates.Coordinator{Lifecycle: life, Deployer: updatePipeline}
 	gameCoordinator := &updates.GameCoordinator{Root: cfg.DataRoot, Instances: db, Lifecycle: life, Updater: engine, Private: privateManager}
 	dispatcher := automation.Dispatcher{Jobs: jobManager, Players: playerService, Packages: packageManager, PackagesUpdate: updateCoordinator, GameUpdate: gameCoordinator, Releases: releases.Client{}, Maintenance: maintenance.New(cfg.DataRoot), Secrets: secretService}

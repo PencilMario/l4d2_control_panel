@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import collections, glob, json, os, pty, select, shlex, shutil, socket, subprocess, sys, tempfile, threading, time
+import collections, glob, json, os, pty, select, shlex, shutil, socket, sys, tempfile, threading, time
 
 SOCKET = '/tmp/l4d2-supervisor.sock'
 STATUS = '/tmp/l4d2-supervisor.json'
@@ -116,17 +116,8 @@ def prepare_content():
     private='/opt/l4d2/private'
     if os.path.isdir(private): shutil.copytree(private,game,dirs_exist_ok=True,symlinks=False)
 
-def steamcmd_install_command():
-    steamcmd='/home/steam/steamcmd/steamcmd.sh'
-    username=os.getenv('STEAM_USERNAME','anonymous');password=os.getenv('STEAM_PASSWORD','')
-    login=['+login',username] if username=='anonymous' else ['+login',username,password]
-    if username=='anonymous':
-        return [steamcmd,'+@sSteamCmdForcePlatformType','windows','+force_install_dir',GAME,*login,'+app_update','222860','+@sSteamCmdForcePlatformType','linux','+app_update','222860','validate','+quit']
-    return [steamcmd,'+@sSteamCmdForcePlatformType','linux','+force_install_dir',GAME,*login,'+app_info_update','1','+app_update','222860','validate','+quit']
-
-def ensure_game():
-    if os.path.isfile(os.path.join(GAME,'srcds_run')): return
-    subprocess.run(steamcmd_install_command(),check=True)
+def require_game():
+    if not os.path.isfile(os.path.join(GAME,'srcds_run')): raise RuntimeError('game content was not provisioned by the Panel')
 
 def extra_args():
     raw=os.getenv('SRCDS_EXTRA_ARGS_JSON','').strip()
@@ -159,7 +150,7 @@ def selftest():
 if __name__=='__main__':
     command=sys.argv[1] if len(sys.argv)>1 else ''
     if command=='run':
-        ensure_game();prepare_content();failures=[]
+        require_game();prepare_content();failures=[]
         while True:
             supervisor=Supervisor(srcds_command());code=supervisor.run()
             if supervisor.stopping: sys.exit(code)

@@ -19,6 +19,15 @@ Implementation evidence will be appended after each red/green slice.
 - `go test -count=1 ./internal/store ./internal/httpapi`: PASS.
 - `git diff --check`: PASS.
 
+## Task 3: First-Start Provisioning
+
+- RED: focused tests failed because `provisioning.Service`, Docker `InstallGame`, lifecycle `WithProvisioner` and runtime `require_game` did not exist.
+- GREEN: maintenance SteamCMD owns anonymous Windows/Linux bootstrap, package Pipeline runs before game-container creation, applied state is written only after deployment, and runtime refuses missing game content.
+- `go test -count=1 ./internal/provisioning ./internal/docker ./internal/lifecycle ./runtime ./cmd/panel`: PASS.
+- `go test -count=1 ./...`: PASS.
+- `go vet ./...`: PASS.
+- `git diff --check`: PASS.
+
 ## Task 2: Canonical SRCDS Arguments
 
 - RED: focused tests failed because `internal/srcds.Command` / `ParseExtraArgs` did not exist, `BuildContainerSpec` returned no error, and Supervisor lacked `SRCDS_EXTRA_ARGS_JSON`.

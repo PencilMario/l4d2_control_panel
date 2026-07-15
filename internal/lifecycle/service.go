@@ -108,6 +108,9 @@ type HealthChecker interface {
 	Wait(context.Context, domain.Instance) error
 }
 type SpaceChecker interface{ Available(string) (uint64, error) }
+type Provisioner interface {
+	Prepare(context.Context, domain.Instance) error
+}
 type Service struct {
 	repo                Repository
 	engine              Engine
@@ -115,6 +118,7 @@ type Service struct {
 	dataRoot            string
 	health              HealthChecker
 	space               SpaceChecker
+	provisioner         Provisioner
 	minimumInstallBytes uint64
 }
 type Option func(*Service)
@@ -122,6 +126,9 @@ type Option func(*Service)
 func WithHealth(checker HealthChecker) Option { return func(s *Service) { s.health = checker } }
 func WithSpace(checker SpaceChecker, minimum uint64) Option {
 	return func(s *Service) { s.space = checker; s.minimumInstallBytes = minimum }
+}
+func WithProvisioner(provisioner Provisioner) Option {
+	return func(s *Service) { s.provisioner = provisioner }
 }
 
 func New(repo Repository, engine Engine, ports PortChecker, dataRoot string, options ...Option) *Service {
@@ -165,13 +172,26 @@ func (s *Service) Start(ctx context.Context, id string) error {
 				return err
 			}
 		}
-		if v.ActualState == domain.StateUninstalled {
+		needsProvision := s.provisioner != nil && v.PackageVersion != v.SelectedPackageID
+		if s.provisioner != nil && v.SelectedPackageID == "" {
+			return s.fault(ctx, v, errors.New("instance package is required"))
+		}
+		if v.ActualState == domain.StateUninstalled || needsProvision {
 			v.ActualState = domain.StateInstalling
 		} else {
 			v.ActualState = domain.StateStarting
 		}
 		if err := s.repo.UpdateInstance(ctx, v); err != nil {
 			return err
+		}
+		if needsProvision {
+			if err := s.provisioner.Prepare(ctx, v); err != nil {
+				return s.fault(ctx, v, err)
+			}
+			v, err = s.repo.Instance(ctx, id)
+			if err != nil {
+				return err
+			}
 		}
 		spec, err := docker.BuildContainerSpec(s.dataRoot, v)
 		if err != nil {

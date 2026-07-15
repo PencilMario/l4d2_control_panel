@@ -157,7 +157,29 @@ type createRequest struct {
 	HostConfig hostConfig        `json:"HostConfig"`
 }
 
+func (e *Engine) InstallGame(ctx context.Context, dataRoot string, instance domain.Instance) error {
+	login := e.steamLoginArgs()
+	command := []string{"steamcmd"}
+	if len(login) == 2 && login[1] == "anonymous" {
+		command = append(command, "+@sSteamCmdForcePlatformType", "windows", "+force_install_dir", "/opt/l4d2/game")
+		command = append(command, login...)
+		command = append(command, "+app_update", "222860", "+@sSteamCmdForcePlatformType", "linux", "+app_update", "222860", "validate", "+quit")
+	} else {
+		command = append(command, "+@sSteamCmdForcePlatformType", "linux", "+force_install_dir", "/opt/l4d2/game")
+		command = append(command, login...)
+		command = append(command, "+app_info_update", "1", "+app_update", "222860", "validate", "+quit")
+	}
+	return e.runMaintenance(ctx, dataRoot, instance, command)
+}
+
 func (e *Engine) UpdateGame(ctx context.Context, dataRoot string, instance domain.Instance) error {
+	command := []string{"steamcmd", "+@sSteamCmdForcePlatformType", "linux", "+force_install_dir", "/opt/l4d2/game"}
+	command = append(command, e.steamLoginArgs()...)
+	command = append(command, "+app_info_update", "1", "+app_update", "222860", "validate", "+quit")
+	return e.runMaintenance(ctx, dataRoot, instance, command)
+}
+
+func (e *Engine) runMaintenance(ctx context.Context, dataRoot string, instance domain.Instance, command []string) error {
 	maintenance, err := e.maintenanceContainers(ctx, instance.ID)
 	if err != nil {
 		return err
@@ -175,9 +197,6 @@ func (e *Engine) UpdateGame(ctx context.Context, dataRoot string, instance domai
 			}
 		}
 	} else {
-		command := []string{"steamcmd", "+@sSteamCmdForcePlatformType", "linux", "+force_install_dir", "/opt/l4d2/game"}
-		command = append(command, e.steamLoginArgs()...)
-		command = append(command, "+app_info_update", "1", "+app_update", "222860", "validate", "+quit")
 		body := createRequest{Image: instance.RuntimeImage, Env: e.runtimeEnv(nil), Cmd: command, User: "steam", Labels: map[string]string{ManagedLabel: "true", InstanceLabel: instance.ID, RoleLabel: "maintenance"}, HostConfig: hostConfig{Binds: []string{filepath.Join(dataRoot, "instances", instance.ID, "game") + ":/opt/l4d2/game"}, NetworkMode: "bridge", SecurityOpt: []string{"no-new-privileges"}}}
 		var created struct {
 			ID string `json:"Id"`

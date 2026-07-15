@@ -4,8 +4,8 @@ Updated: 2026-07-15
 
 ## Current Todo
 
-- Active: Task 3, provision game and package before first start.
-- Next: Task 4, preserve stopped/running intent during package updates.
+- Active: Task 4, preserve stopped/running intent during package updates.
+- Next: Task 5, extend strict instance create/update APIs.
 - Later: provisioning, package intent preservation, HTTP reconfiguration, React UI, E2E, completion audit.
 
 ## Completed
@@ -16,6 +16,7 @@ Updated: 2026-07-15
 - Implementation plan and task records committed as `8ddde5d`.
 - Task 1 completed: selected/applied package identities now round-trip independently and legacy rows backfill safely.
 - Task 2 completed: Go owns argument validation/order and new containers pass validated JSON argv to Supervisor.
+- Task 3 completed: maintenance installation and package deployment finish before the first game container is created.
 
 ## Evidence Refs
 
@@ -29,10 +30,10 @@ Updated: 2026-07-15
 ## Drift Check Draft
 
 - Scope: unchanged.
-- Compatibility: additive database and raw extra-argument fallback both remain covered by full Go regression.
-- Retirement: Python-only raw parsing is now a fallback; new Panel container definitions use the Go-validated JSON token list.
+- Compatibility: production still uses the established anonymous Windows/Linux bootstrap and persistent game bind, now inside a restricted maintenance container.
+- Retirement: runtime-owned SteamCMD bootstrap is removed; game containers only run content provisioned by the Panel.
 - Decision: continue.
 
 ## Next Step
 
-Write and run failing first-install order tests for maintenance SteamCMD, package deployment and lifecycle container creation.
+Write and run failing package Coordinator tests for stopped/running intent, rollback and applied-state persistence.
