@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 
 	"github.com/google/uuid"
 	archivecheck "github.com/not0721here/l4d2-control-panel/internal/archive"
@@ -40,6 +41,7 @@ type manifest struct {
 type journalEntry struct {
 	Path    string `json:"path"`
 	Existed bool   `json:"existed"`
+	Kind    string `json:"kind,omitempty"`
 }
 
 type updateJournal struct {
@@ -124,6 +126,14 @@ func (p *Pipeline) Begin(ctx context.Context, instanceID, archivePath, version s
 			affected[path] = true
 		}
 	}
+	privateManager := content.NewPrivateManager(p.root, 1<<20)
+	privateTargets, err := privateManager.TransactionTargets(ctx, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	for _, target := range privateTargets {
+		affected[target.Path] = true
+	}
 	if err := collectFiles(filepath.Join(base, "private"), affected); err != nil {
 		return nil, err
 	}
@@ -139,14 +149,31 @@ func (p *Pipeline) Begin(ctx context.Context, instanceID, archivePath, version s
 			return nil, err
 		}
 		entry := journalEntry{Path: path}
-		info, statErr := os.Stat(target)
-		if statErr == nil && !info.IsDir() {
+		if err := rejectSymlinkPath(game, target); err != nil {
+			return nil, err
+		}
+		info, statErr := os.Lstat(target)
+		if statErr == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return nil, errors.New("symbolic links are forbidden")
+			}
 			entry.Existed = true
+			if info.IsDir() {
+				entry.Kind = "directory"
+			} else if info.Mode().IsRegular() {
+				entry.Kind = "file"
+			} else {
+				return nil, errors.New("unsupported game target type")
+			}
 			destination, err := safepath.Join(backup, path)
 			if err != nil {
 				return nil, err
 			}
-			if err := copyFile(target, destination); err != nil {
+			if entry.Kind == "directory" {
+				if err := copyDirectory(target, destination); err != nil {
+					return nil, err
+				}
+			} else if err := copyFile(target, destination); err != nil {
 				return nil, err
 			}
 		} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
@@ -236,8 +263,7 @@ func (p *Pipeline) Begin(ctx context.Context, instanceID, archivePath, version s
 			return fail(err)
 		}
 	}
-	private := content.NewPrivateManager(p.root, 1<<20)
-	if err := private.RebaseAndApply(ctx, instanceID); err != nil {
+	if err := privateManager.RebaseAndApply(ctx, instanceID); err != nil {
 		return fail(err)
 	}
 	if err := writeManifest(manifestPath, newManifest); err != nil {
@@ -270,6 +296,9 @@ func (d *deployment) Rollback() error {
 }
 
 func (p *Pipeline) Recover(ctx context.Context) error {
+	if err := content.NewPrivateManager(p.root, 1<<20).Recover(ctx); err != nil {
+		return err
+	}
 	pattern := filepath.Join(p.root, "instances", "*", "backups", "update-*", "journal.json")
 	paths, err := filepath.Glob(pattern)
 	if err != nil {
@@ -313,7 +342,20 @@ func (p *Pipeline) rollbackJournal(journalPath string, value updateJournal) erro
 	base := filepath.Join(p.root, "instances", value.InstanceID)
 	game := filepath.Join(base, "game", "left4dead2")
 	var result error
-	for _, entry := range value.Affected {
+	entries := append([]journalEntry(nil), value.Affected...)
+	sort.Slice(entries, func(i, j int) bool { return strings.Count(entries[i].Path, "/") > strings.Count(entries[j].Path, "/") })
+	for _, entry := range entries {
+		target, err := safepath.Join(game, entry.Path)
+		if err != nil {
+			result = errors.Join(result, err)
+			continue
+		}
+		if err = os.RemoveAll(target); err != nil {
+			result = errors.Join(result, err)
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return strings.Count(entries[i].Path, "/") < strings.Count(entries[j].Path, "/") })
+	for _, entry := range entries {
 		target, err := safepath.Join(game, entry.Path)
 		if err != nil {
 			result = errors.Join(result, err)
@@ -321,7 +363,9 @@ func (p *Pipeline) rollbackJournal(journalPath string, value updateJournal) erro
 		}
 		if entry.Existed {
 			source, sourceErr := safepath.Join(backup, entry.Path)
-			if sourceErr == nil {
+			if sourceErr == nil && entry.Kind == "directory" {
+				sourceErr = copyDirectory(source, target)
+			} else if sourceErr == nil {
 				sourceErr = copyFile(source, target)
 			}
 			result = errors.Join(result, sourceErr)
@@ -406,14 +450,17 @@ func copyDirectory(source, target string) error {
 }
 
 func collectFiles(root string, affected map[string]bool) error {
-	if _, err := os.Stat(root); errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Lstat(root); errors.Is(err, os.ErrNotExist) {
 		return nil
 	} else if err != nil {
 		return err
 	}
-	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+	return filepath.WalkDir(root, func(path string, info os.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if info.Type()&os.ModeSymlink != 0 {
+			return errors.New("symbolic links are forbidden")
 		}
 		if info.IsDir() {
 			return nil
@@ -425,6 +472,33 @@ func collectFiles(root string, affected map[string]bool) error {
 		affected[filepath.ToSlash(relative)] = true
 		return nil
 	})
+}
+
+func rejectSymlinkPath(root, target string) error {
+	if info, err := os.Lstat(root); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("symbolic links are forbidden")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	relative, err := filepath.Rel(root, target)
+	if err != nil {
+		return err
+	}
+	current := root
+	for _, part := range strings.Split(relative, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		info, statErr := os.Lstat(current)
+		if errors.Is(statErr, os.ErrNotExist) {
+			continue
+		}
+		if statErr != nil {
+			return statErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("symbolic links are forbidden")
+		}
+	}
+	return nil
 }
 
 func readJournal(path string) (updateJournal, error) {

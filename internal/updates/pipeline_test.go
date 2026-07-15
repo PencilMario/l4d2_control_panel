@@ -56,6 +56,32 @@ func TestPackageUpdateRebasesPrivateLowerLayer(t *testing.T) {
 	}
 }
 
+func TestPackageUpdateRebasesDeletedPrivatePath(t *testing.T) {
+	root := t.TempDir()
+	pipeline := New(root)
+	ctx := context.Background()
+	if err := pipeline.Apply(ctx, "abc", zipFile(t, map[string]string{"cfg/plugin.cfg": "package-v1"}), "v1", Hot); err != nil {
+		t.Fatal(err)
+	}
+	private := content.NewPrivateManager(root, 1<<20)
+	if _, err := private.Save(ctx, "abc", "cfg/plugin.cfg", []byte("private")); err != nil {
+		t.Fatal(err)
+	}
+	if err := private.ApplyChanges(ctx, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	if err := private.Delete(ctx, "abc", "cfg/plugin.cfg"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pipeline.Apply(ctx, "abc", zipFile(t, map[string]string{"cfg/plugin.cfg": "package-v2"}), "v2", Hot); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "instances", "abc", "game", "left4dead2", "cfg", "plugin.cfg")
+	if raw, err := os.ReadFile(target); err != nil || string(raw) != "package-v2" {
+		t.Fatalf("game=%q err=%v", raw, err)
+	}
+}
+
 func TestPackageRollbackRestoresPrivateLowerLayer(t *testing.T) {
 	root := t.TempDir()
 	pipeline := New(root)
@@ -86,6 +112,81 @@ func TestPackageRollbackRestoresPrivateLowerLayer(t *testing.T) {
 	target := filepath.Join(root, "instances", "abc", "game", "left4dead2", "cfg", "plugin.cfg")
 	if raw, err := os.ReadFile(target); err != nil || string(raw) != "package-v1" {
 		t.Fatalf("game=%q err=%v", raw, err)
+	}
+}
+
+func TestPackageRollbackRestoresDeletedAppliedEmptyDirectory(t *testing.T) {
+	root := t.TempDir()
+	pipeline := New(root)
+	ctx := context.Background()
+	private := content.NewPrivateManager(root, 1<<20)
+	if err := private.MakeDir(ctx, "abc", "cfg/empty"); err != nil {
+		t.Fatal(err)
+	}
+	if err := private.ApplyChanges(ctx, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, "instances", "abc", "private", "cfg", "empty")); err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := pipeline.Begin(ctx, "abc", zipFile(t, map[string]string{"cfg/empty/lower.cfg": "v2"}), "v2", Hot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "instances", "abc", "game", "left4dead2", "cfg", "empty")
+	if raw, err := os.ReadFile(filepath.Join(target, "lower.cfg")); err != nil || string(raw) != "v2" {
+		t.Fatalf("lower subtree not deployed: %q %v", raw, err)
+	}
+	if err := deployment.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(target); err != nil || !info.IsDir() {
+		t.Fatalf("directory not restored: info=%v err=%v", info, err)
+	}
+	if entries, err := os.ReadDir(target); err != nil || len(entries) != 0 {
+		t.Fatalf("directory not exact: entries=%v err=%v", entries, err)
+	}
+}
+
+func TestPipelineRejectsPrivateWorkspaceSymlink(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(root, "outside.cfg")
+	if err := os.WriteFile(outside, []byte("outside"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "instances", "abc", "private", "cfg", "link.cfg")
+	if err := os.MkdirAll(filepath.Dir(link), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := New(root).Apply(context.Background(), "abc", zipFile(t, map[string]string{"cfg/package.cfg": "new"}), "v1", Hot); err == nil {
+		t.Fatal("symlink accepted")
+	}
+	if raw, err := os.ReadFile(outside); err != nil || string(raw) != "outside" {
+		t.Fatalf("outside=%q err=%v", raw, err)
+	}
+}
+
+func TestPipelineRejectsGameTargetSymlink(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(root, "outside.cfg")
+	if err := os.WriteFile(outside, []byte("outside"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "instances", "abc", "game", "left4dead2", "cfg", "plugin.cfg")
+	if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, target); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := New(root).Apply(context.Background(), "abc", zipFile(t, map[string]string{"cfg/plugin.cfg": "new"}), "v1", Hot); err == nil {
+		t.Fatal("symlink accepted")
+	}
+	if raw, err := os.ReadFile(outside); err != nil || string(raw) != "outside" {
+		t.Fatalf("outside=%q err=%v", raw, err)
 	}
 }
 func TestUpdateStripsReleaseWrapperDirectory(t *testing.T) {
@@ -183,6 +284,36 @@ func TestRecoverRollsBackUncommittedDeployment(t *testing.T) {
 	}
 	if journals, _ := filepath.Glob(filepath.Join(base, "backups", "update-*", "journal.json")); len(journals) != 0 {
 		t.Fatalf("stale journals=%v", journals)
+	}
+}
+
+func TestPipelineRecoverRollsBackInterruptedPrivateApply(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "instances", "abc")
+	target := filepath.Join(base, "game", "left4dead2", "cfg", "a.cfg")
+	work := filepath.Join(base, "backups", "private", "apply-crash")
+	if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("mutated"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	backup := filepath.Join(work, "game.before", "cfg", "a.cfg")
+	if err := os.MkdirAll(filepath.Dir(backup), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(backup, []byte("old"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	journal := []byte(`{"version":1,"instance_id":"abc","stage":"applying","manifest_existed":false,"lower_existed":false,"affected":[{"path":"cfg/a.cfg","kind":"file","existed":true}]}`)
+	if err := os.WriteFile(filepath.Join(work, "journal.json"), journal, 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := New(root).Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(target); err != nil || string(raw) != "old" {
+		t.Fatalf("game=%q err=%v", raw, err)
 	}
 }
 func zipFile(t *testing.T, files map[string]string) string {

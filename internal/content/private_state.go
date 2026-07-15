@@ -52,6 +52,42 @@ type PrivateSnapshot struct {
 	Summary   DiffSummary `json:"summary"`
 }
 
+type PrivateTarget struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
+}
+
+func (m *PrivateManager) TransactionTargets(_ context.Context, instanceID string) ([]PrivateTarget, error) {
+	lock := m.instanceLock(instanceID)
+	lock.RLock()
+	defer lock.RUnlock()
+	root, err := m.privateRoot(instanceID)
+	if err != nil {
+		return nil, err
+	}
+	current, err := scanPrivateTree(root)
+	if err != nil {
+		return nil, err
+	}
+	applied, err := m.readPrivateManifest(instanceID)
+	if err != nil {
+		return nil, err
+	}
+	union := map[string]string{}
+	for path, entry := range applied.Entries {
+		union[path] = entry.Kind
+	}
+	for path, entry := range current {
+		union[path] = entry.Kind
+	}
+	result := make([]PrivateTarget, 0, len(union))
+	for path, kind := range union {
+		result = append(result, PrivateTarget{Path: path, Kind: kind})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Path < result[j].Path })
+	return result, nil
+}
+
 type lowerManifest struct {
 	Version int             `json:"version"`
 	Entries map[string]bool `json:"entries"`
@@ -70,11 +106,32 @@ type privateApplyJournal struct {
 	ManifestExisted bool                `json:"manifest_existed"`
 	LowerExisted    bool                `json:"lower_existed"`
 	Affected        []applyJournalEntry `json:"affected"`
+	SnapshotID      string              `json:"snapshot_id,omitempty"`
 }
 
 var privateApplyFailureState struct {
 	sync.RWMutex
 	hook func(int) error
+}
+
+var privateSnapshotFailureState struct {
+	sync.RWMutex
+	hook func() error
+}
+
+func setPrivateSnapshotFailureHook(hook func() error) {
+	privateSnapshotFailureState.Lock()
+	privateSnapshotFailureState.hook = hook
+	privateSnapshotFailureState.Unlock()
+}
+func runPrivateSnapshotFailureHook() error {
+	privateSnapshotFailureState.RLock()
+	hook := privateSnapshotFailureState.hook
+	privateSnapshotFailureState.RUnlock()
+	if hook != nil {
+		return hook()
+	}
+	return nil
 }
 
 func setPrivateApplyFailureHook(hook func(int) error) {
@@ -365,6 +422,9 @@ func (m *PrivateManager) applyPrivate(ctx context.Context, instanceID string, re
 		return err
 	}
 	base := filepath.Join(m.root, "instances", instanceID)
+	if err := m.recoverPrivateInstanceLocked(ctx, instanceID, base); err != nil {
+		return err
+	}
 	workspace := filepath.Join(base, "private")
 	game := filepath.Join(base, "game", "left4dead2")
 	if err := rejectSymlinkParents(m.root, workspace); err != nil {
@@ -468,7 +528,11 @@ func (m *PrivateManager) applyPrivate(ctx context.Context, instanceID string, re
 	if rebase {
 		lower = lowerManifest{Version: 1, Entries: map[string]bool{}}
 		_ = os.RemoveAll(filepath.Join(lowerRoot, "tree"))
-		for path, entry := range current {
+		for _, path := range paths {
+			entry, ok := current[path]
+			if !ok {
+				entry = old.Entries[path]
+			}
 			if err = captureLower(game, lowerRoot, path, entry.Kind, &lower); err != nil {
 				return rollback(err)
 			}
@@ -535,14 +599,20 @@ func (m *PrivateManager) applyPrivate(ctx context.Context, instanceID string, re
 	if err = m.writePrivateManifest(instanceID, next); err != nil {
 		return rollback(err)
 	}
+	diff := privateDiff(current, old)
+	journal.Stage = "snapshotting"
+	journal.SnapshotID = time.Now().UTC().Format("20060102T150405.000000000Z") + "-" + uuid.NewString()
+	if err = writeJSONAtomic(filepath.Join(work, "journal.json"), journal); err != nil {
+		return rollback(err)
+	}
+	if err = createPrivateSnapshot(base, workspace, next, diff.Summary, journal.SnapshotID); err != nil {
+		return rollback(err)
+	}
 	journal.Stage = "committed"
 	if err = writeJSONAtomic(filepath.Join(work, "journal.json"), journal); err != nil {
 		return rollback(err)
 	}
-	diff := privateDiff(current, old)
-	if err = createPrivateSnapshot(base, workspace, next, diff.Summary); err == nil {
-		_ = prunePrivateSnapshots(base, 20)
-	}
+	_ = prunePrivateSnapshots(base, 20)
 	_ = os.RemoveAll(work)
 	return nil
 }
@@ -609,6 +679,9 @@ func rollbackPrivateApply(work, base string, journal privateApplyJournal) error 
 	_ = os.RemoveAll(lowerRoot)
 	if journal.LowerExisted {
 		result = errors.Join(result, copyTreeExact(filepath.Join(work, "lower.before"), lowerRoot))
+	}
+	if journal.SnapshotID != "" {
+		result = errors.Join(result, os.RemoveAll(filepath.Join(base, "backups", "private", "snapshots", journal.SnapshotID)))
 	}
 	if result == nil {
 		result = os.RemoveAll(work)
@@ -715,17 +788,36 @@ func copyTreeExact(source, target string) error {
 	})
 }
 
-func createPrivateSnapshot(base, workspace string, manifest privateManifest, summary DiffSummary) error {
-	id := time.Now().UTC().Format("20060102T150405.000000000Z") + "-" + uuid.NewString()
-	root := filepath.Join(base, "backups", "private", "snapshots", id)
-	if err := copyTreeExact(workspace, filepath.Join(root, "tree")); err != nil {
+func createPrivateSnapshot(base, workspace string, manifest privateManifest, summary DiffSummary, id string) error {
+	if err := runPrivateSnapshotFailureHook(); err != nil {
 		return err
+	}
+	snapshots := filepath.Join(base, "backups", "private", "snapshots")
+	if err := os.MkdirAll(snapshots, 0750); err != nil {
+		return err
+	}
+	temporary := filepath.Join(snapshots, ".snapshot-"+uuid.NewString())
+	defer os.RemoveAll(temporary)
+	tree := filepath.Join(temporary, "tree")
+	var snapshotErr error
+	if _, statErr := os.Stat(workspace); errors.Is(statErr, os.ErrNotExist) {
+		snapshotErr = os.MkdirAll(tree, 0750)
+	} else if statErr != nil {
+		snapshotErr = statErr
+	} else {
+		snapshotErr = copyTreeExact(workspace, tree)
+	}
+	if snapshotErr != nil {
+		return snapshotErr
 	}
 	meta := struct {
 		PrivateSnapshot
 		Manifest privateManifest `json:"manifest"`
 	}{PrivateSnapshot: PrivateSnapshot{ID: id, AppliedAt: manifest.AppliedAt, Summary: summary}, Manifest: manifest}
-	return writeJSONAtomic(filepath.Join(root, "snapshot.json"), meta)
+	if err := writeJSONAtomic(filepath.Join(temporary, "snapshot.json"), meta); err != nil {
+		return err
+	}
+	return os.Rename(temporary, filepath.Join(snapshots, id))
 }
 
 func (m *PrivateManager) Snapshots(_ context.Context, instanceID string) ([]PrivateSnapshot, error) {
@@ -745,7 +837,7 @@ func (m *PrivateManager) Snapshots(_ context.Context, instanceID string) ([]Priv
 	}
 	result := []PrivateSnapshot{}
 	for _, entry := range entries {
-		if !entry.IsDir() || filepath.Base(entry.Name()) != entry.Name() {
+		if !entry.IsDir() || filepath.Base(entry.Name()) != entry.Name() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
 		var value struct{ PrivateSnapshot }
@@ -763,6 +855,76 @@ func (m *PrivateManager) Snapshots(_ context.Context, instanceID string) ([]Priv
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].AppliedAt.After(result[j].AppliedAt) })
 	return result, nil
+}
+
+func (m *PrivateManager) Recover(ctx context.Context) error {
+	pattern := filepath.Join(m.root, "instances", "*", "backups", "private", "apply-*", "journal.json")
+	paths, err := filepath.Glob(pattern)
+	if err != nil {
+		return err
+	}
+	var result error
+	for _, journalPath := range paths {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(result, err)
+		}
+		work := filepath.Dir(journalPath)
+		base := filepath.Dir(filepath.Dir(filepath.Dir(work)))
+		instanceID := filepath.Base(base)
+		lock := m.instanceLock(instanceID)
+		lock.Lock()
+		recoverErr := m.recoverPrivateJournalLocked(journalPath, base, instanceID)
+		lock.Unlock()
+		result = errors.Join(result, recoverErr)
+	}
+	return result
+}
+
+func (m *PrivateManager) recoverPrivateInstanceLocked(ctx context.Context, instanceID, base string) error {
+	paths, err := filepath.Glob(filepath.Join(base, "backups", "private", "apply-*", "journal.json"))
+	if err != nil {
+		return err
+	}
+	var result error
+	for _, path := range paths {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(result, err)
+		}
+		result = errors.Join(result, m.recoverPrivateJournalLocked(path, base, instanceID))
+	}
+	return result
+}
+
+func (m *PrivateManager) recoverPrivateJournalLocked(journalPath, base, instanceID string) error {
+	raw, err := os.ReadFile(journalPath)
+	if err != nil {
+		return err
+	}
+	var journal privateApplyJournal
+	if err = json.Unmarshal(raw, &journal); err != nil {
+		return err
+	}
+	if journal.Version != 1 || journal.InstanceID != instanceID || filepath.Base(instanceID) != instanceID {
+		return errors.New("invalid private apply journal identity")
+	}
+	for _, entry := range journal.Affected {
+		if entry.Kind != "file" && entry.Kind != "directory" {
+			return errors.New("invalid private apply journal kind")
+		}
+		if err = validateManifestEntry(entry.Path, manifestEntry{Kind: entry.Kind, Hash: func() string {
+			if entry.Kind == "file" {
+				return strings.Repeat("0", 64)
+			}
+			return ""
+		}()}); err != nil {
+			return err
+		}
+	}
+	work := filepath.Dir(journalPath)
+	if journal.Stage == "committed" {
+		return os.RemoveAll(work)
+	}
+	return rollbackPrivateApply(work, base, journal)
 }
 
 func (m *PrivateManager) RestoreSnapshot(_ context.Context, instanceID, snapshotID string) error {

@@ -106,6 +106,37 @@ func TestPrivateApplyDeleteWithoutLowerRemovesTarget(t *testing.T) {
 	}
 }
 
+func TestPrivateRebaseDeletionKeepsNewlyDeployedLower(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateManager(root, 1<<20)
+	ctx := context.Background()
+	target := filepath.Join(root, "instances", "abc", "game", "left4dead2", "cfg", "server.cfg")
+	if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("package-v1"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Save(ctx, "abc", "cfg/server.cfg", []byte("private")); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ApplyChanges(ctx, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Delete(ctx, "abc", "cfg/server.cfg"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("package-v2"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RebaseAndApply(ctx, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(target); err != nil || string(raw) != "package-v2" {
+		t.Fatalf("game=%q err=%v", raw, err)
+	}
+}
+
 func TestPrivateApplyCopiesEmptyDirectory(t *testing.T) {
 	root := t.TempDir()
 	manager := NewPrivateManager(root, 1<<20)
@@ -213,6 +244,87 @@ func TestPrivateSnapshotsRetainAndRestoreWorkspace(t *testing.T) {
 	if after[0].ID == selected.ID {
 		t.Fatal("apply rewrote snapshot history")
 	}
+}
+
+func TestPrivateSnapshotFailureRollsBackApply(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateManager(root, 1<<20)
+	ctx := context.Background()
+	target := filepath.Join(root, "instances", "abc", "game", "left4dead2", "cfg", "a.cfg")
+	if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("package"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Save(ctx, "abc", "cfg/a.cfg", []byte("private")); err != nil {
+		t.Fatal(err)
+	}
+	setPrivateSnapshotFailureHook(func() error { return errors.New("snapshot failed") })
+	t.Cleanup(func() { setPrivateSnapshotFailureHook(nil) })
+	if err := manager.ApplyChanges(ctx, "abc"); err == nil {
+		t.Fatal("expected snapshot failure")
+	}
+	if raw, err := os.ReadFile(target); err != nil || string(raw) != "package" {
+		t.Fatalf("game=%q err=%v", raw, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "instances", "abc", "private-applied.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("manifest remains: %v", err)
+	}
+	snapshots, err := manager.Snapshots(ctx, "abc")
+	if err != nil || len(snapshots) != 0 {
+		t.Fatalf("snapshots=%v err=%v", snapshots, err)
+	}
+}
+
+func TestPrivateSnapshotsIgnorePartialPublication(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateManager(root, 1<<20)
+	partial := filepath.Join(root, "instances", "abc", "backups", "private", "snapshots", ".snapshot-partial")
+	if err := os.MkdirAll(filepath.Join(partial, "tree"), 0750); err != nil {
+		t.Fatal(err)
+	}
+	snapshots, err := manager.Snapshots(context.Background(), "abc")
+	if err != nil || len(snapshots) != 0 {
+		t.Fatalf("snapshots=%v err=%v", snapshots, err)
+	}
+}
+
+func TestPrivateRecoverRollsBackInterruptedApply(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateManager(root, 1<<20)
+	base := filepath.Join(root, "instances", "abc")
+	target := filepath.Join(base, "game", "left4dead2", "cfg", "a.cfg")
+	work := filepath.Join(base, "backups", "private", "apply-test")
+	if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("mutated"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyFileExactBytesForTest(filepath.Join(work, "game.before", "cfg", "a.cfg"), []byte("old")); err != nil {
+		t.Fatal(err)
+	}
+	journal := privateApplyJournal{Version: 1, InstanceID: "abc", Stage: "applying", Affected: []applyJournalEntry{{Path: "cfg/a.cfg", Kind: "file", Existed: true}}}
+	if err := writeJSONAtomic(filepath.Join(work, "journal.json"), journal); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(target); err != nil || string(raw) != "old" {
+		t.Fatalf("game=%q err=%v", raw, err)
+	}
+	if _, err := os.Stat(work); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("journal remains: %v", err)
+	}
+}
+
+func copyFileExactBytesForTest(path string, raw []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+		return err
+	}
+	return os.WriteFile(path, raw, 0640)
 }
 
 func TestPrivatePathRejectsEscapeSymlinkAndOverwrite(t *testing.T) {
