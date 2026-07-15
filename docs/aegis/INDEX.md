@@ -9,6 +9,7 @@
 - [Instance performance information and one-hour history](specs/2026-07-15-instance-performance-history-design.md)
 - [Instance selective game and plugin package reinstall](specs/2026-07-15-instance-selective-reinstall-design.md)
 - [Player match summary and operations view](specs/2026-07-16-player-match-operations-design.md)
+- [Private files ZIP import and export](specs/2026-07-16-private-files-zip-import-export-design.md)
 
 ## Implementation Plans
 
