@@ -8,4 +8,4 @@
 - [x] Build the shared React create/edit form, live preview, package status and responsive styling.
 - [x] Update the browser journey for package-first creation and one-Job package/startup reconfiguration; verify the existing fixture state owners support it.
 - [x] Run full regression, production build, Compose validation and browser screenshot checks.
-- [ ] Record final evidence and request code review.
+- [x] Record final evidence and perform the branch-wide advisory code review.

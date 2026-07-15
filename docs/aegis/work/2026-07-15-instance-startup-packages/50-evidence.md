@@ -76,7 +76,7 @@ Implementation evidence will be appended after each red/green slice.
 - Visual inspection exposed a real responsive defect: generic `.modal > div` flex styling placed the field grid and command preview side by side, squeezing mobile controls and clipping text.
 - RED: strengthened Playwright geometry checks failed with the command preview above/beside the field-grid bottom and mismatched left/right edges.
 - GREEN: `.instance-config-modal > .instance-config-body` now explicitly owns block layout. The preview renders below the fields at full width on desktop and mobile, with no control or viewport overflow.
-- The browser flow uploads packages A and B before creation, selects A with extra arguments, asserts the canonical preview, verifies first-start selected/applied equality, edits to B with changed arguments, observes exactly one `reconfigure` Job, refreshes persistence, then completes console, player, VPK, private overlay, full update, schedule and Job recovery checks.
+- The browser flow uploads packages A and B before creation, creates and first-starts two instances with different packages, ports and extra arguments, verifies both selected/applied assignments after refresh, then edits the first to B, observes exactly one `reconfigure` Job and completes console, player, VPK, private overlay, full update, schedule and Job recovery checks.
 - Fixture conclusion: no new fake branch was required. First start already copies selected to applied state, and installed package changes use the production `updates.Coordinator` owner.
 - `go test -count=1 ./...`: PASS.
 - `go vet ./...`: PASS.
@@ -85,3 +85,32 @@ Implementation evidence will be appended after each red/green slice.
 - `cd web && npm run e2e`: PASS, desktop and mobile.
 - `docker compose --env-file .env.example config --quiet`: PASS.
 - Screenshots: `web/test-results/control-panel-real-HTTP-ad-79bc6--and-streams-recovery-state-desktop/desktop-instance-config.png`, `desktop-journey.png`, and matching mobile outputs.
+
+## Task 8: Review and Completion Audit
+
+- Review scope: `01baa4b..a53475f`, covering persistence, argv transport, Docker maintenance, provisioning, package coordination, HTTP contracts, React UI and Playwright acceptance. The advisory review was performed in the primary session because this task disallowed subagents.
+- Design coverage: section 3 maps to Task 1; sections 4-5 to Tasks 2 and 6; section 6 to Tasks 1, 4-7; section 7 to Task 3; section 8 to Tasks 4, 5, 7 and review repairs; section 9 to Task 5; section 10 to Tasks 1-7 plus final regressions; section 11 to the raw-env compatibility fallback, strict API input and fixed runtime owner audits.
+- Placeholder/owner audit: no incomplete production branches were found. Applied-package writes remain owned by first-start provisioning and the update Coordinator for their distinct workflows; HTTP no longer writes applied state. New Panel containers use validated JSON argv, while raw `SRCDS_EXTRA_ARGS` remains only for old/manual runtime compatibility.
+- Finding 1 RED: `TestStartProvisionsUninstalledInstanceWhenPackageIsAlreadyMarkedApplied` observed `create,start` instead of `prepare,create,start`. A content update could mark a package applied before game installation and make first start skip SteamCMD.
+- Finding 1 GREEN: lifecycle now provisions whenever the instance is `uninstalled` or selected/applied packages differ. `go test -count=1 ./internal/lifecycle ./internal/provisioning ./internal/updates`: PASS.
+- Finding 2 RED: `TestCreateRejectsRuntimeImageOverride` returned `201` and persisted `attacker/runtime:latest`; the shared request type had accidentally exposed a non-goal.
+- Finding 2 GREEN: `runtime_image` was removed from the strict shared create/edit contract, restoring the server-owned fixed runtime image. `go test -count=1 ./internal/httpapi`: PASS.
+- Finding 3 RED: the desktop browser journey changed the card to package B only after the Job completed, never showing the persisted selected-B/applied-A `待应用` state.
+- Finding 3 GREEN: the `202` branch starts Job polling and immediately reloads the instance list; the running card shows B plus `待应用`, then clears it after commit.
+- Browser evidence gap closed: the final desktop/mobile journey creates two instances with independent packages and extra arguments, first-starts both, verifies their assignments through the real HTTP API, and then reconfigures only one.
+
+### Fresh Final Verification
+
+- `go test -count=1 ./...`: PASS, all Go packages.
+- `go vet ./...`: PASS.
+- `cd web && npm test -- --run`: PASS, 22 tests.
+- `cd web && npm run build`: PASS, TypeScript and Vite production bundle.
+- `cd web && npm run e2e`: PASS, 2/2 desktop and mobile projects.
+- `docker compose --env-file .env.example config --quiet`: PASS.
+- `git diff --check`: PASS after the evidence update.
+- Browser geometry checks prove the preview follows the field grid at matching full width. Visual readback of the desktop and 390x844 mobile screenshots shows readable controls, fixed actions and no horizontal overflow; the mobile screenshot visibly includes the wrapped argv preview.
+
+### Residual Risk
+
+- The final session did not perform a fresh real Docker Engine/SteamCMD 12 GiB installation on a disposable Linux host. Maintenance command construction, first-start ordering, failure prevention and browser orchestration are covered by Go tests and the real-HTTP fixture; real network/download behavior remains an operational acceptance step.
+- The documented raw `SRCDS_EXTRA_ARGS` fallback remains intentionally active for old/manual runtime definitions. All Panel-created containers prefer validated `SRCDS_EXTRA_ARGS_JSON`; removal waits for an explicit old-container upgrade policy.
