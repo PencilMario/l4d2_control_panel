@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestEngineCreatesRestrictedManagedContainer(t *testing.T) {
@@ -221,15 +222,50 @@ func TestStatsCalculatesCPUAndMemory(t *testing.T) {
 		if r.URL.Query().Get("stream") != "false" || r.URL.Query().Has("one-shot") {
 			t.Fatalf("query=%s", r.URL.RawQuery)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"cpu_stats": map[string]any{"cpu_usage": map[string]any{"total_usage": 300.0, "percpu_usage": []int{1, 2}}, "system_cpu_usage": 1000.0}, "precpu_stats": map[string]any{"cpu_usage": map[string]any{"total_usage": 100.0}, "system_cpu_usage": 500.0}, "memory_stats": map[string]any{"usage": 1073741824.0, "stats": map[string]any{"cache": 268435456.0}}})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"cpu_stats":    map[string]any{"cpu_usage": map[string]any{"total_usage": 300.0, "percpu_usage": []int{1, 2}}, "system_cpu_usage": 1000.0},
+			"precpu_stats": map[string]any{"cpu_usage": map[string]any{"total_usage": 100.0}, "system_cpu_usage": 500.0},
+			"memory_stats": map[string]any{"usage": 1073741824.0, "limit": 2147483648.0, "stats": map[string]any{"cache": 268435456.0}},
+			"blkio_stats": map[string]any{"io_service_bytes_recursive": []map[string]any{
+				{"op": "Read", "value": 1024.0},
+				{"op": "read", "value": 2048.0},
+				{"op": "WRITE", "value": 4096.0},
+				{"op": "Write", "value": 8192.0},
+				{"op": "Sync", "value": 16384.0},
+			}},
+			"pids_stats": map[string]any{"current": 17.0},
+		})
 	}))
 	defer server.Close()
 	stats, err := NewEngine(server.URL).Stats(context.Background(), "container")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.CPUPercent != 80 || stats.MemoryBytes != 805306368 {
+	if stats.CPUPercent != 80 || stats.MemoryBytes != 805306368 || stats.MemoryLimitBytes != 2147483648 || stats.BlockReadBytes != 3072 || stats.BlockWriteBytes != 12288 || stats.PIDs != 17 {
 		t.Fatalf("stats=%#v", stats)
+	}
+}
+
+func TestRuntimeParsesRunningAndStartedAt(t *testing.T) {
+	startedAt := "2026-07-15T08:09:10.123456789Z"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.EscapedPath() != "/v1.44/containers/container%2Fname/json" {
+			t.Fatalf("path=%s", r.URL.EscapedPath())
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"State": map[string]any{"Running": true, "StartedAt": startedAt}})
+	}))
+	defer server.Close()
+
+	runtime, err := NewEngine(server.URL).Runtime(context.Background(), "container/name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantStartedAt, err := time.Parse(time.RFC3339Nano, startedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.Running || !runtime.StartedAt.Equal(wantStartedAt) {
+		t.Fatalf("runtime=%#v", runtime)
 	}
 }
 

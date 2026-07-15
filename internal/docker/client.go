@@ -70,8 +70,16 @@ type Container struct {
 	Labels map[string]string `json:"Labels"`
 }
 type ResourceStats struct {
-	CPUPercent  float64 `json:"cpu_percent"`
-	MemoryBytes uint64  `json:"memory_bytes"`
+	CPUPercent       float64 `json:"cpu_percent"`
+	MemoryBytes      uint64  `json:"memory_bytes"`
+	MemoryLimitBytes uint64  `json:"memory_limit_bytes"`
+	BlockReadBytes   uint64  `json:"block_read_bytes"`
+	BlockWriteBytes  uint64  `json:"block_write_bytes"`
+	PIDs             uint64  `json:"pids"`
+}
+type RuntimeState struct {
+	Running   bool
+	StartedAt time.Time
 }
 type Info struct {
 	ServerVersion     string `json:"ServerVersion"`
@@ -84,15 +92,20 @@ func (e *Engine) Info(ctx context.Context) (Info, error) {
 	return info, err
 }
 func (e *Engine) Running(ctx context.Context, containerID string) (bool, error) {
+	runtime, err := e.Runtime(ctx, containerID)
+	return runtime.Running, err
+}
+func (e *Engine) Runtime(ctx context.Context, containerID string) (RuntimeState, error) {
 	var result struct {
 		State struct {
-			Running bool `json:"Running"`
+			Running   bool      `json:"Running"`
+			StartedAt time.Time `json:"StartedAt"`
 		} `json:"State"`
 	}
 	if err := e.do(ctx, http.MethodGet, "/containers/"+url.PathEscape(containerID)+"/json", nil, nil, &result); err != nil {
-		return false, err
+		return RuntimeState{}, err
 	}
-	return result.State.Running, nil
+	return RuntimeState{Running: result.State.Running, StartedAt: result.State.StartedAt}, nil
 }
 
 type statsResponse struct {
@@ -112,8 +125,18 @@ type statsResponse struct {
 	} `json:"precpu_stats"`
 	Memory struct {
 		Usage uint64            `json:"usage"`
+		Limit uint64            `json:"limit"`
 		Stats map[string]uint64 `json:"stats"`
 	} `json:"memory_stats"`
+	BlockIO struct {
+		ServiceBytes []struct {
+			Operation string `json:"op"`
+			Value     uint64 `json:"value"`
+		} `json:"io_service_bytes_recursive"`
+	} `json:"blkio_stats"`
+	PIDs struct {
+		Current uint64 `json:"current"`
+	} `json:"pids_stats"`
 }
 
 func (e *Engine) Stats(ctx context.Context, containerID string) (ResourceStats, error) {
@@ -135,7 +158,23 @@ func (e *Engine) Stats(ctx context.Context, containerID string) (ResourceStats, 
 	if cache := raw.Memory.Stats["cache"]; cache < memory {
 		memory -= cache
 	}
-	return ResourceStats{CPUPercent: percent, MemoryBytes: memory}, nil
+	var blockRead, blockWrite uint64
+	for _, entry := range raw.BlockIO.ServiceBytes {
+		switch {
+		case strings.EqualFold(entry.Operation, "read"):
+			blockRead += entry.Value
+		case strings.EqualFold(entry.Operation, "write"):
+			blockWrite += entry.Value
+		}
+	}
+	return ResourceStats{
+		CPUPercent:       percent,
+		MemoryBytes:      memory,
+		MemoryLimitBytes: raw.Memory.Limit,
+		BlockReadBytes:   blockRead,
+		BlockWriteBytes:  blockWrite,
+		PIDs:             raw.PIDs.Current,
+	}, nil
 }
 
 func (c Container) InstanceID() string { return c.Labels[InstanceLabel] }
