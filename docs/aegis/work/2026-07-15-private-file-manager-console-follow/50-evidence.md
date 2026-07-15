@@ -1,6 +1,6 @@
 # EvidenceBundleDraft
 
-Updated: 2026-07-15 19:38 +08:00
+Updated: 2026-07-15 20:33 +08:00
 
 This bundle records verified Task 7 evidence. It is not the final whole-branch review or an authoritative completion signal.
 
@@ -13,6 +13,8 @@ This bundle records verified Task 7 evidence. It is not the final whole-branch r
 - Browser acceptance: `828782a`, `da6a3e2`, with evidence checkpoint `7697c2f`.
 - Task 7 documentation: `2384176`, with wording correction `6be2080`.
 - Final-review upload identity fix: `4a79f45`.
+- Integration owner/baseline fix: `82cdfba`.
+- Integration leaf-backup fix: `dad4357`.
 
 ## Verification matrix
 
@@ -36,14 +38,34 @@ After final review produced `4a79f45`, fresh verification from `web` recorded:
 | `npm test -- --run` | PASS: 4 files, 54 tests, including exact instance/target-path/file-fingerprint resume identity and legacy fingerprint cleanup. |
 | `npm run build` | PASS: TypeScript and Vite production build; 1,781 modules transformed. |
 
+## Integration fixes and second final review
+
+`82cdfba` retired the runtime supervisor's staged-private copy owner, allowed only controlled shared-VPK links through private apply/recovery, and established a conservative manifest baseline for legacy instances. The legacy-baseline and controlled-link regressions were verified RED against the pre-fix branch and GREEN after the fix, including `TestPrivateControlledSharedVPKCanBeOverriddenAndRestored`, `TestPrivateRejectsArbitraryGameSymlink`, `TestPrivateMissingManifestMigratesLegacyBaseline`, `TestPrivateNewSaveStillReportsAddedAfterEmptyBaseline`, `TestPrivateCorruptManifestIsNotReinitialized`, `TestPrivateLegacyBaselineCapturesControlledSharedVPKLink`, `TestPrivateConcurrentFirstContactCreatesOneValidBaseline`, `TestPipelineFailureRollbackRestoresControlledSharedVPKLink` and `TestSupervisorDoesNotDeployStagedPrivateContent`.
+
+`dad4357` split private directory leaf backups so package updates preserve controlled sibling links without accepting arbitrary links. Its regression coverage includes `TestPipelineJournalAvoidsUnrelatedNestedDirectoryBackup`, `TestPipelineUpdateWithPrivateDirectoryAndControlledSiblingLink`, `TestPipelineRollbackWithPrivateDirectoryRestoresControlledSiblingLink` and `TestPipelinePrivateDirectoryStillRejectsArbitrarySiblingLink`.
+
+The second whole-branch review covered `05656e6..dad4357` and reported no Critical or Important findings. Fresh verification after both fixes recorded:
+
+| Command | Result |
+| --- | --- |
+| `go test ./... -count=1` | PASS in the second reviewer's fresh matrix. During this evidence update, two additional exact reruns hit distinct known Windows locks: `TestPrivateWorkspaceCRUDAndDiff`'s `.tmp` file, then `health.test.exe`. Other packages passed, and `internal/content` passed on the second local rerun. These additional host flakes are recorded rather than hidden. |
+| `$tmp = Join-Path (Get-Location) '.tmp-go-test'; $null = New-Item -ItemType Directory -Force -Path $tmp; $env:GOTMPDIR = $tmp; go test -p 1 ./... -count=1` | PASS: all Go packages with a dedicated temp root and serial package scheduling. |
+| `go vet ./...` | PASS with no output. |
+| `cd web; npm test -- --run` | PASS: 4 files, 54 tests. |
+| `cd web; npm run build` | PASS: TypeScript and Vite production build; 1,781 modules transformed. |
+| `cd web; npm run e2e -- --project=desktop` | PASS: Playwright `desktop`, 1/1 test. |
+| `cd web; npm run e2e -- --project=mobile` | PASS: Playwright `mobile`, 1/1 test. |
+
+An initial reviewer attempt to run desktop and mobile Playwright in parallel collided on the shared fixture port `127.0.0.1:18082`. The projects were then run sequentially as shown above and both passed; no product change was made for the test-runner collision.
+
 ## Retirement and ownership audit
 
 - `rg -n "保存并立即应用|private\.Apply\(" web/src internal` returned no matches: the old immediate-apply UI and blind `private.Apply` call are retired from product source.
 - `rg -n "RebaseAndApply|ApplyChanges" internal` shows the public private-manager methods in `internal/content/private_state.go`; production manual apply enters through `internal/httpapi/server.go` and `ApplyChangesWithProgress`, while lower-layer deployment enters through `internal/updates/pipeline.go` and the leased `PrivateTransaction.RebaseAndApply` path. Remaining direct calls are compatibility delegation or tests.
 - `rg -n "game/left4dead2|os\.Symlink|exec\.Command" web/src/app/PrivateFilesPage.tsx internal/content --glob "private*.go"` found only adversarial `os.Symlink` test fixtures. The UI and private upload implementation expose no game path, create no symlink and execute no command.
 - `git branch --show-current` returned `feat/private-file-manager-console-follow`.
-- `git rev-parse HEAD` returned `4a79f45834da5edbe0d9797c1e1c211e7142dbfa` before this documentation follow-up.
-- `git status --short --branch` returned only `## feat/private-file-manager-console-follow`, proving the worktree was clean at `4a79f45` before these documentation edits.
+- `git rev-parse HEAD` returned `dad435741dbefe75b801b4165ef5daa18206323e` before this evidence update.
+- `git status --short --branch` returned only `## feat/private-file-manager-console-follow`, proving the worktree was clean at `dad4357` before these documentation edits.
 
 ## User journey covered
 
@@ -60,10 +82,10 @@ Desktop and mobile Playwright exercised the real HTTP fixture journey, including
 
 ## DriftCheckDraft
 
-- Scope: Task 7 changed README and Aegis work records, and final review added the `4a79f45` upload identity product correction.
-- Compatibility: the private upload API is unchanged; client resume matching now requires the instance, target path and complete file fingerprint to match, and legacy fingerprints are discarded.
-- Retirement: old immediate apply and blind apply caller remain absent; one private transactional owner retains manual apply and lower-layer rebase entry points.
-- Decision: ready for controller-owned final whole-branch review; Task 7 spec/code-quality review and final review remain open.
+- Scope: Task 7 changed README and Aegis work records; final reviews added `4a79f45`, `82cdfba` and `dad4357` product corrections.
+- Compatibility: the private upload API is unchanged; client resume matching is tighter, legacy upload fingerprints are discarded, controlled shared links remain supported, and legacy instances receive a conservative baseline.
+- Retirement: old immediate apply, blind apply callers and the runtime supervisor copy owner are retired; `PrivateManager` remains the transactional apply/rebase/recovery owner.
+- Decision: the second whole-branch review found no Critical or Important issues; controller-owned completion-candidate verification remains pending.
 
 ## Confidence and authority
 

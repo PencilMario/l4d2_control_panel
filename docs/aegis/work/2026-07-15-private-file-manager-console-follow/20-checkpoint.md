@@ -1,6 +1,6 @@
 # TodoCheckpointDraft
 
-Updated: 2026-07-15 19:25 +08:00
+Updated: 2026-07-15 20:33 +08:00
 
 ## Todo
 
@@ -14,7 +14,7 @@ Updated: 2026-07-15 19:25 +08:00
 
 ## Active slice
 
-Task 7 implementation, spec review and quality review are complete. Final whole-branch review and completion-candidate verification remain pending.
+Task 7 implementation, spec review and quality review are complete. The second whole-branch review passed with no Critical or Important findings; controller-owned completion-candidate verification remains pending.
 
 ## Completed
 
@@ -46,6 +46,9 @@ Task 7 implementation, spec review and quality review are complete. Final whole-
 - Task 7 README and evidence document the independent Tab, staged apply, 20-snapshot retention, lower-layer restoration, resumable uploads and console follow rules.
 - Task 7 spec and quality reviews approved after retention wording, retirement state, executable evidence, trace links and drift records were corrected.
 - Late upload-resume identity fix `4a79f45` passed focused 19/19, full web 54/54 and build; independent review approved it.
+- Integration fix `82cdfba` retired the runtime supervisor copy owner, admitted only controlled shared links and added conservative legacy-instance baselines. Its owner, link and baseline regressions were verified RED/GREEN.
+- Integration fix `dad4357` split private directory leaf backups so controlled sibling links survive update and rollback while arbitrary links remain rejected.
+- Second whole-branch review of `05656e6..dad4357` found no Critical or Important issues. Fresh full Go tests, Go vet, web 54/54, production build and sequential desktop/mobile Playwright passed; two additional local Go reruns retained Windows file-lock noise, and an initial parallel Playwright attempt collided on fixture port 18082.
 
 ## Evidence refs
 
@@ -60,17 +63,17 @@ Nothing.
 
 ## ResumeStateHint
 
-Read this checkpoint, the intent, baseline read set, approved spec, plan and evidence. Confirm the worktree branch and diff agree with this checkpoint. Resume final whole-branch review and verification-before-completion only.
+Read this checkpoint, the intent, baseline read set, approved spec, plan and evidence. Confirm the worktree branch and diff agree with this checkpoint. Resume controller-owned verification-before-completion only.
 
 ## DriftCheckDraft
 
 - Scope: aligned with approved private manager and console behavior.
 - Compatibility: existing private API remains callable; Apply now delegates transactionally; package rollback and overlay order remain covered.
-- Ownership: `PrivateManager` is the sole private apply/rebase/snapshot/recovery owner; Pipeline holds its content-owned lease.
-- Retirement: blind Apply is retired; Task 4 retired the immediate-apply UI.
+- Ownership: `PrivateManager` is the sole private apply/rebase/snapshot/recovery owner; Pipeline holds its content-owned lease and runtime no longer copies staged private content.
+- Retirement: blind Apply, the immediate-apply UI and the runtime supervisor copy owner are retired.
 - Evidence gap: Windows race detector unavailable because CGO is disabled; deterministic barrier tests cover the relevant intermediate windows.
 - Residual Minor risks: lexical lock aliases, lock-map retention, and history snapshot on failed final Save rename.
 - Task 2 residual: Windows normal symlinks are covered; junction/reparse subtype reporting remains dependent on Go runtime behavior.
 - Intermittent Windows TempDir cleanup/file-lock noise occurred across unrelated tests; required fresh and repeated focused suites passed.
 - Task 3 residual Minor: per-upload session mutex registry does not evict UUID locks.
-- Decision: continue to final whole-branch review; no authoritative completion is claimed.
+- Decision: whole-branch review passed with no Critical or Important findings; continue to controller-owned final verification, with no authoritative completion claimed.
