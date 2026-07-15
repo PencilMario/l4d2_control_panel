@@ -1637,12 +1637,27 @@ function SettingsPage() {
   const [steam, setSteam] = useState(false);
   const [github, setGithub] = useState(false);
   const [settingsError, setSettingsError] = useState("");
+  const [confirmedJobLimit, setConfirmedJobLimit] = useState(25);
+  const [draftJobLimit, setDraftJobLimit] = useState("25");
+  const [jobSettingsReady, setJobSettingsReady] = useState(false);
+  const [savingJobs, setSavingJobs] = useState(false);
+  const [jobsNotice, setJobsNotice] = useState("");
   useEffect(() => {
     api<any>("/api/settings/steam")
       .then((x) => setSteam(x.configured))
       .catch((reason) => setSettingsError(errorMessage(reason)));
     api<any>("/api/settings/github-token")
       .then((x) => setGithub(x.configured))
+      .catch((reason) => setSettingsError(errorMessage(reason)));
+    api<{ successful_job_limit: number }>("/api/settings/jobs")
+      .then((settings) => {
+        if (!Number.isInteger(settings.successful_job_limit)) {
+          throw new Error("任务记录设置数据无效");
+        }
+        setConfirmedJobLimit(settings.successful_job_limit);
+        setDraftJobLimit(String(settings.successful_job_limit));
+        setJobSettingsReady(true);
+      })
       .catch((reason) => setSettingsError(errorMessage(reason)));
   }, []);
   const saveSteam = async (e: FormEvent<HTMLFormElement>) => {
@@ -1676,6 +1691,34 @@ function SettingsPage() {
       e.currentTarget.reset();
     } catch (reason) {
       setSettingsError(errorMessage(reason));
+    }
+  };
+  const saveJobSettings = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const limit = Number(draftJobLimit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+      setSettingsError("成功任务保留数量必须为 1 至 500 的整数");
+      return;
+    }
+    setSettingsError("");
+    setJobsNotice("");
+    setSavingJobs(true);
+    try {
+      const saved = await api<{ successful_job_limit: number }>(
+        "/api/settings/jobs",
+        {
+          method: "PUT",
+          body: JSON.stringify({ successful_job_limit: limit }),
+        },
+      );
+      setConfirmedJobLimit(saved.successful_job_limit);
+      setDraftJobLimit(String(saved.successful_job_limit));
+      setJobsNotice("任务记录设置已保存");
+    } catch (reason) {
+      setDraftJobLimit(String(confirmedJobLimit));
+      setSettingsError(errorMessage(reason));
+    } finally {
+      setSavingJobs(false);
     }
   };
   return (
@@ -1717,6 +1760,36 @@ function SettingsPage() {
           <input name="token" type="password" required />
         </label>
         <button className="create">加密保存</button>
+      </form>
+      <form className="control-form" onSubmit={saveJobSettings}>
+        <p className="eyebrow">JOB RECORDS</p>
+        <h2>任务记录</h2>
+        <p>仅限制成功任务；失败和中断任务不会自动删除。</p>
+        <label>
+          成功任务保留数量
+          <input
+            type="number"
+            min={1}
+            max={500}
+            step={1}
+            required
+            value={draftJobLimit}
+            disabled={!jobSettingsReady || savingJobs}
+            onChange={(event) => {
+              setDraftJobLimit(event.target.value);
+              setJobsNotice("");
+            }}
+          />
+        </label>
+        {jobsNotice ? <p role="status">{jobsNotice}</p> : null}
+        <button
+          className="create"
+          type="submit"
+          aria-label="保存任务记录设置"
+          disabled={!jobSettingsReady || savingJobs}
+        >
+          {savingJobs ? "保存中…" : "保存"}
+        </button>
       </form>
     </div>
   );

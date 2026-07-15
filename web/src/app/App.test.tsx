@@ -962,6 +962,110 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
+  it("loads and updates the successful job retention limit", async () => {
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        if (path === "/api/settings/jobs") {
+          if (init?.method === "PUT") {
+            return Response.json({ successful_job_limit: 40 });
+          }
+          return Response.json({ successful_job_limit: 25 });
+        }
+        return Response.json({ configured: false });
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "系统设置" }));
+    const input = await screen.findByRole("spinbutton", {
+      name: "成功任务保留数量",
+    });
+    expect(input).toHaveValue(25);
+    expect(input).toHaveAttribute("min", "1");
+    expect(input).toHaveAttribute("max", "500");
+    expect(
+      screen.getByText("仅限制成功任务；失败和中断任务不会自动删除。"),
+    ).toBeVisible();
+
+    await userEvent.clear(input);
+    await userEvent.type(input, "40");
+    await userEvent.click(
+      screen.getByRole("button", { name: "保存任务记录设置" }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/settings/jobs",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ successful_job_limit: 40 }),
+      }),
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "任务记录设置已保存",
+    );
+  });
+
+  it("disables retention settings while the save is in progress", async () => {
+    const save = deferred<Response>();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === "/api/settings/jobs") {
+          if (init?.method === "PUT") return save.promise;
+          return Response.json({ successful_job_limit: 25 });
+        }
+        return Response.json({ configured: false });
+      }),
+    );
+
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "系统设置" }));
+    const saveButton = await screen.findByRole("button", {
+      name: "保存任务记录设置",
+    });
+    await waitFor(() => expect(saveButton).toBeEnabled());
+    await userEvent.click(saveButton);
+    expect(saveButton).toBeDisabled();
+
+    save.resolve(Response.json({ successful_job_limit: 25 }));
+    await waitFor(() => expect(saveButton).toBeEnabled());
+  });
+
+  it("restores the confirmed retention limit when saving fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === "/api/settings/jobs") {
+          if (init?.method === "PUT") {
+            return Response.json(
+              { error: { message: "保存任务设置失败" } },
+              { status: 500 },
+            );
+          }
+          return Response.json({ successful_job_limit: 25 });
+        }
+        return Response.json({ configured: false });
+      }),
+    );
+
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "系统设置" }));
+    const input = await screen.findByRole("spinbutton", {
+      name: "成功任务保留数量",
+    });
+    await userEvent.clear(input);
+    await userEvent.type(input, "40");
+    await userEvent.click(
+      screen.getByRole("button", { name: "保存任务记录设置" }),
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "保存任务设置失败",
+    );
+    expect(input).toHaveValue(25);
+  });
+
   it("selects both forced reinstall targets by default", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response('{"ID":"job-1","Status":"pending"}', {
