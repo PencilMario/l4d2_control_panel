@@ -65,7 +65,7 @@ Read this checkpoint, the intent, baseline read set, approved spec, plan and evi
 - Scope: aligned with approved private manager and console behavior.
 - Compatibility: existing private API remains callable; Apply now delegates transactionally; package rollback and overlay order remain covered.
 - Ownership: `PrivateManager` is the sole private apply/rebase/snapshot/recovery owner; Pipeline holds its content-owned lease.
-- Retirement: blind Apply is retired; immediate-apply UI remains scheduled for Task 4.
+- Retirement: blind Apply is retired; Task 4 retired the immediate-apply UI.
 - Evidence gap: Windows race detector unavailable because CGO is disabled; deterministic barrier tests cover the relevant intermediate windows.
 - Residual Minor risks: lexical lock aliases, lock-map retention, and history snapshot on failed final Save rename.
 - Task 2 residual: Windows normal symlinks are covered; junction/reparse subtype reporting remains dependent on Go runtime behavior.
