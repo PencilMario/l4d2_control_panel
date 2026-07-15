@@ -1211,30 +1211,29 @@ func (m *PrivateManager) Snapshots(_ context.Context, instanceID string) ([]Priv
 }
 
 func (m *PrivateManager) Recover(ctx context.Context) error {
+	instances := filepath.Join(m.root, "instances")
+	entries, err := os.ReadDir(instances)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
 	var result error
-	for _, kind := range []string{"apply-*", "restore-*"} {
-		paths, err := filepath.Glob(filepath.Join(m.root, "instances", "*", "backups", "private", kind, "journal.json"))
-		if err != nil {
+	for _, entry := range entries {
+		if !entry.IsDir() || validateInstanceID(entry.Name()) != nil {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
 			return errors.Join(result, err)
 		}
-		for _, journalPath := range paths {
-			if err := ctx.Err(); err != nil {
-				return errors.Join(result, err)
-			}
-			work := filepath.Dir(journalPath)
-			base := filepath.Dir(filepath.Dir(filepath.Dir(work)))
-			instanceID := filepath.Base(base)
-			lock := m.instanceLock(instanceID)
-			lock.Lock()
-			var recoverErr error
-			if strings.HasPrefix(filepath.Base(work), "restore-") {
-				recoverErr = m.recoverPrivateRestoreLocked(journalPath, base, instanceID)
-			} else {
-				recoverErr = m.recoverPrivateJournalLocked(journalPath, base, instanceID)
-			}
-			lock.Unlock()
-			result = errors.Join(result, recoverErr)
-		}
+		instanceID := entry.Name()
+		base := filepath.Join(instances, instanceID)
+		lock := m.instanceLock(instanceID)
+		lock.Lock()
+		recoverErr := m.recoverPrivateInstanceLocked(ctx, instanceID, base)
+		lock.Unlock()
+		result = errors.Join(result, recoverErr)
 	}
 	return result
 }
@@ -1256,6 +1255,31 @@ func (m *PrivateManager) recoverPrivateInstanceLocked(ctx context.Context, insta
 				result = errors.Join(result, m.recoverPrivateJournalLocked(path, base, instanceID))
 			}
 		}
+	}
+	works, err := filepath.Glob(filepath.Join(base, "backups", "private", "restore-*"))
+	if err != nil {
+		return errors.Join(result, err)
+	}
+	for _, work := range works {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(result, err)
+		}
+		name := filepath.Base(work)
+		if _, err := uuid.Parse(strings.TrimPrefix(name, "restore-")); err != nil {
+			continue
+		}
+		journal := filepath.Join(work, "journal.json")
+		if _, err := os.Lstat(journal); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			result = errors.Join(result, err)
+			continue
+		}
+		if err := rejectSymlinkParents(filepath.Join(base, "backups", "private"), work); err != nil {
+			result = errors.Join(result, err)
+			continue
+		}
+		result = errors.Join(result, os.RemoveAll(work))
 	}
 	return result
 }
