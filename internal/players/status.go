@@ -11,7 +11,7 @@ type StatusPlayer struct {
 	SteamID string `json:"steam_id"`
 }
 
-var statusLine = regexp.MustCompile(`(?m)^#\s+(\d+)\s+"([^"]+)"\s+(\S+)\s+`)
+var statusLine = regexp.MustCompile(`(?m)^#\s+(\d+)(?:\s+\d+)?\s+"([^"]+)"\s+(\S+)\s+`)
 
 func ParseStatus(raw string) []StatusPlayer {
 	matches := statusLine.FindAllStringSubmatch(raw, -1)
