@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { api, normalizeInstance, type Job } from "../api/client";
+import { JobsPage } from "./JobsPage";
 import {
   InstanceConfigModal,
   type ConfigurableInstance,
@@ -1082,79 +1083,6 @@ function Terminal({
         <button>发送</button>
       </form>
     </div>
-  );
-}
-
-type JobRecord = Job & {
-  InstanceID: string;
-  Type: string;
-  Message: string;
-  CreatedAt: string;
-  UpdatedAt: string;
-};
-
-function JobsPage() {
-  const [items, setItems] = useState<JobRecord[]>([]);
-  const [jobsError, setJobsError] = useState("");
-  useEffect(() => {
-    let active = true;
-    api<JobRecord[]>("/api/jobs")
-      .then((jobs) => active && setItems(jobs))
-      .catch((reason) => active && setJobsError(String(reason)));
-    if (typeof EventSource === "undefined") {
-      return () => {
-        active = false;
-      };
-    }
-    const events = new EventSource("/api/jobs/events");
-    events.addEventListener("jobs", (event) => {
-      if (!active) return;
-      try {
-        setItems(JSON.parse((event as MessageEvent<string>).data));
-      } catch {
-        setJobsError("任务事件数据无效");
-      }
-    });
-    events.onerror = () => setJobsError("任务实时流已断开，正在由浏览器重连");
-    return () => {
-      active = false;
-      events.close();
-    };
-  }, []);
-  return (
-    <section className="job-feed">
-      <div className="section-head">
-        <div>
-          <p className="eyebrow">DURABLE OPERATIONS</p>
-          <h2>最近任务</h2>
-        </div>
-        <span className="feed-live">SSE / LIVE</span>
-      </div>
-      {jobsError ? (
-        <div className="error" role="alert">
-          {jobsError}
-        </div>
-      ) : null}
-      <div className="job-table" role="list">
-        {items.map((item) => (
-          <article className="job-row" key={item.ID} role="listitem">
-            <div className="job-code">
-              <span>{item.Type}</span>
-              <small>{item.ID.slice(0, 8)}</small>
-            </div>
-            <div className="job-stage">
-              <b>{item.Stage || "queued"}</b>
-              <small>{item.Error || item.Message || "等待后台执行"}</small>
-            </div>
-            <div className="job-progress" aria-label={`进度 ${item.Percent}%`}>
-              <i style={{ width: `${Math.max(0, item.Percent)}%` }} />
-            </div>
-            <span className={`job-state ${item.Status}`}>{item.Status}</span>
-          </article>
-        ))}
-        {items.length === 0 ? <div className="empty">尚无后台任务</div> : null}
-      </div>
-    </section>
   );
 }
 

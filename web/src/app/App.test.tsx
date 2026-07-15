@@ -752,25 +752,78 @@ describe("App", () => {
     vi.unstubAllGlobals();
   });
   it("shows persisted jobs on a dedicated operations page", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/jobs") {
+        return new Response(
+          JSON.stringify([
+            {
+              ID: "job-1",
+              Type: "game_update",
+              Status: "failed",
+              Stage: "steamcmd",
+              Percent: 37,
+              Error: "download interrupted",
+              CreatedAt: "2026-07-16T08:00:00Z",
+              UpdatedAt: "2026-07-16T08:02:20Z",
+              StartedAt: "2026-07-16T08:00:02Z",
+              FinishedAt: "2026-07-16T08:02:20Z",
+            },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (String(input) === "/api/jobs/job-1") {
+        return new Response(
+          JSON.stringify({
+            ID: "job-1",
+            Type: "game_update",
+            Status: "failed",
+            Stage: "steamcmd",
+            Percent: 37,
+            Error: "download interrupted",
+            CreatedAt: "2026-07-16T08:00:00Z",
+            UpdatedAt: "2026-07-16T08:02:20Z",
+            StartedAt: "2026-07-16T08:00:02Z",
+            FinishedAt: "2026-07-16T08:02:20Z",
+            Events: [
+              {
+                ID: 1,
+                JobID: "job-1",
+                Kind: "failed",
+                Stage: "steamcmd",
+                Percent: 37,
+                Message: "download interrupted",
+                CreatedAt: "2026-07-16T08:02:20Z",
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("[]", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        if (String(input) === "/api/jobs") {
-          return new Response(
-            '[{"ID":"job-1","Type":"game_update","Status":"failed","Stage":"steamcmd","Percent":37,"Error":"download interrupted"}]',
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          );
-        }
-        return new Response("[]", {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }),
+      fetchMock,
     );
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "任务" }));
     expect(await screen.findByText("game_update")).toBeInTheDocument();
     expect(screen.getByText("download interrupted")).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "查看 game_update 任务日志" }),
+    );
+    expect(
+      await screen.findByRole("region", { name: "game_update 任务日志" }),
+    ).toHaveTextContent("download interrupted");
+    expect(screen.getByText("执行用时 2分18秒")).toBeVisible();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/jobs/job-1",
+      expect.objectContaining({ credentials: "same-origin" }),
+    );
     vi.unstubAllGlobals();
   });
   it("loads VPK downloads from the content repository", async () => {

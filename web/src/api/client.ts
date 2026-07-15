@@ -1,9 +1,26 @@
 export type Job = {
   ID: string;
+  InstanceID?: string;
+  Type?: string;
   Status: string;
   Stage: string;
   Percent: number;
+  Message?: string;
   Error: string;
+  CreatedAt?: string;
+  UpdatedAt?: string;
+  StartedAt?: string | null;
+  FinishedAt?: string | null;
+  Events?: JobEvent[];
+};
+export type JobEvent = {
+  ID: number;
+  JobID: string;
+  Kind: string;
+  Stage: string;
+  Percent: number;
+  Message: string;
+  CreatedAt: string;
 };
 async function request(path: string, init: RequestInit) {
   const response = await fetch(path, {
