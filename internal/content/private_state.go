@@ -1374,22 +1374,26 @@ func (m *PrivateManager) RestoreSnapshot(ctx context.Context, instanceID, snapsh
 	}
 	work := filepath.Join(base, "backups", "private", "restore-"+uuid.NewString())
 	staging := filepath.Join(work, "staged")
+	if err := copyPrivateRestoreTree(source, staging); err != nil {
+		m.cleanupPrivate(base, "restore-prejournal", func() error { return os.RemoveAll(work) })
+		return err
+	}
+	return m.replacePrivateWorkspaceLocked(instanceID, base, work, staging)
+}
+
+func (m *PrivateManager) replacePrivateWorkspaceLocked(instanceID, base, work, staging string) (err error) {
 	preJournal := true
 	defer func() {
 		if preJournal {
 			m.cleanupPrivate(base, "restore-prejournal", func() error { return os.RemoveAll(work) })
 		}
 	}()
-	if err := copyPrivateRestoreTree(source, staging); err != nil {
-		return err
-	}
 	workspace := filepath.Join(base, "private")
 	backup := filepath.Join(work, "old")
 	hadOld := false
-	if _, err := os.Stat(workspace); err == nil {
+	if _, err = os.Stat(workspace); err == nil {
 		hadOld = true
 	} else if !errors.Is(err, os.ErrNotExist) {
-		_ = os.RemoveAll(work)
 		return err
 	}
 	journal := privateRestoreJournal{Version: 1, InstanceID: instanceID, Stage: "prepared", HadOld: hadOld}
