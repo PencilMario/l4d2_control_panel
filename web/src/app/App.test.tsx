@@ -74,6 +74,66 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe("App", () => {
+  it("keeps console websocket chunks and follows after sending a command", async () => {
+    const sockets: FakeWebSocket[] = [];
+    class FakeWebSocket {
+      binaryType = "";
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      send = vi.fn();
+      close = vi.fn();
+      constructor(public url: string) { sockets.push(this); }
+    }
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    let nextFrame = 1;
+    const frames = new Map<number, FrameRequestCallback>();
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      const id = nextFrame++;
+      frames.set(id, callback);
+      return id;
+    });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+    const flushFrames = () => {
+      const pending = [...frames.entries()];
+      frames.clear();
+      pending.forEach(([id, callback]) => callback(id));
+    };
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "控制台" }));
+    const output = document.querySelector(".terminal-modal pre") as HTMLPreElement;
+    let scrollTop = 0;
+    Object.defineProperties(output, {
+      scrollHeight: { configurable: true, get: () => 600 },
+      clientHeight: { configurable: true, get: () => 100 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => { scrollTop = value; },
+      },
+    });
+    act(() => sockets[0].onmessage?.({ data: "ready\n" } as MessageEvent));
+    act(() => flushFrames());
+    expect(output).toHaveTextContent("ready");
+    expect(scrollTop).toBe(600);
+
+    await userEvent.type(screen.getByRole("textbox"), "status");
+    await userEvent.click(screen.getByRole("button", { name: "发送" }));
+    act(() => flushFrames());
+    expect(sockets[0].send).toHaveBeenCalledWith("status\n");
+    expect(scrollTop).toBe(600);
+    expect(sockets[0].url).toContain("/api/instances/1/console");
+
+    act(() => {
+      for (let index = 0; index <= 500; index += 1) {
+        sockets[0].onmessage?.({ data: `[${index}]\n` } as MessageEvent);
+      }
+    });
+    act(() => flushFrames());
+    expect(output).not.toHaveTextContent("ready");
+    expect(output).not.toHaveTextContent("[0]");
+    expect(output).toHaveTextContent("[1]");
+    expect(output).toHaveTextContent("[500]");
+    expect(scrollTop).toBe(600);
+  });
   it("shows operational instance data", () => {
     render(
       <App
@@ -286,45 +346,23 @@ describe("App", () => {
     ).toBeInTheDocument();
     vi.unstubAllGlobals();
   });
-  it("does not apply a private overlay when saving the file fails", async () => {
-    const calls: string[] = [];
+  it("opens private files as an independent main navigation page", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      vi.fn(async (input: RequestInfo | URL) => {
         const path = String(input);
-        calls.push(`${init?.method || "GET"} ${path}`);
-        if (
-          path === "/api/content/vpk" ||
-          path === "/api/packages" ||
-          path === "/api/instances/1/private"
-        ) {
-          return new Response("[]", {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        if (init?.method === "PUT" && path.includes("/private/")) {
-          return new Response(
-            JSON.stringify({ error: { message: "invalid private path" } }),
-            { status: 422, headers: { "Content-Type": "application/json" } },
-          );
-        }
-        return new Response(
-          JSON.stringify({ ID: "job-1", Status: "pending" }),
-          { status: 202, headers: { "Content-Type": "application/json" } },
-        );
+        const body = path.endsWith("/private/diff")
+          ? '{"changes":[],"summary":{"added":0,"modified":0,"deleted":0}}'
+          : "[]";
+        return new Response(body, {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
       }),
     );
     render(<App initialInstances={[instance]} />);
-    await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
-    await screen.findByText("实例私有覆盖");
-    await userEvent.click(
-      screen.getByRole("button", { name: "保存并立即应用" }),
-    );
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "invalid private path",
-    );
-    expect(calls.some((x) => x.includes("/private/apply"))).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "私有文件" }));
+    expect(await screen.findByRole("heading", { name: "私有文件" })).toBeVisible();
     vi.unstubAllGlobals();
   });
   it("disables instance-scoped content actions when no instance exists", async () => {
@@ -348,9 +386,6 @@ describe("App", () => {
       await screen.findByRole("button", { name: "热更新" }),
     ).toBeDisabled();
     expect(screen.getByRole("button", { name: "完整更新" })).toBeDisabled();
-    expect(
-      screen.getByRole("button", { name: "保存并立即应用" }),
-    ).toBeDisabled();
     await waitFor(() =>
       expect(screen.getByText("plugins.zip · v1")).toBeInTheDocument(),
     );
@@ -378,7 +413,7 @@ describe("App", () => {
     expect(screen.getByText("download interrupted")).toBeInTheDocument();
     vi.unstubAllGlobals();
   });
-  it("loads VPK downloads and private files into the editor", async () => {
+  it("loads VPK downloads from the content repository", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
@@ -395,18 +430,6 @@ describe("App", () => {
             headers: { "Content-Type": "application/json" },
           });
         }
-        if (path === "/api/instances/1/private") {
-          return new Response(
-            '[{"path":"cfg/server.cfg","size":14,"hash":"123456"}]',
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          );
-        }
-        if (path === "/api/instances/1/private/file/cfg/server.cfg") {
-          return new Response("hostname smoke", {
-            status: 200,
-            headers: { "Content-Type": "text/plain" },
-          });
-        }
         return new Response("[]", {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -420,12 +443,6 @@ describe("App", () => {
       "href",
       "/api/content/vpk/maps.vpk/download",
     );
-    await userEvent.click(
-      await screen.findByRole("button", { name: "编辑 cfg/server.cfg" }),
-    );
-    expect(
-      await screen.findByDisplayValue("hostname smoke"),
-    ).toBeInTheDocument();
     vi.unstubAllGlobals();
   });
 
@@ -702,6 +719,30 @@ describe("App", () => {
     });
     expect(jobReads).toBe(1);
     expect(screen.getByText("Panel restarted; inspect and retry")).toBeInTheDocument();
+  });
+
+  it("serializes slow job polling and stops polling after unmount", async () => {
+    vi.useFakeTimers();
+    let jobReads = 0;
+    let resolveRead!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") return new Response('{"ID":"slow-job","Status":"pending"}', { status: 202, headers: { "Content-Type": "application/json" } });
+      if (String(input) === "/api/jobs/slow-job") {
+        jobReads++;
+        return new Promise<Response>((resolve) => { resolveRead = resolve; });
+      }
+      return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    const view = render(<App initialInstances={[{ ...instance, actual_state: "stopped" }]} />);
+    fireEvent.click(screen.getByRole("button", { name: "启动" }));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(jobReads).toBe(1);
+    await act(async () => { vi.advanceTimersByTime(5_000); await Promise.resolve(); });
+    expect(jobReads).toBe(1);
+    view.unmount();
+    resolveRead(new Response('{"ID":"slow-job","Status":"running"}', { status: 200, headers: { "Content-Type": "application/json" } }));
+    await act(async () => { await Promise.resolve(); vi.advanceTimersByTime(5_000); });
+    expect(jobReads).toBe(1);
   });
 
   it("hashes and uploads VPK files in sequential 8 MiB chunks", async () => {

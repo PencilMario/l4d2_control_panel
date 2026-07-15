@@ -1,0 +1,374 @@
+package content
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"slices"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+func uploadHash(raw []byte) string {
+	digest := sha256.Sum256(raw)
+	return hex.EncodeToString(digest[:])
+}
+
+func TestPrivateUploadResumesAndCompletesAtomically(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateUploadManager(root, 8<<20)
+	session, err := manager.Begin("abc", "addons/file.bin", 6, uploadHash([]byte("abcdef")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = manager.Write(session.ID, 0, bytes.NewBufferString("abc")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "instances", "abc", "private", "addons", "file.bin")); !os.IsNotExist(err) {
+		t.Fatalf("partial target visible: %v", err)
+	}
+	recovered, err := manager.Recover(session.ID)
+	if err != nil || recovered.Offset != 3 {
+		t.Fatalf("recover = %+v, %v", recovered, err)
+	}
+	if _, err = manager.Write(session.ID, 3, bytes.NewBufferString("def")); err != nil {
+		t.Fatal(err)
+	}
+	if err = manager.Complete(session.ID); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "instances", "abc", "private", "addons", "file.bin"))
+	if err != nil || string(raw) != "abcdef" {
+		t.Fatalf("published = %q, %v", raw, err)
+	}
+	if _, err = manager.Recover(session.ID); err == nil {
+		t.Fatal("completed metadata remains")
+	}
+}
+
+func TestPrivateUploadRejectsInvalidWritesAndMetadata(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateUploadManager(root, 6)
+	if _, err := manager.Begin("../abc", "file", 1, uploadHash([]byte("x"))); err == nil {
+		t.Fatal("unsafe instance accepted")
+	}
+	if _, err := manager.Begin("abc", "../file", 1, uploadHash([]byte("x"))); err == nil {
+		t.Fatal("unsafe path accepted")
+	}
+	if _, err := manager.Begin("abc", "file", 7, uploadHash([]byte("1234567"))); err == nil {
+		t.Fatal("oversize accepted")
+	}
+	s, err := manager.Begin("abc", "file", 3, uploadHash([]byte("abc")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = manager.Write(s.ID, 1, bytes.NewBufferString("a")); err == nil {
+		t.Fatal("wrong offset accepted")
+	}
+	if _, err = manager.Write(s.ID, 0, bytes.NewBufferString("abcd")); err == nil {
+		t.Fatal("oversize chunk accepted")
+	}
+	if _, err = manager.Write(s.ID, 0, bytes.NewBufferString("abd")); err != nil {
+		t.Fatal(err)
+	}
+	if err = manager.Complete(s.ID); err == nil {
+		t.Fatal("hash mismatch accepted")
+	}
+}
+
+func TestPrivateUploadCompleteNeverOverwritesAndCleanupSurvivesRestart(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateUploadManager(root, 1024)
+	s, err := manager.Begin("abc", "file.bin", 3, uploadHash([]byte("new")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = manager.Write(s.ID, 0, bytes.NewBufferString("new")); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "instances", "abc", "private", "file.bin")
+	if err = os.MkdirAll(filepath.Dir(target), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(target, []byte("old"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err = manager.Complete(s.ID); err == nil {
+		t.Fatal("complete overwrote destination")
+	}
+	if raw, _ := os.ReadFile(target); string(raw) != "old" {
+		t.Fatalf("destination = %q", raw)
+	}
+	if recovered, err := NewPrivateUploadManager(root, 1024).Recover(s.ID); err != nil || recovered.Offset != 3 {
+		t.Fatalf("recover = %+v, %v", recovered, err)
+	}
+
+	expired, err := manager.Begin("abc", "expired.bin", 1, uploadHash([]byte("x")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, meta := manager.sessionPaths(filepath.Join(root, "instances", "abc", "backups", "private", "uploads"), expired.ID)
+	raw, _ := os.ReadFile(meta)
+	var stored PrivateUploadSession
+	if err = json.Unmarshal(raw, &stored); err != nil {
+		t.Fatal(err)
+	}
+	stored.ExpiresAt = time.Now().Add(-time.Hour)
+	if err = writeUploadMetadata(meta, stored); err != nil {
+		t.Fatal(err)
+	}
+	if err = NewPrivateUploadManager(root, 1024).RecoverAll(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = manager.Recover(expired.ID); err == nil {
+		t.Fatal("expired session remains")
+	}
+}
+
+func TestPrivateApplyReportsTruthfulStages(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateManager(root, 1024)
+	if _, err := manager.Save(context.Background(), "abc", "cfg/a.cfg", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	var stages []string
+	if err := manager.ApplyChangesWithProgress(context.Background(), "abc", func(stage string) { stages = append(stages, stage) }); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"snapshot", "restore-lower", "apply-private", "commit"}
+	if !slices.Equal(stages, want) {
+		t.Fatalf("stages = %v, want %v", stages, want)
+	}
+}
+
+func TestPrivateUploadMetadataCommitStateSurvivesRestart(t *testing.T) {
+	for _, tc := range []struct {
+		stage         string
+		want, written int64
+	}{{"metadata-temp-write", 0, 0}, {"metadata-temp-sync", 0, 0}, {"metadata-rename", 0, 0}, {"metadata-dir-sync", 3, 3}} {
+		t.Run(tc.stage, func(t *testing.T) {
+			root := t.TempDir()
+			manager := NewPrivateUploadManager(root, 1024)
+			s, err := manager.Begin("abc", "file.bin", 3, uploadHash([]byte("abc")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			setPrivateUploadFaultHook(func(stage string) error {
+				if stage == tc.stage {
+					return errors.New("injected")
+				}
+				return nil
+			})
+			written, writeErr := manager.Write(s.ID, 0, bytes.NewBufferString("abc"))
+			setPrivateUploadFaultHook(nil)
+			if writeErr == nil || written != tc.written {
+				t.Fatalf("write = %d, %v", written, writeErr)
+			}
+			recovered, err := NewPrivateUploadManager(root, 1024).Recover(s.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if recovered.Offset != tc.want {
+				t.Fatalf("offset = %d, want %d", recovered.Offset, tc.want)
+			}
+		})
+	}
+}
+
+func TestPrivateUploadCleanupPairsAndKeepsActiveSession(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateUploadManager(root, 1024)
+	active, err := manager.Begin("abc", "active.bin", 1, uploadHash([]byte("x")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "instances", "abc", "backups", "private", "uploads")
+	orphanPart := uuid.NewString() + ".part"
+	orphanMeta := uuid.NewString() + ".json"
+	if err = os.WriteFile(filepath.Join(dir, orphanPart), []byte("x"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(dir, orphanMeta), []byte(`{"id":"bad"}`), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(dir, ".upload-meta-leftover"), []byte("x"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err = manager.Cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{orphanPart, orphanMeta, ".upload-meta-leftover"} {
+		if _, err = os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Fatalf("artifact remains: %s", name)
+		}
+	}
+	if _, err = NewPrivateUploadManager(root, 1024).Recover(active.ID); err != nil {
+		t.Fatalf("active removed: %v", err)
+	}
+}
+
+func TestPrivateUploadCleanupRejectsSymlinkRootWithoutTouchingOutside(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	sentinel := filepath.Join(outside, "sentinel")
+	if err := os.WriteFile(sentinel, []byte("safe"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	uploadRoot := filepath.Join(root, "instances", "abc", "backups", "private", "uploads")
+	if err := os.MkdirAll(filepath.Dir(uploadRoot), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, uploadRoot); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := NewPrivateUploadManager(root, 1024).Cleanup(); err == nil {
+		t.Fatal("unsafe upload root accepted")
+	}
+	if raw, err := os.ReadFile(sentinel); err != nil || string(raw) != "safe" {
+		t.Fatalf("outside changed: %q, %v", raw, err)
+	}
+}
+
+type blockingUploadReader struct {
+	entered chan struct{}
+	release chan struct{}
+	sent    bool
+}
+
+func (r *blockingUploadReader) Read(p []byte) (int, error) {
+	if r.sent {
+		return 0, io.EOF
+	}
+	close(r.entered)
+	<-r.release
+	r.sent = true
+	p[0] = 'x'
+	return 1, nil
+}
+
+func TestPrivateUploadSlowWriteDoesNotBlockWorkspace(t *testing.T) {
+	root := t.TempDir()
+	uploads := NewPrivateUploadManager(root, 1024)
+	private := NewPrivateManager(root, 1024)
+	s, err := uploads.Begin("abc", "slow.bin", 1, uploadHash([]byte("x")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &blockingUploadReader{entered: make(chan struct{}), release: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() { _, err := uploads.Write(s.ID, 0, reader); done <- err }()
+	<-reader.entered
+	saved := make(chan error, 1)
+	go func() { _, err := private.Save(context.Background(), "abc", "cfg/a", []byte("a")); saved <- err }()
+	select {
+	case err := <-saved:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("slow upload blocked workspace")
+	}
+	close(reader.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPrivateDeleteRevalidatesReplacementAfterWaitingForLock(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateManager(root, 1024)
+	if _, err := manager.Save(context.Background(), "abc", "cfg/a", []byte("old")); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "sentinel")
+	if err := os.WriteFile(outside, []byte("safe"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	lock := manager.instanceLock("abc")
+	lock.Lock()
+	done := make(chan error, 1)
+	go func() { done <- manager.Delete(context.Background(), "abc", "cfg/a") }()
+	target := filepath.Join(root, "instances", "abc", "private", "cfg", "a")
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, target); err != nil {
+		lock.Unlock()
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	lock.Unlock()
+	if err := <-done; err == nil {
+		t.Fatal("replacement symlink deleted")
+	}
+	if raw, err := os.ReadFile(outside); err != nil || string(raw) != "safe" {
+		t.Fatalf("outside changed: %q, %v", raw, err)
+	}
+}
+
+func TestPrivateUploadRecoverWaitsForWriteCommit(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateUploadManager(root, 1024)
+	s, err := manager.Begin("abc", "recover.bin", 1, uploadHash([]byte("x")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &blockingUploadReader{entered: make(chan struct{}), release: make(chan struct{})}
+	writeDone := make(chan error, 1)
+	go func() { _, err := manager.Write(s.ID, 0, reader); writeDone <- err }()
+	<-reader.entered
+	recovered := make(chan PrivateUploadSession, 1)
+	recoverErr := make(chan error, 1)
+	go func() { got, err := manager.Recover(s.ID); recovered <- got; recoverErr <- err }()
+	select {
+	case <-recovered:
+		t.Fatal("Recover observed in-flight write")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(reader.release)
+	if err := <-writeDone; err != nil {
+		t.Fatal(err)
+	}
+	got := <-recovered
+	if err := <-recoverErr; err != nil || got.Offset != 1 {
+		t.Fatalf("recover=%+v, %v", got, err)
+	}
+}
+
+func TestPrivateUploadCompleteWaitsForWriteCommit(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateUploadManager(root, 1024)
+	s, err := manager.Begin("abc", "complete.bin", 1, uploadHash([]byte("x")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &blockingUploadReader{entered: make(chan struct{}), release: make(chan struct{})}
+	writeDone := make(chan error, 1)
+	go func() { _, err := manager.Write(s.ID, 0, reader); writeDone <- err }()
+	<-reader.entered
+	completeDone := make(chan error, 1)
+	go func() { completeDone <- manager.Complete(s.ID) }()
+	select {
+	case err := <-completeDone:
+		t.Fatalf("Complete returned during write: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(reader.release)
+	if err := <-writeDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-completeDone; err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "instances", "abc", "private", "complete.bin"))
+	if err != nil || string(raw) != "x" {
+		t.Fatalf("published=%q, %v", raw, err)
+	}
+}

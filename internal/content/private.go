@@ -5,18 +5,54 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"github.com/not0721here/l4d2-control-panel/internal/safepath"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/not0721here/l4d2-control-panel/internal/safepath"
 )
 
 type PrivateManager struct {
 	root     string
 	maxBytes int
 }
+
+// Locks are shared by all managers in the process for the bounded set of instance roots.
+var privateInstanceLocks sync.Map
+
+var privateHookState struct {
+	sync.RWMutex
+	hook func(string, string)
+}
+
+func setPrivateOperationHook(hook func(string, string)) {
+	privateHookState.Lock()
+	privateHookState.hook = hook
+	privateHookState.Unlock()
+}
+
+func runPrivateOperationHook(phase, path string) {
+	privateHookState.RLock()
+	hook := privateHookState.hook
+	privateHookState.RUnlock()
+	if hook != nil {
+		hook(phase, path)
+	}
+}
+
+func (m *PrivateManager) instanceLock(instanceID string) *sync.RWMutex {
+	root, err := filepath.Abs(m.root)
+	if err != nil {
+		root = m.root
+	}
+	key := filepath.Clean(root) + "\x00" + instanceID
+	lock, _ := privateInstanceLocks.LoadOrStore(key, &sync.RWMutex{})
+	return lock.(*sync.RWMutex)
+}
+
 type PrivateFile struct {
 	Path      string    `json:"path"`
 	Hash      string    `json:"hash,omitempty"`
@@ -28,6 +64,13 @@ func NewPrivateManager(root string, maxBytes int) *PrivateManager {
 	return &PrivateManager{root: root, maxBytes: maxBytes}
 }
 
+func (m *PrivateManager) privateRoot(instanceID string) (string, error) {
+	if err := validateInstanceID(instanceID); err != nil {
+		return "", err
+	}
+	return filepath.Join(m.root, "instances", instanceID, "private"), nil
+}
+
 func validateInstanceID(instanceID string) error {
 	if filepath.Base(instanceID) != instanceID || instanceID == "" || instanceID == "." || instanceID == ".." {
 		return errors.New("invalid instance id")
@@ -36,13 +79,23 @@ func validateInstanceID(instanceID string) error {
 }
 
 func (m *PrivateManager) Save(_ context.Context, instanceID, name string, data []byte) (PrivateFile, error) {
-	if err := validateInstanceID(instanceID); err != nil {
+	lock := m.instanceLock(instanceID)
+	lock.Lock()
+	defer lock.Unlock()
+	if err := m.ensureBaselineLocked(instanceID); err != nil {
+		return PrivateFile{}, err
+	}
+	return m.save(instanceID, name, data)
+}
+
+func (m *PrivateManager) save(instanceID, name string, data []byte) (PrivateFile, error) {
+	private, err := m.privateRoot(instanceID)
+	if err != nil {
 		return PrivateFile{}, err
 	}
 	if len(data) > m.maxBytes {
 		return PrivateFile{}, errors.New("private file exceeds editor limit")
 	}
-	private := filepath.Join(m.root, "instances", instanceID, "private")
 	target, err := safepath.Join(private, name)
 	if err != nil {
 		return PrivateFile{}, err
@@ -67,17 +120,175 @@ func (m *PrivateManager) Save(_ context.Context, instanceID, name string, data [
 	if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
 		return PrivateFile{}, err
 	}
-	temporary := target + ".tmp"
-	if err := os.WriteFile(temporary, data, 0640); err != nil {
+	temporary, err := os.CreateTemp(filepath.Dir(target), ".private-save-*")
+	if err != nil {
 		return PrivateFile{}, err
 	}
-	if err := os.Rename(temporary, target); err != nil {
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	runPrivateOperationHook("save-temp-created", temporaryName)
+	if err := temporary.Chmod(0640); err != nil {
+		temporary.Close()
+		return PrivateFile{}, err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		temporary.Close()
+		return PrivateFile{}, err
+	}
+	if err := temporary.Close(); err != nil {
+		return PrivateFile{}, err
+	}
+	if err := os.Rename(temporaryName, target); err != nil {
 		return PrivateFile{}, err
 	}
 	digest := sha256.Sum256(data)
 	return PrivateFile{Path: filepath.ToSlash(name), Hash: hex.EncodeToString(digest[:]), Size: int64(len(data)), UpdatedAt: time.Now().UTC()}, nil
 }
+
+func (m *PrivateManager) MakeDir(_ context.Context, instanceID, name string) error {
+	lock := m.instanceLock(instanceID)
+	lock.Lock()
+	defer lock.Unlock()
+	if err := m.ensureBaselineLocked(instanceID); err != nil {
+		return err
+	}
+	root, err := m.privateRoot(instanceID)
+	if err != nil {
+		return err
+	}
+	target, err := safepath.Join(root, name)
+	if err != nil {
+		return err
+	}
+	if err := rejectSymlinkParents(root, target); err != nil {
+		return err
+	}
+	return os.MkdirAll(target, 0750)
+}
+
+func (m *PrivateManager) Move(_ context.Context, instanceID, from, to string, overwrite bool) error {
+	lock := m.instanceLock(instanceID)
+	lock.Lock()
+	defer lock.Unlock()
+	if err := m.ensureBaselineLocked(instanceID); err != nil {
+		return err
+	}
+	root, err := m.privateRoot(instanceID)
+	if err != nil {
+		return err
+	}
+	source, err := safepath.Join(root, from)
+	if err != nil {
+		return err
+	}
+	target, err := safepath.Join(root, to)
+	if err != nil {
+		return err
+	}
+	if err := rejectSymlinkParents(root, source); err != nil {
+		return err
+	}
+	if err := rejectSymlinkParents(root, target); err != nil {
+		return err
+	}
+	if source == target {
+		return errors.New("source and destination are the same")
+	}
+	sourceInfo, err := os.Lstat(source)
+	if err != nil {
+		return err
+	}
+	if sourceInfo.IsDir() {
+		relative, err := filepath.Rel(source, target)
+		if err != nil {
+			return err
+		}
+		if relative != "." && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return errors.New("cannot move directory into itself")
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
+		return err
+	}
+	return replacePath(source, target, overwrite)
+}
+
+func replacePath(source, target string, overwrite bool) error {
+	_, targetErr := os.Lstat(target)
+	if errors.Is(targetErr, os.ErrNotExist) {
+		return os.Rename(source, target)
+	}
+	if targetErr != nil {
+		return targetErr
+	}
+	if !overwrite {
+		return errors.New("destination exists")
+	}
+
+	placeholder, err := os.CreateTemp(filepath.Dir(target), ".private-replaced-*")
+	if err != nil {
+		return err
+	}
+	backup := placeholder.Name()
+	if err := placeholder.Close(); err != nil {
+		os.Remove(backup)
+		return err
+	}
+	removeBackup := true
+	defer func() {
+		if removeBackup {
+			_ = os.RemoveAll(backup)
+		}
+	}()
+	if err := os.Remove(backup); err != nil {
+		return err
+	}
+	if err := os.Rename(target, backup); err != nil {
+		return err
+	}
+	runPrivateOperationHook("move-destination-swapped", backup)
+	if err := os.Rename(source, target); err != nil {
+		if rollbackErr := os.Rename(backup, target); rollbackErr != nil {
+			removeBackup = false
+			return errors.Join(err, errors.New("restore destination: "+rollbackErr.Error()))
+		}
+		return err
+	}
+	if err := os.RemoveAll(backup); err != nil {
+		return errors.New("remove replaced destination: " + err.Error())
+	}
+	return nil
+}
+
+func (m *PrivateManager) Tree(_ context.Context, instanceID string) ([]PrivateEntry, error) {
+	lock := m.instanceLock(instanceID)
+	lock.Lock()
+	defer lock.Unlock()
+	if err := m.ensureBaselineLocked(instanceID); err != nil {
+		return nil, err
+	}
+	root, err := m.privateRoot(instanceID)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := scanPrivateTree(root)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]PrivateEntry, 0, len(entries))
+	for path, entry := range entries {
+		result = append(result, PrivateEntry{Path: path, Kind: entry.Kind, Hash: entry.Hash, Size: entry.Size, UpdatedAt: entry.UpdatedAt})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Path < result[j].Path })
+	return result, nil
+}
 func (m *PrivateManager) History(_ context.Context, instanceID, name string) ([]PrivateFile, error) {
+	lock := m.instanceLock(instanceID)
+	lock.Lock()
+	defer lock.Unlock()
+	if err := m.ensureBaselineLocked(instanceID); err != nil {
+		return nil, err
+	}
 	if err := validateInstanceID(instanceID); err != nil {
 		return nil, err
 	}
@@ -113,15 +324,8 @@ func (m *PrivateManager) History(_ context.Context, instanceID, name string) ([]
 	sort.Slice(result, func(i, j int) bool { return result[i].UpdatedAt.After(result[j].UpdatedAt) })
 	return result, nil
 }
-func (m *PrivateManager) Apply(_ context.Context, instanceID string) error {
-	if err := validateInstanceID(instanceID); err != nil {
-		return err
-	}
-	source := filepath.Join(m.root, "instances", instanceID, "private")
-	if _, err := os.Stat(source); errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return ApplyTree(source, filepath.Join(m.root, "instances", instanceID, "game", "left4dead2"))
+func (m *PrivateManager) Apply(ctx context.Context, instanceID string) error {
+	return m.ApplyChanges(ctx, instanceID)
 }
 func rejectSymlinkParents(root, target string) error {
 	relative, err := filepath.Rel(root, target)
@@ -145,6 +349,12 @@ func rejectSymlinkParents(root, target string) error {
 	return nil
 }
 func (m *PrivateManager) Read(_ context.Context, instanceID, name string) ([]byte, error) {
+	lock := m.instanceLock(instanceID)
+	lock.Lock()
+	defer lock.Unlock()
+	if err := m.ensureBaselineLocked(instanceID); err != nil {
+		return nil, err
+	}
 	if err := validateInstanceID(instanceID); err != nil {
 		return nil, err
 	}
@@ -159,6 +369,12 @@ func (m *PrivateManager) Read(_ context.Context, instanceID, name string) ([]byt
 	return os.ReadFile(target)
 }
 func (m *PrivateManager) List(_ context.Context, instanceID string) ([]PrivateFile, error) {
+	lock := m.instanceLock(instanceID)
+	lock.Lock()
+	defer lock.Unlock()
+	if err := m.ensureBaselineLocked(instanceID); err != nil {
+		return nil, err
+	}
 	if err := validateInstanceID(instanceID); err != nil {
 		return nil, err
 	}
@@ -193,7 +409,7 @@ func (m *PrivateManager) List(_ context.Context, instanceID string) ([]PrivateFi
 	sort.Slice(result, func(i, j int) bool { return result[i].Path < result[j].Path })
 	return result, err
 }
-func (m *PrivateManager) Delete(ctx context.Context, instanceID, name string) error {
+func (m *PrivateManager) Delete(_ context.Context, instanceID, name string) error {
 	if err := validateInstanceID(instanceID); err != nil {
 		return err
 	}
@@ -202,10 +418,26 @@ func (m *PrivateManager) Delete(ctx context.Context, instanceID, name string) er
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(target); err != nil {
+	lock := m.instanceLock(instanceID)
+	lock.Lock()
+	defer lock.Unlock()
+	if err := m.ensureBaselineLocked(instanceID); err != nil {
 		return err
 	}
-	if _, err := m.Save(ctx, instanceID, name, []byte{}); err != nil {
+	if err := rejectSymlinkParents(m.root, target); err != nil {
+		return err
+	}
+	info, err := os.Lstat(target)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("symbolic links are forbidden")
+	}
+	if info.IsDir() {
+		return os.RemoveAll(target)
+	}
+	if _, err := m.save(instanceID, name, []byte{}); err != nil {
 		return err
 	}
 	return os.Remove(target)

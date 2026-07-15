@@ -5,12 +5,35 @@ package main
 import (
 	"archive/zip"
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/not0721here/l4d2-control-panel/internal/updates"
 )
+
+func TestPrivateLowerDiagnosticRejectsInstanceTraversal(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(root, "outside", "game", "left4dead2", "secret.txt")
+	if err := os.MkdirAll(filepath.Dir(outside), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outside, []byte("outside sentinel"), 0640); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/__e2e/private-lower?id=../outside&path=secret.txt", nil)
+	response := httptest.NewRecorder()
+	privateLowerDiagnostic(root).ServeHTTP(response, request)
+	if response.Code < 400 || response.Code >= 500 {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+	if raw, err := os.ReadFile(outside); err != nil || string(raw) != "outside sentinel" {
+		t.Fatalf("outside=%q err=%v", raw, err)
+	}
+}
 
 func TestFixtureStartupRecoversInterruptedPackageDeployment(t *testing.T) {
 	root := t.TempDir()

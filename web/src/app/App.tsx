@@ -13,8 +13,8 @@ import {
   ChevronRight,
   CircleStop,
   Database,
+  Files,
   Gauge,
-  History,
   ListTodo,
   Map,
   Play,
@@ -29,13 +29,15 @@ import {
   X,
 } from "lucide-react";
 import { sha256 } from "@noble/hashes/sha2.js";
-import { api, apiText, normalizeInstance, type Job } from "../api/client";
+import { api, normalizeInstance, type Job } from "../api/client";
 import {
   InstanceConfigModal,
   type ConfigurableInstance,
   type InstanceConfigValues,
   type PackageVersion,
 } from "./InstanceConfigModal";
+import { PrivateFilesPage } from "./PrivateFilesPage";
+import { useConsoleFollow } from "./useConsoleFollow";
 import "../styles/app.css";
 export type Instance = ConfigurableInstance & {
   players: number | null;
@@ -61,7 +63,7 @@ type Props = {
   initialPackages?: PackageVersion[];
   onAction?: (id: string, action: string) => void;
 };
-type Page = "overview" | "content" | "jobs" | "schedules" | "settings";
+type Page = "overview" | "private" | "content" | "jobs" | "schedules" | "settings";
 type HealthState = {
   status: "checking" | "online" | "error";
   message: string;
@@ -102,6 +104,14 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
       ? { status: "online", message: "测试数据已加载" }
       : { status: "checking", message: "正在检查 Docker API…" },
   );
+  const pollControllers = useRef(new globalThis.Map<string, AbortController>());
+  const pollTimers = useRef(new globalThis.Map<string, number>());
+  useEffect(() => () => {
+    for (const controller of pollControllers.current.values()) controller.abort();
+    for (const timer of pollTimers.current.values()) window.clearTimeout(timer);
+    pollControllers.current.clear();
+    pollTimers.current.clear();
+  }, []);
   const loadInstances = useCallback(async () => {
     const base = (await api<any[]>("/api/instances")).map(normalizeInstance);
     const enriched = await Promise.all(
@@ -172,7 +182,15 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
       body: JSON.stringify(body),
     });
     setJob(created);
-    pollJob(created.ID);
+    void pollJob(created.ID).catch(() => undefined);
+  };
+  const queueAndWait = async (path: string, body: unknown) => {
+    const created = await api<Job>(path, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    setJob(created);
+    return pollJob(created.ID);
   };
   const action = async (id: string, kind: string) => {
     if (onAction) {
@@ -188,23 +206,43 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
       setError(errorMessage(e));
     }
   };
-  const pollJob = (id: string) => {
-    const read = async () => {
+  const pollJob = (id: string) =>
+    new Promise<Job>((resolve, reject) => {
+      pollControllers.current.get(id)?.abort();
+      const previousTimer = pollTimers.current.get(id);
+      if (previousTimer !== undefined) window.clearTimeout(previousTimer);
+      const controller = new AbortController();
+      pollControllers.current.set(id, controller);
+      let settled = false;
+      const finish = (callback: () => void) => {
+        if (settled) return;
+        settled = true;
+        pollControllers.current.delete(id);
+        const timer = pollTimers.current.get(id);
+        if (timer !== undefined) window.clearTimeout(timer);
+        pollTimers.current.delete(id);
+        callback();
+      };
+      const read = async () => {
       try {
-        const next = await api<Job>(`/api/jobs/${id}`);
+        const next = await api<Job>(`/api/jobs/${id}`, { signal: controller.signal });
+        if (controller.signal.aborted || settled) return;
         setJob(next);
         if (["succeeded", "failed", "interrupted"].includes(next.Status)) {
-          clearInterval(timer);
           void Promise.allSettled([loadInstances(), loadPackages()]);
+          finish(() => resolve(next));
+          return;
         }
+        const timer = window.setTimeout(() => void read(), 800);
+        pollTimers.current.set(id, timer);
       } catch (reason) {
-        clearInterval(timer);
+        if (controller.signal.aborted) return;
         setError(errorMessage(reason));
+        finish(() => reject(reason));
       }
-    };
-    const timer = window.setInterval(() => void read(), 800);
-    void read();
-  };
+      };
+      void read();
+    });
   if (auth === "checking")
     return <div className="splash">正在连接控制节点…</div>;
   if (auth === "no")
@@ -240,6 +278,13 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
             icon={<Gauge />}
           >
             总览
+          </Nav>
+          <Nav
+            active={page === "private"}
+            onClick={() => setPage("private")}
+            icon={<Files />}
+          >
+            私有文件
           </Nav>
           <Nav
             active={page === "content"}
@@ -291,6 +336,8 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
             <h1>
               {page === "overview"
                 ? "服务器作战室"
+                : page === "private"
+                  ? "实例私有文件"
                 : page === "content"
                   ? "内容仓库"
                   : page === "jobs"
@@ -331,10 +378,13 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
             reload={loadInstances}
             acceptJob={(next) => {
               setJob(next);
-              pollJob(next.ID);
+              void pollJob(next.ID).catch(() => undefined);
             }}
           />
         )}{" "}
+        {page === "private" && (
+          <PrivateFilesPage instances={instances} queue={queue} queueAndWait={queueAndWait} />
+        )}
         {page === "content" && (
           <ContentPage
             instances={instances}
@@ -690,6 +740,7 @@ function Terminal({
   const [lines, setLines] = useState<string[]>([]);
   const [input, setInput] = useState("");
   const socket = useRef<WebSocket | null>(null);
+  const consoleFollow = useConsoleFollow(lines);
   useEffect(() => {
     const protocol = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(
@@ -715,11 +766,14 @@ function Terminal({
           <X />
         </button>
       </div>
-      <pre>{lines.join("")}</pre>
+      <pre ref={consoleFollow.outputRef} onScroll={consoleFollow.onScroll}>
+        {lines.join("")}
+      </pre>
       <form
         onSubmit={(e) => {
           e.preventDefault();
           if (input) {
+            consoleFollow.forceFollow();
             socket.current?.send(input + "\n");
             setInput("");
           }
@@ -810,15 +864,6 @@ function JobsPage() {
   );
 }
 
-type PrivateFileEntry = {
-  path: string;
-  hash?: string;
-  size: number;
-  updated_at?: string;
-};
-
-const encodeRelativePath = (path: string) =>
-  path.split("/").map(encodeURIComponent).join("/");
 const VPK_CHUNK_SIZE = 8 * 1024 * 1024;
 const DEFAULT_PLUGIN_REPOSITORY =
   "PencilMario/L4D2-Not0721Here-CoopSvPlugins";
@@ -838,11 +883,6 @@ function ContentPage({
 }) {
   const [vpks, setVpks] = useState<any[]>([]);
   const [selected, setSelected] = useState(instances[0]?.id || "");
-  const [privateFiles, setPrivateFiles] = useState<PrivateFileEntry[]>([]);
-  const [privateHistory, setPrivateHistory] = useState<PrivateFileEntry[]>([]);
-  const [historyPath, setHistoryPath] = useState("");
-  const [privatePath, setPrivatePath] = useState("cfg/server.cfg");
-  const [privateText, setPrivateText] = useState("");
   const [contentError, setContentError] = useState("");
   const [vpkUploadStatus, setVPKUploadStatus] = useState("");
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
@@ -855,29 +895,6 @@ function ContentPage({
       setContentError(errorMessage(reason)),
     );
   }, []);
-  useEffect(() => {
-    let active = true;
-    if (!selected) {
-      setPrivateFiles([]);
-      return () => {
-        active = false;
-      };
-    }
-    api<PrivateFileEntry[]>(`/api/instances/${selected}/private`)
-      .then((files) => active && setPrivateFiles(files))
-      .catch(
-        (reason) => active && setContentError(errorMessage(reason)),
-      );
-    return () => {
-      active = false;
-    };
-  }, [selected]);
-  const loadPrivate = async () => {
-    if (!selected) return;
-    setPrivateFiles(
-      await api<PrivateFileEntry[]>(`/api/instances/${selected}/private`),
-    );
-  };
   const uploadVPK = async (file: File) => {
     const hash = sha256.create();
     for (let offset = 0; offset < file.size; offset += VPK_CHUNK_SIZE) {
@@ -953,31 +970,6 @@ function ContentPage({
     });
     await loadVPK();
   };
-  const editPrivate = async (path: string) => {
-    if (!selected) return;
-    const text = await apiText(
-      `/api/instances/${selected}/private/file/${encodeRelativePath(path)}`,
-    );
-    setPrivatePath(path);
-    setPrivateText(text);
-  };
-  const showPrivateHistory = async (path: string) => {
-    if (!selected) return;
-    const versions = await api<PrivateFileEntry[]>(
-      `/api/instances/${selected}/private/history/${encodeRelativePath(path)}`,
-    );
-    setHistoryPath(path);
-    setPrivateHistory(versions);
-  };
-  const deletePrivate = async (path: string) => {
-    if (!selected || !window.confirm(`删除私有覆盖 ${path}？`)) return;
-    await api(
-      `/api/instances/${selected}/private/file/${encodeRelativePath(path)}?confirm=true`,
-      { method: "DELETE" },
-    );
-    if (privatePath === path) setPrivateText("");
-    await loadPrivate();
-  };
   const runContentAction = (operation: () => Promise<unknown>) => {
     setContentError("");
     void operation().catch((reason) => setContentError(errorMessage(reason)));
@@ -994,6 +986,14 @@ function ContentPage({
           {vpkUploadStatus}
         </div>
       )}
+      <label className="content-instance-selector">
+        更新目标实例
+        <select value={selected} onChange={(event) => setSelected(event.target.value)}>
+          {instances.map((instance) => (
+            <option key={instance.id} value={instance.id}>{instance.name}</option>
+          ))}
+        </select>
+      </label>
       <Panel
         title="共享 VPK"
         action={
@@ -1126,115 +1126,6 @@ function ContentPage({
         ))}
         {!packages.length && <div className="empty">暂无插件包</div>}
       </Panel>
-      <Panel title="私有文件树">
-        {privateFiles.map((file) => (
-          <div className="data-row private-file" key={file.path}>
-            <div>
-              <b>{file.path}</b>
-              <small>
-                {formatBytes(file.size)} · {(file.hash || "").slice(0, 12)}
-              </small>
-            </div>
-            <div className="inline-actions">
-              <button
-                aria-label={`编辑 ${file.path}`}
-                onClick={() => runContentAction(() => editPrivate(file.path))}
-              >
-                编辑
-              </button>
-              <a
-                aria-label={`下载 ${file.path}`}
-                download
-                href={`/api/instances/${selected}/private/file/${encodeRelativePath(file.path)}`}
-              >
-                下载
-              </a>
-              <button
-                aria-label={`历史 ${file.path}`}
-                onClick={() =>
-                  runContentAction(() => showPrivateHistory(file.path))
-                }
-              >
-                <History />
-              </button>
-              <button
-                aria-label={`删除 ${file.path}`}
-                className="danger"
-                onClick={() => runContentAction(() => deletePrivate(file.path))}
-              >
-                删除
-              </button>
-            </div>
-          </div>
-        ))}
-        {privateFiles.length === 0 ? (
-          <div className="empty">该实例没有私有覆盖文件</div>
-        ) : null}
-        {historyPath ? (
-          <div className="version-strip">
-            <b>
-              {historyPath} · 历史版本 {privateHistory.length}
-            </b>
-            {privateHistory.map((version) => (
-              <small key={version.path}>
-                {version.path} · {formatBytes(version.size)}
-              </small>
-            ))}
-          </div>
-        ) : null}
-      </Panel>
-      <form
-        className="control-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          runContentAction(async () => {
-            await api(
-              `/api/instances/${selected}/private/${encodeRelativePath(privatePath)}`,
-              {
-                method: "PUT",
-                headers: { "Content-Type": "text/plain; charset=utf-8" },
-                body: privateText,
-              },
-            );
-            await queue(`/api/instances/${selected}/private/apply`, {});
-            await loadPrivate();
-          });
-        }}
-      >
-        <p className="eyebrow">PRIVATE OVERLAY</p>
-        <h2>实例私有覆盖</h2>
-        <label>
-          目标实例
-          <select
-            value={selected}
-            onChange={(e) => setSelected(e.target.value)}
-          >
-            {instances.map((x) => (
-              <option key={x.id} value={x.id}>
-                {x.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          相对路径
-          <input
-            value={privatePath}
-            onChange={(e) => setPrivatePath(e.target.value)}
-          />
-        </label>
-        <label>
-          文本内容
-          <textarea
-            rows={10}
-            value={privateText}
-            onChange={(e) => setPrivateText(e.target.value)}
-          />
-        </label>
-        <button className="create" disabled={!selected}>
-          保存并立即应用
-        </button>
-      </form>
       {confirmation && (
         <ConfirmationDialog
           title={confirmation.title}

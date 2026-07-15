@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -45,6 +46,7 @@ type Server struct {
 	players           PlayerService
 	uploads           *content.UploadManager
 	private           *content.PrivateManager
+	privateUploads    *content.PrivateUploadManager
 	updates           *updates.Pipeline
 	packages          *content.PackageManager
 	updateCoordinator *updates.Coordinator
@@ -55,6 +57,10 @@ type Server struct {
 	resources         ResourceProvider
 	system            SystemProvider
 	secureCookie      bool
+}
+
+func WithPrivateUploads(manager *content.PrivateUploadManager) Option {
+	return func(s *Server) { s.privateUploads = manager }
 }
 
 type Lifecycle interface {
@@ -130,6 +136,7 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 	r.Group(func(r chi.Router) {
 		r.Use(s.requireAuth)
 		r.Use(s.auditMutations)
+		r.Use(s.requireExistingPrivateInstance)
 		r.Post("/api/auth/logout", s.logout)
 		r.Get("/api/session", func(w http.ResponseWriter, _ *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]bool{"authenticated": true})
@@ -157,6 +164,16 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Delete("/api/content/vpk/{name}", s.deleteVPK)
 		r.Put("/api/instances/{id}/private/*", s.savePrivate)
 		r.Get("/api/instances/{id}/private", s.listPrivate)
+		r.Get("/api/instances/{id}/private/tree", s.privateTree)
+		r.Get("/api/instances/{id}/private/diff", s.privateDiff)
+		r.Post("/api/instances/{id}/private/directories", s.makePrivateDirectory)
+		r.Post("/api/instances/{id}/private/move", s.movePrivate)
+		r.Post("/api/instances/{id}/private/uploads", s.beginPrivateUpload)
+		r.Get("/api/instances/{id}/private/uploads/{uploadID}", s.recoverPrivateUpload)
+		r.Patch("/api/instances/{id}/private/uploads/{uploadID}", s.writePrivateUpload)
+		r.Post("/api/instances/{id}/private/uploads/{uploadID}/complete", s.completePrivateUpload)
+		r.Get("/api/instances/{id}/private/snapshots", s.privateSnapshots)
+		r.Post("/api/instances/{id}/private/snapshots/{snapshotID}/restore", s.restorePrivateSnapshot)
 		r.Get("/api/instances/{id}/private/history/*", s.privateHistory)
 		r.Get("/api/instances/{id}/private/file/*", s.downloadPrivate)
 		r.Delete("/api/instances/{id}/private/file/*", s.deletePrivate)
@@ -270,13 +287,27 @@ func (s *Server) downloadPrivate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "content_unavailable", "private manager unavailable")
 		return
 	}
-	raw, err := s.private.Read(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "*"))
+	name := chi.URLParam(r, "*")
+	if s.privateUploads == nil {
+		raw, err := s.private.Read(r.Context(), chi.URLParam(r, "id"), name)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "private_not_found", err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filepath.Base(name)))
+		_, _ = w.Write(raw)
+		return
+	}
+	file, info, err := s.privateUploads.Open(chi.URLParam(r, "id"), name)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "private_not_found", err.Error())
 		return
 	}
+	defer file.Close()
 	w.Header().Set("Content-Type", "application/octet-stream")
-	_, _ = w.Write(raw)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filepath.Base(name)))
+	http.ServeContent(w, r, filepath.Base(name), info.ModTime(), file)
 }
 
 func (s *Server) deletePrivate(w http.ResponseWriter, r *http.Request) {
@@ -1010,9 +1041,18 @@ func (s *Server) savePrivate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 503, "content_unavailable", "private manager unavailable")
 		return
 	}
+	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0]))
+	if mediaType != "text/plain" && mediaType != "application/json" {
+		writeError(w, 415, "unsupported_media_type", "private editor accepts UTF-8 text/plain")
+		return
+	}
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
 		writeError(w, 413, "file_too_large", err.Error())
+		return
+	}
+	if !utf8.Valid(raw) {
+		writeError(w, 422, "invalid_utf8", "private editor requires UTF-8 text")
 		return
 	}
 	item, err := s.private.Save(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "*"), raw)
@@ -1022,13 +1062,196 @@ func (s *Server) savePrivate(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, item)
 }
+
+type privatePathRequest struct {
+	Path    string `json:"path"`
+	Confirm bool   `json:"confirm,omitempty"`
+}
+type privateMoveRequest struct {
+	From      string `json:"from"`
+	To        string `json:"to"`
+	Overwrite bool   `json:"overwrite"`
+	Confirm   bool   `json:"confirm,omitempty"`
+}
+type privateUploadRequest struct {
+	Path   string `json:"path"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
+}
+
+func (s *Server) privateTree(w http.ResponseWriter, r *http.Request) {
+	if s.private == nil {
+		writeError(w, 503, "content_unavailable", "private manager unavailable")
+		return
+	}
+	items, err := s.private.Tree(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, 422, "private_path_error", err.Error())
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) privateDiff(w http.ResponseWriter, r *http.Request) {
+	if s.private == nil {
+		writeError(w, 503, "content_unavailable", "private manager unavailable")
+		return
+	}
+	item, err := s.private.Diff(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, 422, "private_path_error", err.Error())
+		return
+	}
+	writeJSON(w, 200, item)
+}
+func (s *Server) makePrivateDirectory(w http.ResponseWriter, r *http.Request) {
+	if s.private == nil {
+		writeError(w, 503, "content_unavailable", "private manager unavailable")
+		return
+	}
+	var input privatePathRequest
+	if decodeJSON(w, r, &input) != nil {
+		return
+	}
+	if err := s.private.MakeDir(r.Context(), chi.URLParam(r, "id"), input.Path); err != nil {
+		writeError(w, 422, "private_path_error", err.Error())
+		return
+	}
+	writeJSON(w, 201, map[string]string{"path": filepath.ToSlash(input.Path)})
+}
+func (s *Server) movePrivate(w http.ResponseWriter, r *http.Request) {
+	if s.private == nil {
+		writeError(w, 503, "content_unavailable", "private manager unavailable")
+		return
+	}
+	var input privateMoveRequest
+	if decodeJSON(w, r, &input) != nil {
+		return
+	}
+	if input.Overwrite && !input.Confirm {
+		writeError(w, 428, "confirmation_required", "overwriting a private path requires confirmation")
+		return
+	}
+	if err := s.private.Move(r.Context(), chi.URLParam(r, "id"), input.From, input.To, input.Overwrite); err != nil {
+		writeError(w, 409, "private_move_conflict", err.Error())
+		return
+	}
+	w.WriteHeader(204)
+}
+func (s *Server) beginPrivateUpload(w http.ResponseWriter, r *http.Request) {
+	if s.privateUploads == nil {
+		writeError(w, 503, "content_unavailable", "private upload manager unavailable")
+		return
+	}
+	var input privateUploadRequest
+	if decodeJSON(w, r, &input) != nil {
+		return
+	}
+	session, err := s.privateUploads.Begin(chi.URLParam(r, "id"), input.Path, input.Size, input.SHA256)
+	if err != nil {
+		writeError(w, 422, "invalid_upload", err.Error())
+		return
+	}
+	writeJSON(w, 201, session)
+}
+func (s *Server) recoverPrivateUpload(w http.ResponseWriter, r *http.Request) {
+	if s.privateUploads == nil {
+		writeError(w, 503, "content_unavailable", "private upload manager unavailable")
+		return
+	}
+	session, err := s.privateUploads.Recover(chi.URLParam(r, "uploadID"))
+	if err != nil || session.InstanceID != chi.URLParam(r, "id") {
+		writeError(w, 404, "upload_not_found", "upload session not found")
+		return
+	}
+	writeJSON(w, 200, session)
+}
+func (s *Server) writePrivateUpload(w http.ResponseWriter, r *http.Request) {
+	if s.privateUploads == nil {
+		writeError(w, 503, "content_unavailable", "private upload manager unavailable")
+		return
+	}
+	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0]))
+	if mediaType != "application/offset+octet-stream" && mediaType != "application/octet-stream" {
+		writeError(w, 415, "unsupported_media_type", "upload chunks require application/offset+octet-stream")
+		return
+	}
+	session, err := s.privateUploads.Recover(chi.URLParam(r, "uploadID"))
+	if err != nil || session.InstanceID != chi.URLParam(r, "id") {
+		writeError(w, 404, "upload_not_found", "upload session not found")
+		return
+	}
+	offset, err := strconv.ParseInt(r.Header.Get("Upload-Offset"), 10, 64)
+	if err != nil {
+		writeError(w, 422, "invalid_offset", "numeric Upload-Offset required")
+		return
+	}
+	written, err := s.privateUploads.Write(session.ID, offset, http.MaxBytesReader(w, r.Body, session.Size-session.Offset+1))
+	if err != nil {
+		writeError(w, 409, "upload_offset_error", err.Error())
+		return
+	}
+	w.Header().Set("Upload-Offset", strconv.FormatInt(offset+written, 10))
+	w.WriteHeader(204)
+}
+func (s *Server) completePrivateUpload(w http.ResponseWriter, r *http.Request) {
+	if s.privateUploads == nil {
+		writeError(w, 503, "content_unavailable", "private upload manager unavailable")
+		return
+	}
+	session, err := s.privateUploads.Recover(chi.URLParam(r, "uploadID"))
+	if err != nil || session.InstanceID != chi.URLParam(r, "id") {
+		writeError(w, 404, "upload_not_found", "upload session not found")
+		return
+	}
+	if err = s.privateUploads.Complete(session.ID); err != nil {
+		writeError(w, 422, "upload_incomplete", err.Error())
+		return
+	}
+	w.WriteHeader(204)
+}
+func (s *Server) privateSnapshots(w http.ResponseWriter, r *http.Request) {
+	if s.private == nil {
+		writeError(w, 503, "content_unavailable", "private manager unavailable")
+		return
+	}
+	items, err := s.private.Snapshots(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, 422, "snapshot_error", err.Error())
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) restorePrivateSnapshot(w http.ResponseWriter, r *http.Request) {
+	if s.private == nil {
+		writeError(w, 503, "content_unavailable", "private manager unavailable")
+		return
+	}
+	var input struct {
+		Confirm bool `json:"confirm"`
+	}
+	if decodeJSON(w, r, &input) != nil {
+		return
+	}
+	if !input.Confirm {
+		writeError(w, 428, "confirmation_required", "snapshot restore requires confirmation")
+		return
+	}
+	if err := s.private.RestoreSnapshot(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "snapshotID")); err != nil {
+		writeError(w, 422, "snapshot_error", err.Error())
+		return
+	}
+	w.WriteHeader(204)
+}
 func (s *Server) applyPrivate(w http.ResponseWriter, r *http.Request) {
 	if s.private == nil || s.jobs == nil {
 		writeError(w, 503, "content_unavailable", "private manager unavailable")
 		return
 	}
 	id := chi.URLParam(r, "id")
-	job, ok := s.startJob(w, r, id, "apply_private", func(ctx context.Context, _ jobs.Reporter) error { return s.private.Apply(ctx, id) })
+	job, ok := s.startJob(w, r, id, "apply_private", func(ctx context.Context, reporter jobs.Reporter) error {
+		percent := map[string]int{"snapshot": 10, "restore-lower": 35, "apply-private": 65, "commit": 90}
+		return s.private.ApplyChangesWithProgress(ctx, id, func(stage string) { reporter.Progress(stage, percent[stage], stage) })
+	})
 	if !ok {
 		return
 	}
@@ -1275,6 +1498,27 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		if err != nil || !s.auth.Valid(c.Value) {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "authentication required")
 			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+func (s *Server) requireExistingPrivateInstance(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/instances/") && strings.Contains(r.URL.Path, "/private") {
+			id := chi.URLParam(r, "id")
+			if id == "" { // URL params are populated after route matching; derive only for this middleware.
+				parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/instances/"), "/")
+				if len(parts) > 0 {
+					id = parts[0]
+				}
+			}
+			if _, err := s.store.Instance(r.Context(), id); errors.Is(err, store.ErrNotFound) {
+				writeError(w, 404, "instance_not_found", "instance not found")
+				return
+			} else if err != nil {
+				writeError(w, 500, "store_error", "instance lookup failed")
+				return
+			}
 		}
 		next.ServeHTTP(w, r)
 	})

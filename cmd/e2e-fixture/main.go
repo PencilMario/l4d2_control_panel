@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
@@ -46,6 +47,17 @@ func (l *fixtureLifecycle) Start(ctx context.Context, id string) error {
 		if err := os.MkdirAll(filepath.Join(l.root, "instances", id, filepath.FromSlash(directory)), 0750); err != nil {
 			return err
 		}
+	}
+	seed := filepath.Join(l.root, "instances", id, "game", "left4dead2", "cfg", "seeded.cfg")
+	if err := os.MkdirAll(filepath.Dir(seed), 0750); err != nil {
+		return err
+	}
+	if _, err := os.Stat(seed); errors.Is(err, os.ErrNotExist) {
+		if err = os.WriteFile(seed, []byte("fixture lower layer\n"), 0640); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
 	}
 	instance.ContainerID = "fixture-" + id
 	if instance.SelectedPackageID != "" {
@@ -88,20 +100,52 @@ func (l *fixtureLifecycle) Delete(ctx context.Context, id string, deleteData boo
 	return nil
 }
 
-type fixtureConsole struct{}
+type fixtureConsoleClient struct {
+	peer net.Conn
+	mu   sync.Mutex
+}
 
-func (fixtureConsole) AttachSupervisor(context.Context, string) (io.ReadWriteCloser, error) {
+func (c *fixtureConsoleClient) write(value string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, err := io.WriteString(c.peer, value)
+	return err
+}
+
+type fixtureConsole struct {
+	mu      sync.Mutex
+	clients map[string]map[*fixtureConsoleClient]struct{}
+}
+
+func (f *fixtureConsole) AttachSupervisor(_ context.Context, containerID string) (io.ReadWriteCloser, error) {
 	client, peer := net.Pipe()
+	attached := &fixtureConsoleClient{peer: peer}
+	f.mu.Lock()
+	if f.clients[containerID] == nil {
+		f.clients[containerID] = make(map[*fixtureConsoleClient]struct{})
+	}
+	f.clients[containerID][attached] = struct{}{}
+	f.mu.Unlock()
 	go func() {
-		defer peer.Close()
-		if _, err := io.WriteString(peer, "fixture console ready\n"); err != nil {
+		defer func() {
+			f.mu.Lock()
+			delete(f.clients[containerID], attached)
+			f.mu.Unlock()
+			_ = peer.Close()
+		}()
+		var initial strings.Builder
+		initial.WriteString("fixture console ready\n")
+		for index := 0; index < 120; index++ {
+			fmt.Fprintf(&initial, "fixture overflow %03d | deterministic console output\n", index)
+		}
+		if err := attached.write(initial.String()); err != nil {
 			return
 		}
 		buffer := make([]byte, 4096)
 		for {
 			n, err := peer.Read(buffer)
 			if n > 0 {
-				if _, writeErr := io.WriteString(peer, "echo:"+string(buffer[:n])); writeErr != nil {
+				if writeErr := attached.write("echo:" + string(buffer[:n])); writeErr != nil {
 					return
 				}
 			}
@@ -111,6 +155,19 @@ func (fixtureConsole) AttachSupervisor(context.Context, string) (io.ReadWriteClo
 		}
 	}()
 	return client, nil
+}
+
+func (f *fixtureConsole) Emit(containerID, value string) bool {
+	f.mu.Lock()
+	clients := make([]*fixtureConsoleClient, 0, len(f.clients[containerID]))
+	for client := range f.clients[containerID] {
+		clients = append(clients, client)
+	}
+	f.mu.Unlock()
+	for _, client := range clients {
+		_ = client.write(value)
+	}
+	return len(clients) > 0
 }
 
 type fixturePlayers struct{}
@@ -194,6 +251,7 @@ func main() {
 		log.Fatal(err)
 	}
 	private := content.NewPrivateManager(root, 1<<20)
+	privateUploads := content.NewPrivateUploadManager(root, 8<<20)
 	pipeline, err := newFixturePipeline(root)
 	if err != nil {
 		log.Fatal(err)
@@ -206,13 +264,15 @@ func main() {
 	schedules := scheduler.NewService(db, fixtureDispatcher{})
 	defer schedules.Stop()
 
+	console := &fixtureConsole{clients: make(map[string]map[*fixtureConsoleClient]struct{})}
 	api := httpapi.New(
 		db,
 		sessions,
 		httpapi.WithOperations(lifecycle, jobManager),
-		httpapi.WithConsole(fixtureConsole{}),
+		httpapi.WithConsole(console),
 		httpapi.WithPlayers(fixturePlayers{}),
 		httpapi.WithContent(uploads, private, packages, pipeline, packageUpdates),
+		httpapi.WithPrivateUploads(privateUploads),
 		httpapi.WithGameUpdates(gameUpdates),
 		httpapi.WithScheduler(schedules),
 		httpapi.WithSecrets(secretService),
@@ -220,6 +280,8 @@ func main() {
 		httpapi.WithSystem(fixtureSystem{}),
 	)
 	mux := http.NewServeMux()
+	mux.HandleFunc("/__e2e/private-lower", privateLowerDiagnostic(root))
+	mux.HandleFunc("/__e2e/console-output", consoleOutputControl(console))
 	mux.Handle("/api/", api.Handler())
 	mux.Handle("/", spaHandler(webRoot()))
 	address := os.Getenv("L4D2_E2E_LISTEN")
@@ -230,6 +292,61 @@ func main() {
 	log.Printf("e2e fixture listening on http://%s", address)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
+	}
+}
+
+func privateLowerDiagnostic(root string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		id := r.URL.Query().Get("id")
+		name := filepath.Clean(filepath.FromSlash(r.URL.Query().Get("path")))
+		if filepath.Base(id) != id || id == "" || id == "." || id == ".." || strings.ContainsAny(id, `/\\`) || name == "." || filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
+			http.Error(w, "invalid diagnostic path", http.StatusBadRequest)
+			return
+		}
+		base, err := filepath.Abs(filepath.Join(root, "instances", id, "game", "left4dead2"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		target, err := filepath.Abs(filepath.Join(base, name))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		relative, err := filepath.Rel(base, target)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			http.Error(w, "invalid diagnostic path", http.StatusBadRequest)
+			return
+		}
+		value, err := os.ReadFile(target)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write(value)
+	}
+}
+
+func consoleOutputControl(console *fixtureConsole) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		value, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if !console.Emit("fixture-"+r.URL.Query().Get("id"), string(value)) {
+			http.Error(w, "console unavailable", http.StatusConflict)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
