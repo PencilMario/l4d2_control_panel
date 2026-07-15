@@ -210,6 +210,8 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Get("/api/settings/steam", s.steamCredentialStatus)
 		r.Put("/api/settings/steam", s.setSteamCredentials)
 		r.Delete("/api/settings/steam", s.deleteSteamCredentials)
+		r.Get("/api/settings/jobs", s.jobSettings)
+		r.Put("/api/settings/jobs", s.setJobSettings)
 	})
 	s.router = r
 	return s
@@ -222,6 +224,38 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+type jobSettingsResponse struct {
+	SuccessfulJobLimit int `json:"successful_job_limit"`
+}
+
+func (s *Server) jobSettings(w http.ResponseWriter, _ *http.Request) {
+	limit, err := s.store.SuccessfulJobLimit()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "settings_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, jobSettingsResponse{SuccessfulJobLimit: limit})
+}
+
+func (s *Server) setJobSettings(w http.ResponseWriter, r *http.Request) {
+	var input jobSettingsResponse
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_job_settings", "successful_job_limit must be an integer between 1 and 500")
+		return
+	}
+	if input.SuccessfulJobLimit < store.MinSuccessfulJobLimit || input.SuccessfulJobLimit > store.MaxSuccessfulJobLimit {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_job_limit", "successful_job_limit must be between 1 and 500")
+		return
+	}
+	if err := s.store.SetSuccessfulJobLimit(input.SuccessfulJobLimit); err != nil {
+		writeError(w, http.StatusInternalServerError, "settings_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, input)
 }
 
 func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
@@ -1567,12 +1601,19 @@ func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 503, "jobs_unavailable", "job manager unavailable")
 		return
 	}
-	job, ok := s.jobs.Get(chi.URLParam(r, "id"))
+	job, events, ok, err := s.jobs.Details(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "jobs_error", err.Error())
+		return
+	}
 	if !ok {
 		writeError(w, 404, "job_not_found", "job not found")
 		return
 	}
-	writeJSON(w, 200, job)
+	writeJSON(w, http.StatusOK, struct {
+		jobs.Job
+		Events []domain.JobEvent
+	}{Job: job, Events: events})
 }
 func (s *Server) Handler() http.Handler { return s.router }
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
