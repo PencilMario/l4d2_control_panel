@@ -2,7 +2,7 @@
 
 - [x] Task 1: Expand canonical Docker runtime metrics.
 - [x] Task 2: Add declared-port traffic accounting to the restricted proxy.
-- [ ] Task 3: Move proxy transport to a shared Unix Socket.
+- [x] Task 3: Move proxy transport to a shared Unix Socket.
 - [ ] Task 4: Build the five-second observation sampler and ring buffer.
 - [ ] Task 5: Expose additive overview and history contracts.
 - [ ] Task 6: Render detailed metrics and Recharts history.
