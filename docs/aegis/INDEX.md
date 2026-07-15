@@ -15,4 +15,5 @@
 ## Active Work
 
 - [Instance startup and package implementation](work/2026-07-15-instance-startup-packages/00-intent.md)
+- [New instance SRCDS defaults](work/2026-07-15-new-instance-srcds-defaults/30-plan.md)
 - [Overview live status and metrics repair](work/2026-07-15-overview-live-status/00-intent.md)
