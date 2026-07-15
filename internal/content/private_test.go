@@ -390,6 +390,92 @@ func TestPrivateRecoverRollsBackInterruptedRestore(t *testing.T) {
 	}
 }
 
+func TestPrivateRestorePreJournalFailureCleansWork(t *testing.T) {
+	for _, phase := range []string{"copy", "journal"} {
+		t.Run(phase, func(t *testing.T) {
+			root := t.TempDir()
+			m := NewPrivateManager(root, 1<<20)
+			ctx := context.Background()
+			if _, err := m.Save(ctx, "abc", "cfg/a.cfg", []byte("snapshot")); err != nil {
+				t.Fatal(err)
+			}
+			if err := m.ApplyChanges(ctx, "abc"); err != nil {
+				t.Fatal(err)
+			}
+			snapshots, err := m.Snapshots(ctx, "abc")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = m.Save(ctx, "abc", "cfg/a.cfg", []byte("current")); err != nil {
+				t.Fatal(err)
+			}
+			base := filepath.Join(root, "instances", "abc")
+			gameBefore, err := os.ReadFile(filepath.Join(base, "game", "left4dead2", "cfg", "a.cfg"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifestBefore, err := os.ReadFile(filepath.Join(base, "private-applied.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			setPrivateRestoreFailureHook(func(got string) error {
+				if got == phase {
+					return errors.New("injected restore failure")
+				}
+				return nil
+			})
+			t.Cleanup(func() { setPrivateRestoreFailureHook(nil) })
+			if err = m.RestoreSnapshot(ctx, "abc", snapshots[0].ID); err == nil {
+				t.Fatal("restore succeeded")
+			}
+			raw, readErr := m.Read(ctx, "abc", "cfg/a.cfg")
+			if readErr != nil || string(raw) != "current" {
+				t.Fatalf("workspace=%q err=%v", raw, readErr)
+			}
+			gameAfter, _ := os.ReadFile(filepath.Join(base, "game", "left4dead2", "cfg", "a.cfg"))
+			manifestAfter, _ := os.ReadFile(filepath.Join(base, "private-applied.json"))
+			if !bytes.Equal(gameAfter, gameBefore) || !bytes.Equal(manifestAfter, manifestBefore) {
+				t.Fatal("game or applied manifest changed")
+			}
+			works, _ := filepath.Glob(filepath.Join(root, "instances", "abc", "backups", "private", "restore-*"))
+			if len(works) != 0 {
+				t.Fatalf("restore work remains: %v", works)
+			}
+		})
+	}
+}
+
+func TestPrivateRestorePreJournalCleanupFailureRecordsDiagnostic(t *testing.T) {
+	root := t.TempDir()
+	m := NewPrivateManager(root, 1<<20)
+	ctx := context.Background()
+	if _, err := m.Save(ctx, "abc", "a.cfg", []byte("one")); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ApplyChanges(ctx, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	snapshots, _ := m.Snapshots(ctx, "abc")
+	setPrivateRestoreFailureHook(func(phase string) error { return errors.New("copy failed") })
+	setPrivateCleanupFailureHook(func(phase string) error {
+		if phase == "restore-prejournal" {
+			return errors.New("cleanup failed")
+		}
+		return nil
+	})
+	t.Cleanup(func() {
+		setPrivateRestoreFailureHook(nil)
+		setPrivateCleanupFailureHook(nil)
+	})
+	if err := m.RestoreSnapshot(ctx, "abc", snapshots[0].ID); err == nil {
+		t.Fatal("restore succeeded")
+	}
+	diagnostics, _ := filepath.Glob(filepath.Join(root, "instances", "abc", "backups", "private", "diagnostics", "*.json"))
+	if len(diagnostics) == 0 {
+		t.Fatal("cleanup diagnostic missing")
+	}
+}
+
 func TestPrivateSnapshotFailureRollsBackApply(t *testing.T) {
 	root := t.TempDir()
 	manager := NewPrivateManager(root, 1<<20)

@@ -132,6 +132,27 @@ var privateCleanupFailureState struct {
 	hook func(string) error
 }
 
+var privateRestoreFailureState struct {
+	sync.RWMutex
+	hook func(string) error
+}
+
+func setPrivateRestoreFailureHook(hook func(string) error) {
+	privateRestoreFailureState.Lock()
+	privateRestoreFailureState.hook = hook
+	privateRestoreFailureState.Unlock()
+}
+
+func runPrivateRestoreFailureHook(phase string) error {
+	privateRestoreFailureState.RLock()
+	hook := privateRestoreFailureState.hook
+	privateRestoreFailureState.RUnlock()
+	if hook != nil {
+		return hook(phase)
+	}
+	return nil
+}
+
 func setPrivateCleanupFailureHook(hook func(string) error) {
 	privateCleanupFailureState.Lock()
 	privateCleanupFailureState.hook = hook
@@ -924,6 +945,33 @@ func copyTreeExact(source, target string) error {
 	})
 }
 
+func copyPrivateRestoreTree(source, target string) error {
+	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return errors.New("symbolic links are forbidden")
+		}
+		rel, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(target, rel)
+		if entry.IsDir() {
+			err = os.MkdirAll(dst, 0750)
+		} else if !entry.Type().IsRegular() {
+			err = errors.New("only regular files and directories are allowed")
+		} else {
+			err = copyFileExact(path, dst)
+		}
+		if err != nil {
+			return err
+		}
+		return runPrivateRestoreFailureHook("copy")
+	})
+}
+
 func createPrivateSnapshot(base, workspace string, manifest privateManifest, summary DiffSummary, id string) error {
 	if err := runPrivateSnapshotFailureHook(); err != nil {
 		return err
@@ -1142,7 +1190,13 @@ func (m *PrivateManager) RestoreSnapshot(ctx context.Context, instanceID, snapsh
 	}
 	work := filepath.Join(base, "backups", "private", "restore-"+uuid.NewString())
 	staging := filepath.Join(work, "staged")
-	if err := copyTreeExact(source, staging); err != nil {
+	preJournal := true
+	defer func() {
+		if preJournal {
+			m.cleanupPrivate(base, "restore-prejournal", func() error { return os.RemoveAll(work) })
+		}
+	}()
+	if err := copyPrivateRestoreTree(source, staging); err != nil {
 		return err
 	}
 	workspace := filepath.Join(base, "private")
@@ -1156,9 +1210,13 @@ func (m *PrivateManager) RestoreSnapshot(ctx context.Context, instanceID, snapsh
 	}
 	journal := privateRestoreJournal{Version: 1, InstanceID: instanceID, Stage: "prepared", HadOld: hadOld}
 	journalPath := filepath.Join(work, "journal.json")
+	if err := runPrivateRestoreFailureHook("journal"); err != nil {
+		return err
+	}
 	if err := writeJSONAtomic(journalPath, journal); err != nil {
 		return err
 	}
+	preJournal = false
 	fail := func(cause error) error {
 		return errors.Join(cause, m.rollbackPrivateRestore(work, base, journal))
 	}
