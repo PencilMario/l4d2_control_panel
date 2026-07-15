@@ -15,6 +15,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/lifecycle"
 	"github.com/not0721here/l4d2-control-panel/internal/maintenance"
+	"github.com/not0721here/l4d2-control-panel/internal/metrics"
 	"github.com/not0721here/l4d2-control-panel/internal/players"
 	"github.com/not0721here/l4d2-control-panel/internal/ports"
 	"github.com/not0721here/l4d2-control-panel/internal/provisioning"
@@ -22,6 +23,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/scheduler"
 	"github.com/not0721here/l4d2-control-panel/internal/secrets"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
+	"github.com/not0721here/l4d2-control-panel/internal/traffic"
 	"github.com/not0721here/l4d2-control-panel/internal/updates"
 	"log"
 	"net/http"
@@ -29,6 +31,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -41,7 +44,11 @@ type jobWaiter interface {
 	Wait(context.Context) error
 }
 
-func shutdownPanel(ctx context.Context, server httpShutdowner, stopScheduler func(), waiter jobWaiter) error {
+type samplerStopper interface {
+	Stop(context.Context) error
+}
+
+func shutdownPanel(ctx context.Context, server httpShutdowner, stopScheduler func(), sampler samplerStopper, waiter jobWaiter) error {
 	httpErr := server.Shutdown(ctx)
 	schedulerDone := make(chan struct{})
 	go func() {
@@ -54,7 +61,7 @@ func shutdownPanel(ctx context.Context, server httpShutdowner, stopScheduler fun
 	case <-ctx.Done():
 		schedulerErr = ctx.Err()
 	}
-	return errors.Join(httpErr, schedulerErr, waiter.Wait(ctx))
+	return errors.Join(httpErr, schedulerErr, sampler.Stop(ctx), waiter.Wait(ctx))
 }
 
 func main() {
@@ -98,6 +105,7 @@ func main() {
 		return username, password
 	}
 	engine := docker.NewEngine(dockerHost, docker.WithDownloadProxy(os.Getenv("L4D2_PANEL_DOWNLOAD_PROXY")), docker.WithSteamCredentials(steamCredentials))
+	trafficClient := traffic.NewUnixClient(strings.TrimPrefix(dockerHost, "unix://"))
 	updatePipeline := updates.New(cfg.DataRoot)
 	if err := updatePipeline.Recover(context.Background()); err != nil {
 		log.Fatal(err)
@@ -123,6 +131,7 @@ func main() {
 	}
 	jobManager := jobs.NewPersistentManager(db)
 	playerService := players.NewService(db, a2s.Client{}, engine, cfg.GameHost)
+	performanceSampler := metrics.New(db, engine, trafficClient, playerService, nil)
 	uploadManager, err := content.NewUploadManager(cfg.DataRoot)
 	if err != nil {
 		log.Fatal(err)
@@ -157,6 +166,7 @@ func main() {
 		http.ServeFile(w, r, filepath.Join(web, "index.html"))
 	})
 	server := &http.Server{Addr: cfg.ListenAddress, Handler: mux, ReadHeaderTimeout: 10_000_000_000}
+	performanceSampler.Start(context.Background())
 	log.Printf("panel listening on %s", cfg.ListenAddress)
 	serverErrors := make(chan error, 1)
 	go func() { serverErrors <- server.ListenAndServe() }()
@@ -167,7 +177,7 @@ func main() {
 	case err := <-serverErrors:
 		drain, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		shutdownErr := shutdownPanel(drain, server, scheduleService.Stop, jobManager)
+		shutdownErr := shutdownPanel(drain, server, scheduleService.Stop, performanceSampler, jobManager)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("panel server stopped: %v", errors.Join(err, shutdownErr))
 		} else if shutdownErr != nil {
@@ -177,7 +187,7 @@ func main() {
 		log.Printf("received %s; draining panel", received)
 		drain, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := shutdownPanel(drain, server, scheduleService.Stop, jobManager); err != nil {
+		if err := shutdownPanel(drain, server, scheduleService.Stop, performanceSampler, jobManager); err != nil {
 			log.Printf("panel shutdown incomplete: %v", err)
 		}
 	}
