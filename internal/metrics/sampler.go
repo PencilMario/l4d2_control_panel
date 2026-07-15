@@ -106,6 +106,8 @@ type Sampler struct {
 	instanceTimeout    time.Duration
 	enumerationTimeout time.Duration
 	cleanupTimeout     time.Duration
+	runtimeTimeout     time.Duration
+	trafficOwned       map[string]string
 	startOnce          sync.Once
 	stopOnce           sync.Once
 	cancel             context.CancelFunc
@@ -116,7 +118,7 @@ func New(instances InstanceSource, runtime RuntimeProvider, trafficProvider Traf
 	if clock == nil {
 		clock = realClock{}
 	}
-	return &Sampler{instances: instances, runtime: runtime, traffic: trafficProvider, players: playerProvider, clock: clock, latest: map[string]Snapshot{}, history: map[string][]Snapshot{}, previous: map[string]counterSample{}, runs: map[string]string{}, workerCount: maxConcurrentInstances, instanceTimeout: instanceTimeout, enumerationTimeout: instanceTimeout, cleanupTimeout: instanceTimeout, done: make(chan struct{})}
+	return &Sampler{instances: instances, runtime: runtime, traffic: trafficProvider, players: playerProvider, clock: clock, latest: map[string]Snapshot{}, history: map[string][]Snapshot{}, previous: map[string]counterSample{}, runs: map[string]string{}, trafficOwned: map[string]string{}, workerCount: maxConcurrentInstances, instanceTimeout: instanceTimeout, enumerationTimeout: instanceTimeout, cleanupTimeout: instanceTimeout, runtimeTimeout: time.Second, done: make(chan struct{})}
 }
 
 func (s *Sampler) Start(ctx context.Context) {
@@ -203,52 +205,25 @@ func (s *Sampler) sampleInstance(ctx context.Context, instance domain.Instance) 
 	now := s.clock.Now().UTC()
 	snapshot := Snapshot{Timestamp: now}
 	priorRun := s.priorRun(instance.ID)
-	runtimeResults := make(chan runtimeResult, 1)
-	statsResults := make(chan sourceResult, 1)
-	playerResults := make(chan Snapshot, 1)
-	trafficResults := make(chan sourceResult, 1)
-	go func() {
-		state, err := s.runtime.Runtime(ctx, instance.ContainerID)
-		runtimeResults <- runtimeResult{state: state, err: err}
-	}()
-	go func() {
-		partial := Snapshot{}
-		counters := counterSample{timestamp: now, runID: priorRun}
-		s.sampleStats(ctx, instance.ContainerID, &partial, &counters)
-		statsResults <- sourceResult{snapshot: partial, counters: counters}
-	}()
-	go func() {
-		partial := Snapshot{}
-		s.samplePlayers(ctx, instance.ID, &partial)
-		playerResults <- partial
-	}()
-	go func() {
-		partial := Snapshot{}
-		counters := counterSample{timestamp: now, runID: priorRun}
-		if priorRun != "" {
-			s.sampleTraffic(ctx, instance.ID, priorRun, &partial, &counters)
-		}
-		trafficResults <- sourceResult{snapshot: partial, counters: counters}
-	}()
-
-	runtimeResult := <-runtimeResults
-	statsResult := <-statsResults
-	playerResult := <-playerResults
-	priorTrafficResult := <-trafficResults
-	err := runtimeResult.err
+	ownedRun := s.ownedRun(instance.ID)
+	runtimeCtx, cancelRuntime := context.WithTimeout(ctx, s.runtimeTimeout)
+	runtimeState, err := s.runtime.Runtime(runtimeCtx, instance.ContainerID)
+	cancelRuntime()
 	if err != nil {
 		snapshot.Issues = append(snapshot.Issues, issue("runtime", err))
 		snapshot.RunID = priorRun
+		statsResult, playerResult, trafficResult := s.collectIndependent(ctx, now, instance, ownedRun)
 		mergeSnapshot(&snapshot, statsResult.snapshot)
-		mergeSnapshot(&snapshot, priorTrafficResult.snapshot)
+		mergeSnapshot(&snapshot, trafficResult.snapshot)
 		mergeSnapshot(&snapshot, playerResult)
 		s.publish(instance.ID, snapshot, nil)
 		return
 	}
-	runtimeState := runtimeResult.state
 	if !runtimeState.Running {
 		snapshot.ContainerRunning = boolptr(false)
-		s.stopPrevious(ctx, instance.ID)
+		if stopErr := s.stopOwned(ctx, instance.ID); stopErr != nil {
+			snapshot.Issues = append(snapshot.Issues, issue("traffic_stop", stopErr))
+		}
 		s.publish(instance.ID, snapshot, &counterSample{})
 		return
 	}
@@ -261,24 +236,41 @@ func (s *Sampler) sampleInstance(ctx context.Context, instance domain.Instance) 
 	uptimeSeconds := uint64(uptime / time.Second)
 	snapshot.UptimeSeconds = &uptimeSeconds
 
-	ports := append([]int{instance.GamePort, instance.SourceTVPort}, instance.PluginPorts...)
-	ports = uniquePositivePorts(ports)
-	if err := s.traffic.Register(ctx, traffic.Session{InstanceID: instance.ID, RunID: snapshot.RunID, Ports: ports}); err != nil {
-		snapshot.Issues = append(snapshot.Issues, issue("traffic_register", err))
-	}
-
-	counters := counterSample{timestamp: now, runID: snapshot.RunID}
+	statsResult, playerResult, _ := s.collectIndependent(ctx, now, instance, "")
 	mergeSnapshot(&snapshot, statsResult.snapshot)
-	counters.read = statsResult.counters.read
-	counters.write = statsResult.counters.write
-	s.sampleTraffic(ctx, instance.ID, snapshot.RunID, &snapshot, &counters)
 	mergeSnapshot(&snapshot, playerResult)
+	counters := counterSample{timestamp: now, runID: snapshot.RunID, read: statsResult.counters.read, write: statsResult.counters.write}
+	if err := s.traffic.Register(ctx, traffic.Session{InstanceID: instance.ID, RunID: snapshot.RunID, Ports: uniquePositivePorts(append([]int{instance.GamePort, instance.SourceTVPort}, instance.PluginPorts...))}); err != nil {
+		snapshot.Issues = append(snapshot.Issues, issue("traffic_register", err))
+	} else {
+		s.mu.Lock()
+		s.trafficOwned[instance.ID] = snapshot.RunID
+		s.mu.Unlock()
+		s.sampleTraffic(ctx, instance.ID, snapshot.RunID, &snapshot, &counters)
+	}
 	s.publish(instance.ID, snapshot, &counters)
 }
 
-type runtimeResult struct {
-	state docker.RuntimeState
-	err   error
+func (s *Sampler) collectIndependent(ctx context.Context, now time.Time, instance domain.Instance, priorRun string) (sourceResult, Snapshot, sourceResult) {
+	statsCh := make(chan sourceResult, 1)
+	playerCh := make(chan Snapshot, 1)
+	trafficCh := make(chan sourceResult, 1)
+	go func() {
+		partial := Snapshot{}
+		counters := counterSample{timestamp: now, runID: priorRun}
+		s.sampleStats(ctx, instance.ContainerID, &partial, &counters)
+		statsCh <- sourceResult{snapshot: partial, counters: counters}
+	}()
+	go func() { partial := Snapshot{}; s.samplePlayers(ctx, instance.ID, &partial); playerCh <- partial }()
+	go func() {
+		partial := Snapshot{}
+		counters := counterSample{timestamp: now, runID: priorRun}
+		if priorRun != "" {
+			s.sampleTraffic(ctx, instance.ID, priorRun, &partial, &counters)
+		}
+		trafficCh <- sourceResult{snapshot: partial, counters: counters}
+	}()
+	return <-statsCh, <-playerCh, <-trafficCh
 }
 
 type sourceResult struct {
@@ -404,13 +396,20 @@ func (s *Sampler) publish(id string, snapshot Snapshot, counters *counterSample)
 	s.history[id] = history
 }
 
-func (s *Sampler) stopPrevious(ctx context.Context, id string) {
-	s.mu.RLock()
-	runID := s.runs[id]
-	s.mu.RUnlock()
-	if runID != "" {
-		_ = s.traffic.Stop(ctx, id, runID)
+func (s *Sampler) stopOwned(ctx context.Context, id string) error {
+	runID := s.ownedRun(id)
+	if runID == "" {
+		return nil
 	}
+	if err := s.traffic.Stop(ctx, id, runID); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.trafficOwned[id] == runID {
+		delete(s.trafficOwned, id)
+	}
+	s.mu.Unlock()
+	return nil
 }
 
 func (s *Sampler) priorRun(id string) string {
@@ -419,15 +418,29 @@ func (s *Sampler) priorRun(id string) string {
 	return s.runs[id]
 }
 
-func (s *Sampler) prune(ctx context.Context, present map[string]struct{}) {
+func (s *Sampler) ownedRun(id string) string {
 	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.trafficOwned[id]
+}
+
+func (s *Sampler) prune(ctx context.Context, present map[string]struct{}) {
+	s.mu.Lock()
 	removed := make(map[string]string)
-	for id := range s.latest {
+	for id, runID := range s.trafficOwned {
 		if _, ok := present[id]; !ok {
-			removed[id] = s.runs[id]
+			removed[id] = runID
 		}
 	}
-	s.mu.RUnlock()
+	for id := range s.latest {
+		if _, ok := present[id]; !ok {
+			delete(s.latest, id)
+			delete(s.history, id)
+			delete(s.previous, id)
+			delete(s.runs, id)
+		}
+	}
+	s.mu.Unlock()
 	cleanupCtx, cancelCleanup := context.WithTimeout(ctx, s.cleanupTimeout)
 	defer cancelCleanup()
 	for id, runID := range removed {
@@ -437,16 +450,14 @@ func (s *Sampler) prune(ctx context.Context, present map[string]struct{}) {
 			cancelStop()
 			if err != nil {
 				log.Printf("metrics: stop removed instance %s traffic session: %v", id, err)
+			} else {
+				s.mu.Lock()
+				if s.trafficOwned[id] == runID {
+					delete(s.trafficOwned, id)
+				}
+				s.mu.Unlock()
 			}
 		}
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for id := range removed {
-		delete(s.latest, id)
-		delete(s.history, id)
-		delete(s.previous, id)
-		delete(s.runs, id)
 	}
 }
 

@@ -37,6 +37,7 @@ type fakeRuntime struct {
 	runtimeErr, statsErr error
 	runtimeFn            func(context.Context, string) (docker.RuntimeState, error)
 	statsDeadlineSeen    bool
+	statsCalls           int
 }
 
 func (f *fakeRuntime) Runtime(ctx context.Context, id string) (docker.RuntimeState, error) {
@@ -53,6 +54,7 @@ func (f *fakeRuntime) Runtime(ctx context.Context, id string) (docker.RuntimeSta
 func (f *fakeRuntime) Stats(ctx context.Context, _ string) (docker.ResourceStats, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.statsCalls++
 	_, f.statsDeadlineSeen = ctx.Deadline()
 	for _, v := range f.stats {
 		return v, f.statsErr
@@ -70,12 +72,19 @@ type fakeTraffic struct {
 	deadlineSeen     bool
 	stopFn           func(context.Context, string, string) error
 	stopDeadlineSeen bool
+	registerErr      error
+	stopErr          error
+	totalsErr        error
+	totalsCalls      int
 }
 
 func (f *fakeTraffic) Register(_ context.Context, s traffic.Session) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.registered = append(f.registered, s)
+	if f.registerErr != nil {
+		return f.registerErr
+	}
 	return f.err
 }
 func (f *fakeTraffic) Stop(ctx context.Context, id, run string) error {
@@ -88,14 +97,21 @@ func (f *fakeTraffic) Stop(ctx context.Context, id, run string) error {
 	if stopFn != nil {
 		return stopFn(ctx, id, run)
 	}
+	if f.stopErr != nil {
+		return f.stopErr
+	}
 	return err
 }
 func (f *fakeTraffic) Totals(ctx context.Context, _ string) (traffic.Totals, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.totalsCalls++
 	_, f.deadlineSeen = ctx.Deadline()
 	if f.respectContext && ctx.Err() != nil {
 		return traffic.Totals{}, ctx.Err()
+	}
+	if f.totalsErr != nil {
+		return traffic.Totals{}, f.totalsErr
 	}
 	return f.totals, f.err
 }
@@ -107,9 +123,11 @@ type fakePlayers struct {
 	advance        time.Duration
 	respectContext bool
 	deadlineSeen   bool
+	calls          int
 }
 
 func (f *fakePlayers) Summary(ctx context.Context, _ string) (players.Summary, error) {
+	f.calls++
 	_, f.deadlineSeen = ctx.Deadline()
 	if f.respectContext && ctx.Err() != nil {
 		return players.Summary{}, ctx.Err()
@@ -118,6 +136,117 @@ func (f *fakePlayers) Summary(ctx context.Context, _ string) (players.Summary, e
 		f.clock.Advance(f.advance)
 	}
 	return f.summary, f.err
+}
+
+func TestStoppedInstanceSkipsExpensiveSources(t *testing.T) {
+	now := time.Now().UTC()
+	s, _, runtime, network, player, _ := testSampler(now)
+	runtime.runtime["container"] = docker.RuntimeState{Running: false}
+	s.Sample(context.Background())
+	if runtime.statsCalls != 0 || network.totalsCalls != 0 || player.calls != 0 {
+		t.Fatalf("stopped calls stats=%d totals=%d players=%d", runtime.statsCalls, network.totalsCalls, player.calls)
+	}
+}
+
+func TestStoppedStopFailureRetriesAndRecordsIssue(t *testing.T) {
+	now := time.Now().UTC()
+	s, _, runtime, network, _, _ := testSampler(now)
+	s.Sample(context.Background())
+	owned := network.registered[len(network.registered)-1].RunID
+	runtime.runtime["container"] = docker.RuntimeState{Running: false}
+	network.stopErr = errors.New("stop unavailable")
+	s.Sample(context.Background())
+	got, _ := s.Latest("one")
+	if len(network.stopped) != 1 || network.stopped[0].RunID != owned || !hasIssue(got.Issues, "traffic_stop") {
+		t.Fatalf("stops=%+v snapshot=%+v", network.stopped, got)
+	}
+	network.stopErr = nil
+	s.Sample(context.Background())
+	if len(network.stopped) != 2 || network.stopped[1].RunID != owned {
+		t.Fatalf("retry stops=%+v", network.stopped)
+	}
+	s.Sample(context.Background())
+	if len(network.stopped) != 2 {
+		t.Fatalf("successful stop not cleared: %+v", network.stopped)
+	}
+}
+
+func TestTrafficOwnershipOnlyAdvancesAfterRegisterSuccess(t *testing.T) {
+	now := time.Now().UTC()
+	s, _, runtime, network, _, clock := testSampler(now)
+	s.Sample(context.Background())
+	oldRun := network.registered[len(network.registered)-1].RunID
+	clock.mu.Lock()
+	clock.now = clock.now.Add(5 * time.Second)
+	clock.mu.Unlock()
+	runtime.runtime["container"] = docker.RuntimeState{Running: true, StartedAt: now.Add(time.Second)}
+	network.registerErr = errors.New("register failed")
+	s.Sample(context.Background())
+	newRun, _ := s.Latest("one")
+	if newRun.RunID == oldRun {
+		t.Fatal("test did not change run")
+	}
+	runtime.runtime["container"] = docker.RuntimeState{Running: false}
+	s.Sample(context.Background())
+	if network.stopped[len(network.stopped)-1].RunID != oldRun {
+		t.Fatalf("failed register claimed ownership: %+v", network.stopped)
+	}
+	runtime.runtime["container"] = docker.RuntimeState{Running: true, StartedAt: now.Add(2 * time.Second)}
+	network.registerErr = nil
+	s.Sample(context.Background())
+	advanced := network.registered[len(network.registered)-1].RunID
+	runtime.runtime["container"] = docker.RuntimeState{Running: false}
+	s.Sample(context.Background())
+	if network.stopped[len(network.stopped)-1].RunID != advanced {
+		t.Fatalf("successful retry did not advance ownership: %+v", network.stopped)
+	}
+}
+
+func TestRegisterRetryAdvancesTrafficOwnership(t *testing.T) {
+	now := time.Now().UTC()
+	s, _, runtime, network, _, clock := testSampler(now)
+	s.Sample(context.Background())
+	oldRun := s.ownedRun("one")
+	runtime.runtime["container"] = docker.RuntimeState{Running: true, StartedAt: now.Add(time.Second)}
+	clock.mu.Lock()
+	clock.now = clock.now.Add(5 * time.Second)
+	clock.mu.Unlock()
+	network.registerErr = errors.New("register failed")
+	s.Sample(context.Background())
+	newRun, _ := s.Latest("one")
+	if s.ownedRun("one") != oldRun {
+		t.Fatal("failed registration changed ownership")
+	}
+	network.registerErr = nil
+	s.Sample(context.Background())
+	if s.ownedRun("one") != newRun.RunID {
+		t.Fatalf("retry ownership=%q want=%q", s.ownedRun("one"), newRun.RunID)
+	}
+}
+
+func TestRemovedInstanceRetainsOnlyPendingCleanupUntilStopSucceeds(t *testing.T) {
+	now := time.Now().UTC()
+	s, instances, _, network, _, _ := testSampler(now)
+	s.Sample(context.Background())
+	owned := network.registered[len(network.registered)-1].RunID
+	instances.items = nil
+	network.stopErr = errors.New("stop unavailable")
+	s.Sample(context.Background())
+	if _, ok := s.Latest("one"); ok || len(s.History("one")) != 0 {
+		t.Fatal("cache not pruned")
+	}
+	if len(s.trafficOwned) != 1 || s.trafficOwned["one"] != owned {
+		t.Fatalf("pending cleanup=%+v", s.trafficOwned)
+	}
+	network.stopErr = nil
+	s.Sample(context.Background())
+	if len(network.stopped) != 2 || network.stopped[0].RunID != owned || network.stopped[1].RunID != owned {
+		t.Fatalf("cleanup retry=%+v", network.stopped)
+	}
+	s.Sample(context.Background())
+	if len(network.stopped) != 2 {
+		t.Fatalf("cleanup ownership not cleared: %+v", network.stopped)
+	}
 }
 
 func TestRuntimeDeadlineDoesNotConsumeIndependentSourceBudgets(t *testing.T) {
@@ -135,6 +264,7 @@ func TestRuntimeDeadlineDoesNotConsumeIndependentSourceBudgets(t *testing.T) {
 	network.respectContext = true
 	player.respectContext = true
 	s.instanceTimeout = 20 * time.Millisecond
+	s.runtimeTimeout = 5 * time.Millisecond
 	s.Sample(context.Background())
 	got, _ := s.Latest("one")
 	if got.ContainerRunning != nil || got.RunID != prior.RunID {
@@ -297,7 +427,7 @@ func TestPartialFailuresAndStoppedGap(t *testing.T) {
 	player.err = errors.New("a2s down")
 	s.Sample(context.Background())
 	got, _ := s.Latest("one")
-	if got.CPUPercent != nil || got.NetworkRXBytes != nil || got.Map != nil || len(got.Issues) != 4 {
+	if got.CPUPercent != nil || got.NetworkRXBytes != nil || got.Map != nil || len(got.Issues) != 3 {
 		t.Fatalf("partial snapshot=%+v", got)
 	}
 	runtime.statsErr = nil
