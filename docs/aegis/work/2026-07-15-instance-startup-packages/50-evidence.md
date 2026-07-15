@@ -18,3 +18,12 @@ Implementation evidence will be appended after each red/green slice.
 - `go test -count=1 ./internal/store`: PASS.
 - `go test -count=1 ./internal/store ./internal/httpapi`: PASS.
 - `git diff --check`: PASS.
+
+## Task 2: Canonical SRCDS Arguments
+
+- RED: focused tests failed because `internal/srcds.Command` / `ParseExtraArgs` did not exist, `BuildContainerSpec` returned no error, and Supervisor lacked `SRCDS_EXTRA_ARGS_JSON`.
+- GREEN: added shellword validation, Panel-owned option rejection, canonical command ordering, JSON token transport and raw-env compatibility fallback.
+- `go test -count=1 ./internal/srcds ./internal/docker ./internal/lifecycle ./runtime`: PASS.
+- `go test -count=1 ./...`: PASS.
+- `go vet ./...`: PASS.
+- `git diff --check`: PASS.

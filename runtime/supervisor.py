@@ -128,11 +128,19 @@ def ensure_game():
     if os.path.isfile(os.path.join(GAME,'srcds_run')): return
     subprocess.run(steamcmd_install_command(),check=True)
 
+def extra_args():
+    raw=os.getenv('SRCDS_EXTRA_ARGS_JSON','').strip()
+    if raw:
+        value=json.loads(raw)
+        if not isinstance(value,list) or not all(isinstance(item,str) for item in value): raise ValueError('SRCDS_EXTRA_ARGS_JSON must be a string array')
+        return value
+    return shlex.split(os.getenv('SRCDS_EXTRA_ARGS',''))
+
 def srcds_command():
     args=['./srcds_run','-game','left4dead2','-console','-port',os.getenv('SRCDS_PORT','27015'),'-tickrate',os.getenv('SRCDS_TICKRATE','100'),'+map',os.getenv('SRCDS_MAP','c2m1_highway'),'+mp_gamemode',os.getenv('SRCDS_MODE','coop'),'-maxplayers',os.getenv('SRCDS_MAXPLAYERS','8')]
     tv_port=os.getenv('SRCDS_TV_PORT','0').strip()
     if tv_port and tv_port != '0': args.extend(['+tv_enable','1','+tv_port',tv_port])
-    args.extend(shlex.split(os.getenv('SRCDS_EXTRA_ARGS','')));return args
+    args.extend(extra_args());return args
 
 def selftest():
     with tempfile.TemporaryDirectory() as root:

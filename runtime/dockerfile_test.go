@@ -77,6 +77,30 @@ func TestSourceTVCommandIsEnabledOnlyForDeclaredPort(t *testing.T) {
 	}
 }
 
+func TestSupervisorPrefersValidatedJSONExtraArguments(t *testing.T) {
+	raw, err := os.ReadFile("supervisor.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, required := range []string{"SRCDS_EXTRA_ARGS_JSON", "json.loads", "SRCDS_EXTRA_ARGS"} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("supervisor source is missing %q", required)
+		}
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("runtime command integration requires POSIX Python")
+	}
+	command := exec.Command("python3", "-c", `import os, supervisor; os.environ["SRCDS_EXTRA_ARGS_JSON"]='["-strictportbind","+hostname","Night Coop"]'; print(repr(supervisor.srcds_command()[-3:]))`)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("err=%v output=%s", err, output)
+	}
+	if !strings.Contains(string(output), "['-strictportbind', '+hostname', 'Night Coop']") {
+		t.Fatalf("output=%s", output)
+	}
+}
+
 func TestSupervisorSelfTest(t *testing.T) {
 	raw, err := os.ReadFile("supervisor.py")
 	if err != nil {

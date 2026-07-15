@@ -173,7 +173,11 @@ func (s *Service) Start(ctx context.Context, id string) error {
 		if err := s.repo.UpdateInstance(ctx, v); err != nil {
 			return err
 		}
-		containerID, err := s.engine.Create(ctx, docker.BuildContainerSpec(s.dataRoot, v))
+		spec, err := docker.BuildContainerSpec(s.dataRoot, v)
+		if err != nil {
+			return s.fault(ctx, v, err)
+		}
+		containerID, err := s.engine.Create(ctx, spec)
 		if err != nil {
 			return s.fault(ctx, v, err)
 		}

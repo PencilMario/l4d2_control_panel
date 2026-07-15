@@ -29,7 +29,11 @@ func TestEngineCreatesRestrictedManagedContainer(t *testing.T) {
 	}))
 	defer server.Close()
 	client := NewEngine(server.URL, WithDownloadProxy("http://proxy:7890"), WithSteamCredentials(func() (string, string) { return "owner", "password" }))
-	id, err := client.Create(context.Background(), BuildContainerSpec("/srv/l4d2-panel", domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"}))
+	spec, err := BuildContainerSpec("/srv/l4d2-panel", domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := client.Create(context.Background(), spec)
 	if err != nil {
 		t.Fatal(err)
 	}
