@@ -56,6 +56,7 @@ type Props = {
 };
 type PrivateVersion = { path: string; size: number; hash?: string; updated_at?: string };
 type ActiveUpload = { id: string; instanceID: string; path: string; size: number; offset: number; fingerprint: string; file?: File };
+type UploadIdentity = ["private-upload-v2", string, string, string, number, number, string];
 
 const EMPTY_DIFF: PrivateDiff = {
   changes: [],
@@ -92,6 +93,36 @@ const errorMessage = (reason: unknown) =>
   reason instanceof Error ? reason.message : String(reason);
 const formatBytes = (size = 0) =>
   size < 1024 ? `${size} B` : `${(size / 1024).toFixed(1)} KiB`;
+const uploadFingerprint = (
+  instanceID: string,
+  path: string,
+  file: File,
+  hash: string,
+) => JSON.stringify([
+  "private-upload-v2",
+  instanceID,
+  path,
+  file.name,
+  file.size,
+  file.lastModified,
+  hash,
+] satisfies UploadIdentity);
+const hasCurrentUploadFingerprint = (upload: ActiveUpload) => {
+  try {
+    const identity = JSON.parse(upload.fingerprint) as unknown;
+    return Array.isArray(identity) &&
+      identity.length === 7 &&
+      identity[0] === "private-upload-v2" &&
+      identity[1] === upload.instanceID &&
+      identity[2] === upload.path &&
+      identity[3] === basename(upload.path) &&
+      identity[4] === upload.size &&
+      typeof identity[5] === "number" &&
+      typeof identity[6] === "string";
+  } catch {
+    return false;
+  }
+};
 
 function buildChildren(entries: PrivateEntry[]) {
   const children = new Map<string, PrivateEntry[]>();
@@ -204,11 +235,15 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
     if (stored) {
       try {
         const parsed = JSON.parse(stored) as ActiveUpload;
-        if (parsed.instanceID === instanceID) {
+        if (parsed.instanceID === instanceID && hasCurrentUploadFingerprint(parsed)) {
           setActiveUpload(parsed);
           setUploadStatus("上传等待恢复 · 请重新选择原文件");
+        } else {
+          localStorage.removeItem(`private-upload:${instanceID}`);
         }
-      } catch {}
+      } catch {
+        localStorage.removeItem(`private-upload:${instanceID}`);
+      }
     }
   }, [instanceID]);
   useEffect(() => {
@@ -355,7 +390,7 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
         if (owner !== instanceIDRef.current) return;
       }
       const hash = [...hasher.digest()].map((value) => value.toString(16).padStart(2, "0")).join("");
-      const fingerprint = `${file.name}:${file.size}:${file.lastModified}:${hash}`;
+      const fingerprint = uploadFingerprint(owner, target, file, hash);
       if (activeUpload && activeUpload.fingerprint === fingerprint) {
         setActiveUpload({ ...activeUpload, file });
         await resumeUpload({ ...activeUpload, file });

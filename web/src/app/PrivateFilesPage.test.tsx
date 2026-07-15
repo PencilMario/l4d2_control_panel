@@ -94,6 +94,7 @@ function mockPrivateAPI(options?: { error?: boolean; binaryOnly?: boolean }) {
 }
 
 afterEach(() => {
+  localStorage.clear();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -213,7 +214,7 @@ describe("PrivateFilesPage", () => {
     );
   });
 
-  it("recovers a failed upload offset and completes with the same file", async () => {
+  it("resumes a failed upload only when the file and target path match exactly", async () => {
     const { calls } = mockPrivateAPI();
     let patches = 0;
     const base = globalThis.fetch as ReturnType<typeof vi.fn>;
@@ -234,11 +235,62 @@ describe("PrivateFilesPage", () => {
     const file = new File([new Uint8Array([1, 2, 3, 4])], "resume.bin");
     fireEvent.change(screen.getByLabelText("上传文件"), { target: { files: [file] } });
     expect(await screen.findByRole("button", { name: "恢复上传" })).toBeEnabled();
-    await userEvent.click(screen.getByRole("button", { name: "恢复上传" }));
+    fireEvent.change(screen.getByLabelText("上传文件"), { target: { files: [file] } });
     expect(await screen.findByText("上传完成 · 100%")).toBeVisible();
+    expect(calls.filter((call) => call.path.endsWith("/private/uploads") && call.init?.method === "POST")).toHaveLength(1);
     expect(calls.some((call) => call.path.endsWith("/private/uploads/resume-1") && !call.init?.method)).toBe(true);
     expect(calls.some((call) => call.init?.method === "PATCH" && (call.init.headers as Record<string, string>)["Upload-Offset"] === "2")).toBe(true);
     expect(calls.some((call) => call.path.endsWith("/complete"))).toBe(true);
+  });
+
+  it("starts a new upload when the same file is reselected for a different target path", async () => {
+    const { calls } = mockPrivateAPI();
+    let uploadCount = 0;
+    let patches = 0;
+    const base = globalThis.fetch as ReturnType<typeof vi.fn>;
+    base.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input); calls.push({ path, init });
+      if (path.endsWith("/private/tree")) return json([{ path: "cfg", kind: "directory", updated_at: "now" }]);
+      if (path.endsWith("/private/diff")) return json({ changes: [], summary: { added: 0, modified: 0, deleted: 0 } });
+      if (path.endsWith("/private/snapshots")) return json([]);
+      if (path.endsWith("/private/uploads") && init?.method === "POST") {
+        uploadCount++;
+        return json({ id: `path-${uploadCount}`, offset: 0 }, 201);
+      }
+      if (init?.method === "PATCH") {
+        patches++;
+        if (patches === 1) return json({}, 409);
+        const size = (init.body as Blob)?.size || 0;
+        return new Response(null, { status: 204, headers: { "Upload-Offset": String(size) } });
+      }
+      return new Response(null, { status: 204 });
+    });
+    render(<PrivateFilesPage instances={[instance]} queue={vi.fn()} />);
+    const file = new File([new Uint8Array([1, 2, 3, 4])], "same.bin");
+    fireEvent.change(screen.getByLabelText("上传文件"), { target: { files: [file] } });
+    expect(await screen.findByRole("button", { name: "恢复上传" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("treeitem", { name: "cfg" }));
+    fireEvent.change(screen.getByLabelText("上传文件"), { target: { files: [file] } });
+    expect(await screen.findByText("上传完成 · 100%")).toBeVisible();
+    expect(uploadCount).toBe(2);
+    expect(calls.some((call) => call.path.endsWith("/private/uploads/path-1") && !call.init?.method)).toBe(false);
+    expect(String(calls.filter((call) => call.path.endsWith("/private/uploads") && call.init?.method === "POST").at(-1)?.init?.body)).toContain('"path":"cfg/same.bin"');
+  });
+
+  it("clears persisted upload metadata that uses the legacy fingerprint format", async () => {
+    localStorage.setItem("private-upload:abc", JSON.stringify({
+      id: "legacy-1",
+      instanceID: "abc",
+      path: "legacy.bin",
+      size: 4,
+      offset: 2,
+      fingerprint: "legacy.bin:4:123:deadbeef",
+    }));
+    mockPrivateAPI();
+    render(<PrivateFilesPage instances={[instance]} queue={vi.fn()} />);
+    await screen.findByRole("tree");
+    await waitFor(() => expect(localStorage.getItem("private-upload:abc")).toBeNull());
+    expect(screen.queryByRole("button", { name: "恢复上传" })).not.toBeInTheDocument();
   });
 
   it("rejects binary bytes even with a text extension", async () => {
