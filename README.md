@@ -29,6 +29,8 @@ The Panel remains on the Compose network and publishes only its configured HTTP 
 
 The proxy drops all capabilities and adds only `NET_RAW`, runs with a read-only root filesystem and `no-new-privileges`, and owns the shared socket as UID/GID 10001. The Panel receives only that restricted filesystem capability; it does not receive the Docker Engine socket.
 
+The overview samples each instance every five seconds and keeps the latest 720 observations in Panel memory (about one hour). CPU, memory, block I/O, process count and uptime come from Docker; A2S supplies map, players and query latency; the restricted proxy counts RX/TX bytes only for the instance's declared game, SourceTV and plugin ports. History is intentionally reset when the Panel restarts and network values become unavailable if packet capture cannot run; other metrics continue independently.
+
 For direct HTTP access, set `L4D2_PANEL_SECURE_COOKIE=false`. Keep the default
 `true` when the Panel is served through HTTPS.
 
@@ -96,7 +98,12 @@ docker compose --env-file .env ps
 curl --fail http://127.0.0.1:${L4D2_PANEL_HTTP_PORT:-18081}/api/health
 docker compose exec panel test -S /run/l4d2-panel/proxy.sock
 docker compose exec panel test ! -e /var/run/docker.sock
-docker compose exec socket-proxy test "$(stat -c %a /run/l4d2-panel/proxy.sock)" = 660
+docker compose exec socket-proxy sh -c 'test "$(stat -c %U:%G /run/l4d2-panel)" = root:10001'
+docker compose exec socket-proxy sh -c 'test "$(stat -c %a /run/l4d2-panel)" = 750'
+docker compose exec socket-proxy sh -c 'test "$(stat -c %U:%G /run/l4d2-panel/proxy.sock)" = root:10001'
+docker compose exec socket-proxy sh -c 'test "$(stat -c %a /run/l4d2-panel/proxy.sock)" = 660'
+test "$(docker inspect -f '{{json .HostConfig.CapAdd}}' "$(docker compose ps -q socket-proxy)")" = '["NET_RAW"]'
+docker compose exec socket-proxy sh -c '! grep -q ":5CC6" /proc/net/tcp /proc/net/tcp6'
 ```
 
 Then create an instance from the UI and confirm:
@@ -106,6 +113,8 @@ Then create an instance from the UI and confirm:
 - the container user is UID/GID 10001 and has no Docker socket or privileged mode;
 - `l4d2-supervisor attach`, `status --json` and `stop` work, while other operations are rejected;
 - A2S, players, console reconnect/replay, stop/start and container rebuild work without data loss.
+- overview RX/TX totals increase only when traffic crosses declared ports; rates freeze while stopped, restart resets the runtime `StartedAt` boundary, and metric gaps render as unavailable rather than zero;
+- the socket proxy has only `CAP_NET_RAW`, has no TCP listener on legacy port 23750, and removing the stack leaves no capture process or shared socket behind.
 
 ## Development and verification
 

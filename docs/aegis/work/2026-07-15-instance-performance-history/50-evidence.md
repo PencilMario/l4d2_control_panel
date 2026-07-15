@@ -33,17 +33,29 @@
 - Task 6 regression: 46 frontend tests pass; three consecutive full-suite runs and 20 focused runs passed during async-race repair; production Vite build passes.
 - Task 6 reviews: spec and quality approved after generation-safe history ownership, StrictMode cancellation, independent history bootstrap and memo-stable Recharts props.
 - Task 6 residual: production JS is about 587 kB minified / 177 kB gzip and triggers Vite's 500 kB warning. Recharts is immediately visible core UI; no lazy split was added without measured startup evidence.
+- Task 7 E2E RED: the first `npm run e2e` run failed both desktop and mobile before reaching the new metrics assertions because the preserved journey implicitly expected `coop`/8 while the current create form defaults to `versus`/32. This exposed test isolation drift, not a product defect. After explicitly selecting the intended values, a focused desktop run reached the new layout assertion and failed with expected fixed wrapper height 220 versus the deployed CSS contract of 210 pixels (190 on mobile). The assertion was corrected to the actual responsive fixed-height contract; no product file was changed.
+- Task 7 E2E GREEN: fresh `npm run e2e` passed 2/2 projects/tests in 27.9 seconds (desktop 10.9 seconds, mobile 10.9 seconds). The real HTTP fixture journey verified login, overview navigation, running state, map `c2m1_highway`, players `1 / 8`, selected package, stop/config/console/player actions, CPU `12.5%`, memory `768 MiB / 2 GiB (37.5%)`, RX/TX rates and totals, disk read/write rates and totals, PID 24, uptime `1h 0s`, A2S `2.5 ms`, a two-point history preserving first-point null gaps and second-point zero rates, default CPU mode, all four `aria-pressed` mode transitions, network and disk legends, fixed chart heights, card/control/action bounds and absence of horizontal page overflow on desktop and 390-pixel mobile viewports.
 
 ## Regression evidence
 
-- Full post-implementation regression is intentionally not claimed by the planning baseline.
+- `go test -count=1 ./...` — exit 0; 30 packages passed and one package reported no test files.
+- `go vet ./...` — exit 0 with no diagnostics.
+- `go test -count=1 -tags=e2e ./cmd/e2e-fixture` — exit 0; one package passed.
+- `cd web && npm test -- --run` — exit 0; 3/3 files and 46/46 tests passed in 7.61 seconds.
+- `cd web && npm run build` — exit 0; 2,342 modules transformed; production JS 587.41 kB / 176.94 kB gzip and CSS 17.97 kB / 4.67 kB gzip. Vite emitted the known chunk-size warning.
+- `cd web && npm run e2e` — exit 0; 2/2 tests passed in 27.9 seconds across desktop and mobile projects.
+- `docker compose --env-file .env.example config --quiet` — exit 0 with no diagnostics.
+- Linux amd64, `CGO_ENABLED=0` cross-builds of `./cmd/panel` and `./cmd/socket-proxy` — exit 0; temporary outputs were 17,186,282 and 9,760,910 bytes and were removed immediately (`removed=True`).
 
 ## Linux capture smoke
 
-- Required during Task 7 because the Windows development host cannot exercise Linux AF_PACKET/Host-network capture.
-- Docker image build was unavailable during Task 2 because the local Docker daemon is stopped. Race instrumentation was unavailable because Windows race builds require CGO and no `gcc` is installed.
-- Linux runtime ownership and real Unix-Socket connectivity remain part of Task 7 smoke because Windows does not enforce Unix UID/GID semantics.
+- Not executed: no disposable Linux host was available and this Windows host cannot exercise Linux AF_PACKET, Host networking or Unix UID/GID semantics.
+- `docker info` confirmed the local daemon is unavailable: connection to `//./pipe/docker_engine` failed because the file was not found. Therefore image build, container runtime, real Unix-Socket connectivity and capture smoke are not claimed.
+- `CGO_ENABLED=1 go test -race -count=1 ./internal/metrics` was attempted and failed during toolchain setup because `gcc` is not present in `%PATH%`; no race result is claimed.
+- Required manual acceptance on a disposable Linux host: start the stack; verify `/run/l4d2-panel` is `root:10001` mode `0750` and `proxy.sock` is `root:10001` mode `0660`; verify the proxy has only `CAP_NET_RAW` and no TCP listener on 23750; generate traffic across declared game, SourceTV and plugin ports and confirm only the matching RX/TX totals and rates change; stop the instance and confirm traffic/rates freeze; restart and confirm the Docker `StartedAt`/run boundary resets rate calculation; verify A2S, console, players, content and persistent instance paths; bring the stack down and confirm capture processes and the shared socket are cleaned up. These steps are instructions only, not executed evidence.
 
 ## Remove / restore and residual risk
 
-- No implementation-side temporary instrumentation exists at planning time.
+- Remove/Restore: no product instrumentation or fallback was added. Playwright output remained under ignored `web/test-results`; Vite `web/dist` remained ignored. Cross-build binaries were written to `%TEMP%` and removed. No Task 7 fixture, Go, Playwright or capture process remained after commands exited.
+- Residual risks: Linux runtime ownership/capability/socket/capture behavior is unverified; Windows race coverage is unavailable without `gcc`; the production bundle remains above Vite's 500 kB warning threshold. The real HTTP desktop/mobile administration journey and local static deployment contract have direct automated evidence.
+- Confidence: B. Core local behavior has fresh regression and main-journey evidence, but Linux-only operational acceptance and race execution remain blocked by the environment. This evidence is advisory; the controller owns the authoritative completion decision.
