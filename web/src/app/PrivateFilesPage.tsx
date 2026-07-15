@@ -55,7 +55,7 @@ type Props = {
   queueAndWait?: (path: string, body: unknown) => Promise<Job>;
 };
 type PrivateVersion = { path: string; size: number; hash?: string; updated_at?: string };
-type ActiveUpload = { id: string; path: string; size: number; offset: number; fingerprint: string; file?: File };
+type ActiveUpload = { id: string; instanceID: string; path: string; size: number; offset: number; fingerprint: string; file?: File };
 
 const EMPTY_DIFF: PrivateDiff = {
   changes: [],
@@ -138,6 +138,9 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
   const snapshotsTriggerRef = useRef<HTMLButtonElement>(null);
   const historyRef = useRef<HTMLElement>(null);
   const historyTriggerRef = useRef<HTMLButtonElement>(null);
+  const instanceIDRef = useRef(instanceID);
+  const loadRef = useRef<{ generation: number; controller?: AbortController }>({ generation: 0 });
+  instanceIDRef.current = instanceID;
 
   useEffect(() => {
     if (!instances.some((item) => item.id === instanceID)) {
@@ -146,7 +149,12 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
   }, [instanceID, instances]);
 
   const reload = useCallback(async () => {
-    if (!instanceID) {
+    const owner = instanceID;
+    const generation = ++loadRef.current.generation;
+    loadRef.current.controller?.abort();
+    const controller = new AbortController();
+    loadRef.current.controller = controller;
+    if (!owner) {
       setEntries([]);
       setDiff(EMPTY_DIFF);
       return;
@@ -155,10 +163,11 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
     setError("");
     try {
       const [nextEntries, nextDiff, nextSnapshots] = await Promise.all([
-        api<PrivateEntry[]>(`/api/instances/${instanceID}/private/tree`),
-        api<PrivateDiff>(`/api/instances/${instanceID}/private/diff`),
-        api<PrivateSnapshot[]>(`/api/instances/${instanceID}/private/snapshots`),
+        api<PrivateEntry[]>(`/api/instances/${owner}/private/tree`, { signal: controller.signal }),
+        api<PrivateDiff>(`/api/instances/${owner}/private/diff`, { signal: controller.signal }),
+        api<PrivateSnapshot[]>(`/api/instances/${owner}/private/snapshots`, { signal: controller.signal }),
       ]);
+      if (generation !== loadRef.current.generation || owner !== instanceIDRef.current) return;
       setEntries(nextEntries);
       setDiff(nextDiff);
       setSnapshots(nextSnapshots);
@@ -168,26 +177,43 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
           : "",
       );
     } catch (reason) {
-      setError(errorMessage(reason));
+      if (!controller.signal.aborted && generation === loadRef.current.generation) setError(errorMessage(reason));
     } finally {
-      setLoading(false);
+      if (generation === loadRef.current.generation) setLoading(false);
     }
   }, [instanceID]);
 
   useEffect(() => {
+    setEntries([]);
+    setDiff(EMPTY_DIFF);
+    setSnapshots([]);
+    setSelectedPath("");
+    setEditor("");
+    setEditing(false);
+    setError("");
+    setStatus("");
+    setUploadStatus("");
     void reload();
+    return () => loadRef.current.controller?.abort();
   }, [reload]);
 
   useEffect(() => {
     if (!instanceID) return;
+    setActiveUpload(null);
     const stored = localStorage.getItem(`private-upload:${instanceID}`);
     if (stored) {
-      try { setActiveUpload(JSON.parse(stored)); setUploadStatus("上传等待恢复 · 请重新选择原文件"); } catch {}
+      try {
+        const parsed = JSON.parse(stored) as ActiveUpload;
+        if (parsed.instanceID === instanceID) {
+          setActiveUpload(parsed);
+          setUploadStatus("上传等待恢复 · 请重新选择原文件");
+        }
+      } catch {}
     }
   }, [instanceID]);
   useEffect(() => {
     if (!instanceID) return;
-    if (activeUpload) {
+    if (activeUpload?.instanceID === instanceID) {
       const { file: _file, ...metadata } = activeUpload;
       localStorage.setItem(`private-upload:${instanceID}`, JSON.stringify(metadata));
     } else {
@@ -195,9 +221,12 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
     }
   }, [activeUpload, instanceID]);
 
-  useModalFocus(drawerOpen, drawerRef, drawerTriggerRef, () => setDrawerOpen(false));
-  useModalFocus(snapshotsOpen, snapshotsRef, snapshotsTriggerRef, () => setSnapshotsOpen(false));
-  useModalFocus(Boolean(history), historyRef, historyTriggerRef, () => setHistory(null));
+  const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+  const closeSnapshots = useCallback(() => setSnapshotsOpen(false), []);
+  const closeHistory = useCallback(() => setHistory(null), []);
+  useModalFocus(drawerOpen, drawerRef, drawerTriggerRef, closeDrawer);
+  useModalFocus(snapshotsOpen, snapshotsRef, snapshotsTriggerRef, closeSnapshots);
+  useModalFocus(Boolean(history), historyRef, historyTriggerRef, closeHistory);
 
   const run = useCallback(async (operation: () => Promise<void>) => {
     if (busy) return;
@@ -316,10 +345,16 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
     event.target.value = "";
     if (!file) return;
     await run(async () => {
+      const owner = instanceID;
       const selectedDirectory = selected?.kind === "directory" ? selected.path : "";
       const target = selectedDirectory ? `${selectedDirectory}/${file.name}` : file.name;
-      const digest = sha256(new Uint8Array(await file.arrayBuffer()));
-      const hash = [...digest].map((value) => value.toString(16).padStart(2, "0")).join("");
+      const hasher = sha256.create();
+      for (let offset = 0; offset < file.size; offset += UPLOAD_CHUNK_SIZE) {
+        const chunk = file.slice(offset, Math.min(offset + UPLOAD_CHUNK_SIZE, file.size));
+        hasher.update(new Uint8Array(await chunk.arrayBuffer()));
+        if (owner !== instanceIDRef.current) return;
+      }
+      const hash = [...hasher.digest()].map((value) => value.toString(16).padStart(2, "0")).join("");
       const fingerprint = `${file.name}:${file.size}:${file.lastModified}:${hash}`;
       if (activeUpload && activeUpload.fingerprint === fingerprint) {
         setActiveUpload({ ...activeUpload, file });
@@ -328,19 +363,21 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
       }
       setUploadStatus("准备上传 · 0%");
       const session = await api<{ id: string; offset: number }>(
-        `/api/instances/${instanceID}/private/uploads`,
+        `/api/instances/${owner}/private/uploads`,
         {
           method: "POST",
           body: JSON.stringify({ path: target, size: file.size, sha256: hash }),
         },
       );
-      const upload = { id: session.id, path: target, size: file.size, offset: session.offset || 0, fingerprint, file };
+      const upload = { id: session.id, instanceID: owner, path: target, size: file.size, offset: session.offset || 0, fingerprint, file };
       setActiveUpload(upload);
       await continueUpload(upload);
     });
   };
 
   const continueUpload = async (upload: ActiveUpload) => {
+      const owner = upload.instanceID;
+      if (owner !== instanceIDRef.current) return;
       const file = upload.file;
       if (!file) {
         setUploadStatus("上传等待恢复 · 请重新选择原文件");
@@ -350,7 +387,7 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
       while (offset < file.size) {
         const end = Math.min(offset + UPLOAD_CHUNK_SIZE, file.size);
         const response = await fetch(
-          `/api/instances/${instanceID}/private/uploads/${upload.id}`,
+          `/api/instances/${owner}/private/uploads/${upload.id}`,
           {
             method: "PATCH",
             credentials: "same-origin",
@@ -362,15 +399,18 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
           },
         );
         if (!response.ok) {
-          setActiveUpload({ ...upload, offset });
-          setUploadStatus(`上传可恢复 · ${offset}/${file.size} B · 会话 ${upload.id}`);
+          if (owner === instanceIDRef.current) {
+            setActiveUpload({ ...upload, offset });
+            setUploadStatus(`上传可恢复 · ${offset}/${file.size} B · 会话 ${upload.id}`);
+          }
           throw new Error(`上传中断 · HTTP ${response.status}`);
         }
         offset = Number(response.headers.get("Upload-Offset") || end);
+        if (owner !== instanceIDRef.current) return;
         setUploadStatus(`正在上传 · ${Math.round((offset / file.size) * 100)}%`);
       }
       await api(
-        `/api/instances/${instanceID}/private/uploads/${upload.id}/complete`,
+        `/api/instances/${owner}/private/uploads/${upload.id}/complete`,
         { method: "POST", body: "{}" },
       );
       setUploadStatus("上传完成 · 100%");
@@ -379,8 +419,10 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
   };
 
   const resumeUpload = async (upload = activeUpload) => {
-    if (!upload) return;
-    const recovered = await api<{ offset: number }>(`/api/instances/${instanceID}/private/uploads/${upload.id}`);
+    if (!upload || upload.instanceID !== instanceIDRef.current) return;
+    const owner = upload.instanceID;
+    const recovered = await api<{ offset: number }>(`/api/instances/${owner}/private/uploads/${upload.id}`);
+    if (owner !== instanceIDRef.current) return;
     const next = { ...upload, offset: recovered.offset };
     setActiveUpload(next);
     await continueUpload(next);

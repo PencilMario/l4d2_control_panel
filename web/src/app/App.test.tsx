@@ -531,6 +531,30 @@ describe("App", () => {
     expect(screen.getByText("Panel restarted; inspect and retry")).toBeInTheDocument();
   });
 
+  it("serializes slow job polling and stops polling after unmount", async () => {
+    vi.useFakeTimers();
+    let jobReads = 0;
+    let resolveRead!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") return new Response('{"ID":"slow-job","Status":"pending"}', { status: 202, headers: { "Content-Type": "application/json" } });
+      if (String(input) === "/api/jobs/slow-job") {
+        jobReads++;
+        return new Promise<Response>((resolve) => { resolveRead = resolve; });
+      }
+      return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    const view = render(<App initialInstances={[{ ...instance, actual_state: "stopped" }]} />);
+    fireEvent.click(screen.getByRole("button", { name: "启动" }));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(jobReads).toBe(1);
+    await act(async () => { vi.advanceTimersByTime(5_000); await Promise.resolve(); });
+    expect(jobReads).toBe(1);
+    view.unmount();
+    resolveRead(new Response('{"ID":"slow-job","Status":"running"}', { status: 200, headers: { "Content-Type": "application/json" } }));
+    await act(async () => { await Promise.resolve(); vi.advanceTimersByTime(5_000); });
+    expect(jobReads).toBe(1);
+  });
+
   it("hashes and uploads VPK files in sequential 8 MiB chunks", async () => {
     const chunkSize = 8 * 1024 * 1024;
     const patchCalls: Array<{ offset: number; size: number }> = [];

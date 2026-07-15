@@ -79,9 +79,11 @@ function mockPrivateAPI(options?: { error?: boolean; binaryOnly?: boolean }) {
         return json({ id: "upload-1", offset: 0 }, 201);
       }
       if (path.endsWith("/private/uploads/upload-1") && init?.method === "PATCH") {
+        const offset = Number((init.headers as Record<string, string>)["Upload-Offset"] || 0);
+        const size = (init.body as Blob)?.size || 0;
         return new Response(null, {
           status: 204,
-          headers: { "Upload-Offset": "4" },
+          headers: { "Upload-Offset": String(offset + size) },
         });
       }
       return new Response(null, { status: 204 });
@@ -312,5 +314,63 @@ describe("PrivateFilesPage", () => {
     expect(close).toHaveFocus();
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it("ignores a deferred instance response after switching instances", async () => {
+    let resolveA!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.includes("/instances/a/private/tree")) return new Promise<Response>((resolve) => { resolveA = resolve; });
+      if (path.includes("/instances/b/private/tree")) return json([{ path: "b.cfg", kind: "file", size: 1, updated_at: "now" }]);
+      if (path.endsWith("/private/diff")) return json({ changes: [], summary: { added: 0, modified: 0, deleted: 0 } });
+      return json([]);
+    }));
+    render(<PrivateFilesPage instances={[{ ...instance, id: "a", name: "A" }, { ...instance, id: "b", name: "B" }]} queue={vi.fn()} />);
+    await userEvent.selectOptions(screen.getByLabelText("目标实例"), "b");
+    expect(await screen.findByRole("treeitem", { name: "b.cfg" })).toBeVisible();
+    resolveA(json([{ path: "a.cfg", kind: "file", size: 1, updated_at: "now" }]));
+    await Promise.resolve();
+    expect(screen.queryByRole("treeitem", { name: "a.cfg" })).not.toBeInTheDocument();
+  });
+
+  it("hashes large uploads incrementally without reading the whole file", async () => {
+    mockPrivateAPI();
+    const file = new File([new Uint8Array(9 * 1024 * 1024)], "large.bin");
+    const wholeRead = vi.spyOn(file, "arrayBuffer");
+    const slices = vi.spyOn(file, "slice");
+    render(<PrivateFilesPage instances={[instance]} queue={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("上传文件"), { target: { files: [file] } });
+    expect(await screen.findByText("上传完成 · 100%")).toBeVisible();
+    expect(wholeRead).not.toHaveBeenCalled();
+    expect(slices.mock.calls.filter((call) => Number(call[0]) < file.size).length).toBeGreaterThanOrEqual(6);
+  });
+
+  it("does not carry an in-progress upload into a newly selected instance", async () => {
+    const { calls } = mockPrivateAPI();
+    let release!: () => void;
+    const file = new File([new Uint8Array([1, 2, 3, 4])], "switch.bin");
+    vi.spyOn(file, "slice").mockReturnValue({
+      size: 4,
+      arrayBuffer: () => new Promise<ArrayBuffer>((resolve) => { release = () => resolve(new Uint8Array([1, 2, 3, 4]).buffer); }),
+    } as Blob);
+    render(<PrivateFilesPage instances={[{ ...instance, id: "abc" }, { ...instance, id: "b", name: "B" }]} queue={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("上传文件"), { target: { files: [file] } });
+    await waitFor(() => expect(release).toBeTypeOf("function"));
+    await userEvent.selectOptions(screen.getByLabelText("目标实例"), "b");
+    release();
+    await Promise.resolve();
+    expect(calls.some((call) => call.path.includes("/instances/b/private/uploads"))).toBe(false);
+    expect(screen.queryByRole("button", { name: "恢复上传" })).not.toBeInTheDocument();
+  });
+
+  it("keeps modal focus inside during unrelated state updates", async () => {
+    mockPrivateAPI();
+    render(<PrivateFilesPage instances={[instance]} queue={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: "打开文件树" }));
+    const close = screen.getByRole("button", { name: "关闭文件树" });
+    expect(close).toHaveFocus();
+    const drawer = screen.getByRole("dialog", { name: "私有文件目录" });
+    fireEvent.click(drawer.querySelector('[role="treeitem"]')!);
+    expect(close).toHaveFocus();
   });
 });

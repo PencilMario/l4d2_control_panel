@@ -82,6 +82,14 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
       ? { status: "online", message: "测试数据已加载" }
       : { status: "checking", message: "正在检查 Docker API…" },
   );
+  const pollControllers = useRef(new globalThis.Map<string, AbortController>());
+  const pollTimers = useRef(new globalThis.Map<string, number>());
+  useEffect(() => () => {
+    for (const controller of pollControllers.current.values()) controller.abort();
+    for (const timer of pollTimers.current.values()) window.clearTimeout(timer);
+    pollControllers.current.clear();
+    pollTimers.current.clear();
+  }, []);
   const loadInstances = async () => {
     const base = (await api<any[]>("/api/instances")).map(normalizeInstance);
     const enriched = await Promise.all(
@@ -159,22 +167,39 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
   };
   const pollJob = (id: string) =>
     new Promise<Job>((resolve, reject) => {
+      pollControllers.current.get(id)?.abort();
+      const previousTimer = pollTimers.current.get(id);
+      if (previousTimer !== undefined) window.clearTimeout(previousTimer);
+      const controller = new AbortController();
+      pollControllers.current.set(id, controller);
+      let settled = false;
+      const finish = (callback: () => void) => {
+        if (settled) return;
+        settled = true;
+        pollControllers.current.delete(id);
+        const timer = pollTimers.current.get(id);
+        if (timer !== undefined) window.clearTimeout(timer);
+        pollTimers.current.delete(id);
+        callback();
+      };
       const read = async () => {
       try {
-        const next = await api<Job>(`/api/jobs/${id}`);
+        const next = await api<Job>(`/api/jobs/${id}`, { signal: controller.signal });
+        if (controller.signal.aborted || settled) return;
         setJob(next);
         if (["succeeded", "failed", "interrupted"].includes(next.Status)) {
-          clearInterval(timer);
           void Promise.allSettled([loadInstances(), loadPackages()]);
-          resolve(next);
+          finish(() => resolve(next));
+          return;
         }
+        const timer = window.setTimeout(() => void read(), 800);
+        pollTimers.current.set(id, timer);
       } catch (reason) {
-        clearInterval(timer);
+        if (controller.signal.aborted) return;
         setError(errorMessage(reason));
-        reject(reason);
+        finish(() => reject(reason));
       }
       };
-      const timer = window.setInterval(() => void read(), 800);
       void read();
     });
   if (auth === "checking")
