@@ -446,6 +446,9 @@ func (m *PrivateUploadManager) Cleanup() error {
 		} else {
 			readErr = errors.New("unsafe upload root")
 		}
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			result = errors.Join(result, fmt.Errorf("cleanup %s: %w", uploadRoot, readErr))
+		}
 		if readErr == nil {
 			ids := map[string]struct{}{}
 			for _, file := range files {

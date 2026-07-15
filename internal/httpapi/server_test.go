@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -52,13 +53,21 @@ func (f *fakeAttacher) AttachSupervisor(context.Context, string) (io.ReadWriteCl
 func TestPrivateFileAPIContract(t *testing.T) {
 	s, db := testServer(t)
 	t.Cleanup(func() { _ = db.Close() })
-	if err := db.CreateInstance(context.Background(), domain.Instance{ID: "abc", NodeID: "local", Name: "abc"}); err != nil {
+	if err := db.CreateInstance(context.Background(), domain.Instance{ID: "abc", NodeID: "local", Name: "abc", GamePort: 27015}); err != nil {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
 	private := content.NewPrivateManager(root, 1<<20)
 	s = New(db, s.auth, WithContent(nil, private, nil, nil, nil), WithPrivateUploads(content.NewPrivateUploadManager(root, 8<<20)))
 	cookie := loginCookie(t, s)
+	for _, check := range []struct{ method, path string }{{http.MethodGet, "/api/instances/abc/private/tree"}, {http.MethodPost, "/api/instances/abc/private/directories"}} {
+		r := httptest.NewRequest(check.method, check.path, strings.NewReader(`{"path":"x"}`))
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		if w.Code != 401 {
+			t.Fatalf("unauthenticated %s: %d", check.path, w.Code)
+		}
+	}
 	do := func(method, path, body string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, strings.NewReader(body))
 		r.AddCookie(cookie)
@@ -73,9 +82,10 @@ func TestPrivateFileAPIContract(t *testing.T) {
 		t.Fatalf("missing instance: %d %s", w.Code, w.Body.String())
 	}
 	for _, check := range []struct{ method, path string }{
+		{http.MethodGet, "/api/instances/missing/private"}, {http.MethodPut, "/api/instances/missing/private/a"}, {http.MethodGet, "/api/instances/missing/private/history/a"},
 		{http.MethodGet, "/api/instances/missing/private/tree"}, {http.MethodGet, "/api/instances/missing/private/diff"},
 		{http.MethodPost, "/api/instances/missing/private/move"}, {http.MethodPost, "/api/instances/missing/private/uploads"},
-		{http.MethodPatch, "/api/instances/missing/private/uploads/" + uuid.NewString()}, {http.MethodPost, "/api/instances/missing/private/uploads/" + uuid.NewString() + "/complete"},
+		{http.MethodGet, "/api/instances/missing/private/uploads/" + uuid.NewString()}, {http.MethodPatch, "/api/instances/missing/private/uploads/" + uuid.NewString()}, {http.MethodPost, "/api/instances/missing/private/uploads/" + uuid.NewString() + "/complete"},
 		{http.MethodGet, "/api/instances/missing/private/snapshots"}, {http.MethodPost, "/api/instances/missing/private/snapshots/bad/restore"},
 		{http.MethodGet, "/api/instances/missing/private/file/a"}, {http.MethodDelete, "/api/instances/missing/private/file/a"}, {http.MethodPost, "/api/instances/missing/private/apply"},
 	} {
@@ -83,8 +93,42 @@ func TestPrivateFileAPIContract(t *testing.T) {
 			t.Fatalf("%s %s: %d %s", check.method, check.path, w.Code, w.Body.String())
 		}
 	}
+	if _, err := os.Stat(filepath.Join(root, "instances", "missing")); !os.IsNotExist(err) {
+		t.Fatalf("missing instance filesystem created: %v", err)
+	}
+	audits, err := db.AuditEvents(context.Background(), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundRejected := false
+	for _, event := range audits {
+		if strings.Contains(event.Target, "/instances/missing/private") && event.Result == "404" {
+			foundRejected = true
+		}
+	}
+	if !foundRejected {
+		t.Fatal("rejected missing-instance mutation was not audited")
+	}
 	if w := do(http.MethodPost, "/api/instances/abc/private/directories", `{"path":"cfg"}`); w.Code != 201 {
 		t.Fatalf("mkdir: %d %s", w.Code, w.Body.String())
+	}
+	if _, err := private.Save(context.Background(), "abc", "cfg/a", []byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := private.Save(context.Background(), "abc", "cfg/b", []byte("b")); err != nil {
+		t.Fatal(err)
+	}
+	if w := do(http.MethodPost, "/api/instances/abc/private/move", `{"from":"cfg/a","to":"cfg/b","overwrite":true}`); w.Code != 428 {
+		t.Fatalf("move confirmation: %d %s", w.Code, w.Body.String())
+	}
+	if w := do(http.MethodPost, "/api/instances/abc/private/snapshots/bad/restore", `{}`); w.Code != 428 {
+		t.Fatalf("restore confirmation: %d %s", w.Code, w.Body.String())
+	}
+	if w := do(http.MethodDelete, "/api/instances/abc/private/file/cfg", ""); w.Code != 428 {
+		t.Fatalf("delete confirmation: %d %s", w.Code, w.Body.String())
+	}
+	if w := do(http.MethodPost, "/api/instances/abc/private/uploads", `{"path":"../bad","size":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`); w.Code != 422 {
+		t.Fatalf("unsafe upload: %d %s", w.Code, w.Body.String())
 	}
 	if w := do(http.MethodGet, "/api/instances/abc/private/tree", ""); w.Code != 200 {
 		t.Fatalf("tree: %d %s", w.Code, w.Body.String())
@@ -101,7 +145,25 @@ func TestPrivateFileAPIContract(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &session); err != nil {
 		t.Fatal(err)
 	}
-	r := httptest.NewRequest(http.MethodPatch, "/api/instances/abc/private/uploads/"+session.ID, strings.NewReader("abcdef"))
+	if w = do(http.MethodGet, "/api/instances/abc/private/uploads/"+session.ID, ""); w.Code != 200 || !strings.Contains(w.Body.String(), `"offset":0`) {
+		t.Fatalf("recover: %d %s", w.Code, w.Body.String())
+	}
+	if err := db.CreateInstance(context.Background(), domain.Instance{ID: "def", NodeID: "local", Name: "def", GamePort: 27016}); err != nil {
+		t.Fatal(err)
+	}
+	if w = do(http.MethodGet, "/api/instances/def/private/uploads/"+session.ID, ""); w.Code != 404 {
+		t.Fatalf("cross instance: %d %s", w.Code, w.Body.String())
+	}
+	r := httptest.NewRequest(http.MethodPatch, "/api/instances/abc/private/uploads/"+session.ID, strings.NewReader("x"))
+	r.AddCookie(cookie)
+	r.Header.Set("Upload-Offset", "1")
+	r.Header.Set("Content-Type", "application/offset+octet-stream")
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != 409 {
+		t.Fatalf("wrong offset: %d %s", w.Code, w.Body.String())
+	}
+	r = httptest.NewRequest(http.MethodPatch, "/api/instances/abc/private/uploads/"+session.ID, strings.NewReader("abcdef"))
 	r.AddCookie(cookie)
 	r.Header.Set("Upload-Offset", "0")
 	r.Header.Set("Content-Type", "text/plain")

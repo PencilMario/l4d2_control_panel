@@ -12,6 +12,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func uploadHash(raw []byte) string {
@@ -148,9 +150,9 @@ func TestPrivateApplyReportsTruthfulStages(t *testing.T) {
 
 func TestPrivateUploadMetadataCommitStateSurvivesRestart(t *testing.T) {
 	for _, tc := range []struct {
-		stage string
-		want  int64
-	}{{"metadata-rename", 0}, {"metadata-dir-sync", 3}} {
+		stage         string
+		want, written int64
+	}{{"metadata-temp-write", 0, 0}, {"metadata-temp-sync", 0, 0}, {"metadata-rename", 0, 0}, {"metadata-dir-sync", 3, 3}} {
 		t.Run(tc.stage, func(t *testing.T) {
 			root := t.TempDir()
 			manager := NewPrivateUploadManager(root, 1024)
@@ -164,8 +166,11 @@ func TestPrivateUploadMetadataCommitStateSurvivesRestart(t *testing.T) {
 				}
 				return nil
 			})
-			_, _ = manager.Write(s.ID, 0, bytes.NewBufferString("abc"))
+			written, writeErr := manager.Write(s.ID, 0, bytes.NewBufferString("abc"))
 			setPrivateUploadFaultHook(nil)
+			if writeErr == nil || written != tc.written {
+				t.Fatalf("write = %d, %v", written, writeErr)
+			}
 			recovered, err := NewPrivateUploadManager(root, 1024).Recover(s.ID)
 			if err != nil {
 				t.Fatal(err)
@@ -174,5 +179,37 @@ func TestPrivateUploadMetadataCommitStateSurvivesRestart(t *testing.T) {
 				t.Fatalf("offset = %d, want %d", recovered.Offset, tc.want)
 			}
 		})
+	}
+}
+
+func TestPrivateUploadCleanupPairsAndKeepsActiveSession(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateUploadManager(root, 1024)
+	active, err := manager.Begin("abc", "active.bin", 1, uploadHash([]byte("x")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "instances", "abc", "backups", "private", "uploads")
+	orphanPart := uuid.NewString() + ".part"
+	orphanMeta := uuid.NewString() + ".json"
+	if err = os.WriteFile(filepath.Join(dir, orphanPart), []byte("x"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(dir, orphanMeta), []byte(`{"id":"bad"}`), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(dir, ".upload-meta-leftover"), []byte("x"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err = manager.Cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{orphanPart, orphanMeta, ".upload-meta-leftover"} {
+		if _, err = os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Fatalf("artifact remains: %s", name)
+		}
+	}
+	if _, err = NewPrivateUploadManager(root, 1024).Recover(active.ID); err != nil {
+		t.Fatalf("active removed: %v", err)
 	}
 }
