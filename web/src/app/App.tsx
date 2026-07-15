@@ -36,6 +36,10 @@ import {
   type InstanceConfigValues,
   type PackageVersion,
 } from "./InstanceConfigModal";
+import {
+  PerformancePanel,
+  type PerformanceHistoryPoint,
+} from "./PerformancePanel";
 import "../styles/app.css";
 export type Instance = ConfigurableInstance & {
   players: number | null;
@@ -45,15 +49,48 @@ export type Instance = ConfigurableInstance & {
   container_running?: boolean;
   observed_max_players?: number | null;
   current_map?: string;
+  sampled_at?: string | null;
+  run_id?: string | null;
+  container_running_known?: boolean;
+  memory_bytes?: number | null;
+  memory_limit_bytes?: number | null;
+  memory_percent?: number | null;
+  network_rx_bytes_per_sec?: number | null;
+  network_tx_bytes_per_sec?: number | null;
+  network_rx_bytes?: number | null;
+  network_tx_bytes?: number | null;
+  block_read_bytes_per_sec?: number | null;
+  block_write_bytes_per_sec?: number | null;
+  block_read_bytes?: number | null;
+  block_write_bytes?: number | null;
+  pids?: number | null;
+  uptime_seconds?: number | null;
+  a2s_latency_ms?: number | null;
 };
-type InstanceOverview = {
+export type InstanceOverview = {
   actual_state: string;
   container_running: boolean;
+  container_running_known: boolean;
+  sampled_at: string | null;
+  run_id: string | null;
   map: string;
   players: number | null;
   max_players: number | null;
   cpu_percent: number | null;
   memory_bytes: number | null;
+  memory_limit_bytes: number | null;
+  memory_percent: number | null;
+  network_rx_bytes_per_sec: number | null;
+  network_tx_bytes_per_sec: number | null;
+  network_rx_bytes: number | null;
+  network_tx_bytes: number | null;
+  block_read_bytes_per_sec: number | null;
+  block_write_bytes_per_sec: number | null;
+  block_read_bytes: number | null;
+  block_write_bytes: number | null;
+  pids: number | null;
+  uptime_seconds: number | null;
+  a2s_latency_ms: number | null;
   issues?: string[];
 };
 type Props = {
@@ -82,6 +119,56 @@ type GitHubSource = {
 const errorMessage = (reason: unknown) =>
   reason instanceof Error ? reason.message : String(reason);
 
+export function mergePerformanceHistory(
+  existing: PerformanceHistoryPoint[],
+  incoming: PerformanceHistoryPoint[],
+): PerformanceHistoryPoint[] {
+  const points = new globalThis.Map<string, PerformanceHistoryPoint>();
+  for (const point of [...existing, ...incoming]) {
+    points.set(`${point.at}\u0000${point.run_id}`, point);
+  }
+  return [...points.values()]
+    .sort((a, b) => a.at.localeCompare(b.at))
+    .slice(-720);
+}
+
+export function prunePerformanceHistory(
+  current: Record<string, PerformanceHistoryPoint[]>,
+  liveIDs: Set<string>,
+): Record<string, PerformanceHistoryPoint[]> {
+  const next: Record<string, PerformanceHistoryPoint[]> = {};
+  for (const [id, points] of Object.entries(current)) {
+    if (liveIDs.has(id)) next[id] = points;
+  }
+  return next;
+}
+
+const historyPointFromOverview = (
+  overview: Pick<
+    Instance,
+    | "sampled_at"
+    | "run_id"
+    | "cpu"
+    | "memory_percent"
+    | "network_rx_bytes_per_sec"
+    | "network_tx_bytes_per_sec"
+    | "block_read_bytes_per_sec"
+    | "block_write_bytes_per_sec"
+  >,
+): PerformanceHistoryPoint | null =>
+  overview.sampled_at
+    ? {
+        at: overview.sampled_at,
+        run_id: overview.run_id || "",
+        cpu_percent: overview.cpu,
+        memory_percent: overview.memory_percent ?? null,
+        network_rx_bytes_per_sec: overview.network_rx_bytes_per_sec ?? null,
+        network_tx_bytes_per_sec: overview.network_tx_bytes_per_sec ?? null,
+        block_read_bytes_per_sec: overview.block_read_bytes_per_sec ?? null,
+        block_write_bytes_per_sec: overview.block_write_bytes_per_sec ?? null,
+      }
+    : null;
+
 export function App({ initialInstances, initialPackages, onAction }: Props) {
   const injected = initialInstances !== undefined;
   const [auth, setAuth] = useState(injected ? "yes" : "checking");
@@ -91,6 +178,13 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
   const [packages, setPackages] = useState<PackageVersion[]>(
     initialPackages || [],
   );
+  const [performanceHistory, setPerformanceHistory] = useState<
+    Record<string, PerformanceHistoryPoint[]>
+  >({});
+  const [historyLoading, setHistoryLoading] = useState<Record<string, boolean>>(
+    {},
+  );
+  const historyRequested = useRef(new Set<string>());
   const [pending, setPending] = useState<Instance | null>(null);
   const [page, setPage] = useState<Page>("overview");
   const [terminal, setTerminal] = useState<Instance | null>(null);
@@ -104,8 +198,37 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
   );
   const loadInstances = useCallback(async () => {
     const base = (await api<any[]>("/api/instances")).map(normalizeInstance);
-    const enriched = await Promise.all(
-      base.map(async (instance) => {
+    const liveIDs = new Set(base.map((instance) => instance.id));
+    for (const id of historyRequested.current) {
+      if (!liveIDs.has(id)) historyRequested.current.delete(id);
+    }
+    const historyRequests = base
+      .filter((instance) => !historyRequested.current.has(instance.id))
+      .map(async (instance) => {
+        historyRequested.current.add(instance.id);
+        setHistoryLoading((current) => ({ ...current, [instance.id]: true }));
+        try {
+          const history = await api<PerformanceHistoryPoint[]>(
+            `/api/instances/${instance.id}/performance-history`,
+          );
+          setPerformanceHistory((current) => ({
+            ...current,
+            [instance.id]: mergePerformanceHistory(
+              current[instance.id] || [],
+              Array.isArray(history) ? history : [],
+            ),
+          }));
+        } catch {
+          // A failed initial history request must not erase collected samples.
+        } finally {
+          setHistoryLoading((current) => ({
+            ...current,
+            [instance.id]: false,
+          }));
+        }
+      });
+    const enrichedPromise = Promise.all(
+      base.map(async (instance): Promise<Instance> => {
         try {
           const overview = await api<InstanceOverview>(
             `/api/instances/${instance.id}/overview`,
@@ -114,9 +237,26 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
             ...instance,
             observed_state: overview.actual_state,
             container_running: overview.container_running,
+            container_running_known: overview.container_running_known,
+            sampled_at: overview.sampled_at ?? null,
+            run_id: overview.run_id ?? null,
             observed_max_players: overview.max_players,
             current_map: overview.map || undefined,
             cpu: overview.cpu_percent,
+            memory_bytes: overview.memory_bytes ?? null,
+            memory_limit_bytes: overview.memory_limit_bytes ?? null,
+            memory_percent: overview.memory_percent ?? null,
+            network_rx_bytes_per_sec: overview.network_rx_bytes_per_sec ?? null,
+            network_tx_bytes_per_sec: overview.network_tx_bytes_per_sec ?? null,
+            network_rx_bytes: overview.network_rx_bytes ?? null,
+            network_tx_bytes: overview.network_tx_bytes ?? null,
+            block_read_bytes_per_sec: overview.block_read_bytes_per_sec ?? null,
+            block_write_bytes_per_sec: overview.block_write_bytes_per_sec ?? null,
+            block_read_bytes: overview.block_read_bytes ?? null,
+            block_write_bytes: overview.block_write_bytes ?? null,
+            pids: overview.pids ?? null,
+            uptime_seconds: overview.uptime_seconds ?? null,
+            a2s_latency_ms: overview.a2s_latency_ms ?? null,
             memory:
               overview.memory_bytes === null
                 ? null
@@ -127,14 +267,45 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
           return {
             ...instance,
             observed_state: "unknown",
+            container_running: false,
+            container_running_known: false,
+            sampled_at: null,
+            run_id: null,
             observed_max_players: null,
             players: null,
             cpu: null,
             memory: null,
+            memory_bytes: null,
+            memory_limit_bytes: null,
+            memory_percent: null,
+            network_rx_bytes_per_sec: null,
+            network_tx_bytes_per_sec: null,
+            network_rx_bytes: null,
+            network_tx_bytes: null,
+            block_read_bytes_per_sec: null,
+            block_write_bytes_per_sec: null,
+            block_read_bytes: null,
+            block_write_bytes: null,
+            pids: null,
+            uptime_seconds: null,
+            a2s_latency_ms: null,
           };
         }
       }),
     );
+    const [enriched] = await Promise.all([
+      enrichedPromise,
+      Promise.allSettled(historyRequests),
+    ]);
+    setPerformanceHistory((current) => {
+      const next = prunePerformanceHistory(current, liveIDs);
+      for (const instance of enriched) {
+        if (!instance.sampled_at) continue;
+        const point = historyPointFromOverview(instance);
+        if (point) next[instance.id] = mergePerformanceHistory(next[instance.id] || [], [point]);
+      }
+      return next;
+    });
     setInstances(enriched);
   }, []);
   const loadPackages = async () => {
@@ -323,6 +494,8 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
             instances={instances}
             packages={packages}
             running={running}
+            performanceHistory={performanceHistory}
+            historyLoading={historyLoading}
             setPending={setPending}
             action={action}
             setTerminal={setTerminal}
@@ -433,6 +606,8 @@ function Overview({
   instances,
   packages,
   running,
+  performanceHistory,
+  historyLoading,
   setPending,
   action,
   setTerminal,
@@ -444,6 +619,8 @@ function Overview({
   instances: Instance[];
   packages: PackageVersion[];
   running: number;
+  performanceHistory: Record<string, PerformanceHistoryPoint[]>;
+  historyLoading: Record<string, boolean>;
   setPending: (v: Instance) => void;
   action: (id: string, a: string) => void;
   setTerminal: (v: Instance) => void;
@@ -572,26 +749,32 @@ function Overview({
                   </span>
                   <em>{x.game_mode.toUpperCase()}</em>
                 </div>
-                <div className="stats">
-                  <span>
-                    <small>玩家</small>
-                    <b>
-                      {x.players === null ? "--" : x.players}
-                      {" / "}
-                      {observedCapacity === null ? "--" : observedCapacity}
-                    </b>
-                  </span>
-                  <span>
-                    <small>CPU</small>
-                    <b>{x.cpu === null ? "--" : `${x.cpu.toFixed(1)}%`}</b>
-                  </span>
-                  <span>
-                    <small>内存</small>
-                    <b>
-                      {x.memory === null ? "--" : `${x.memory.toFixed(2)} GB`}
-                    </b>
-                  </span>
+                <div className="player-capacity">
+                  <small>玩家</small>
+                  <b>{x.players === null ? "--" : x.players} / {observedCapacity === null ? "--" : observedCapacity}</b>
                 </div>
+                <PerformancePanel
+                  snapshot={{
+                    players: x.players,
+                    cpu_percent: x.cpu,
+                    memory_bytes: x.memory_bytes ?? (x.memory === null ? null : x.memory * (1 << 30)),
+                    memory_limit_bytes: x.memory_limit_bytes ?? null,
+                    memory_percent: x.memory_percent ?? null,
+                    network_rx_bytes_per_sec: x.network_rx_bytes_per_sec ?? null,
+                    network_tx_bytes_per_sec: x.network_tx_bytes_per_sec ?? null,
+                    network_rx_bytes: x.network_rx_bytes ?? null,
+                    network_tx_bytes: x.network_tx_bytes ?? null,
+                    block_read_bytes_per_sec: x.block_read_bytes_per_sec ?? null,
+                    block_write_bytes_per_sec: x.block_write_bytes_per_sec ?? null,
+                    block_read_bytes: x.block_read_bytes ?? null,
+                    block_write_bytes: x.block_write_bytes ?? null,
+                    pids: x.pids ?? null,
+                    uptime_seconds: x.uptime_seconds ?? null,
+                    a2s_latency_ms: x.a2s_latency_ms ?? null,
+                  }}
+                  history={performanceHistory[x.id] || []}
+                  loading={historyLoading[x.id] || false}
+                />
                 <div className="bar">
                   <i
                     style={{

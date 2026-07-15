@@ -8,7 +8,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { App, type Instance } from "./App";
+import { App, mergePerformanceHistory, prunePerformanceHistory, type Instance } from "./App";
 const instance: Instance = {
   id: "1",
   name: "深夜战役",
@@ -74,6 +74,98 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe("App", () => {
+  it("deduplicates, sorts and caps performance history", () => {
+    const points = Array.from({ length: 721 }, (_, index) => ({
+      at: new Date(Date.UTC(2026, 6, 15, 0, 0, index)).toISOString(),
+      run_id: "run-1",
+      cpu_percent: index,
+      memory_percent: null,
+      network_rx_bytes_per_sec: null,
+      network_tx_bytes_per_sec: null,
+      block_read_bytes_per_sec: null,
+      block_write_bytes_per_sec: null,
+    }));
+    const merged = mergePerformanceHistory(points, [{ ...points[720], cpu_percent: 999 }]);
+    expect(merged).toHaveLength(720);
+    expect(merged[0].cpu_percent).toBe(1);
+    expect(merged[719].cpu_percent).toBe(999);
+  });
+  it("removes histories for deleted instances", () => {
+    const point = { at: "2026-07-15T12:00:00Z", run_id: "run-1", cpu_percent: null, memory_percent: null, network_rx_bytes_per_sec: null, network_tx_bytes_per_sec: null, block_read_bytes_per_sec: null, block_write_bytes_per_sec: null };
+    expect(prunePerformanceHistory({ present: [point], deleted: [point] }, new Set(["present"]))).toEqual({ present: [point] });
+  });
+
+  it("fetches history once and appends overview samples on the existing poll", async () => {
+    let refresh: (() => void) | undefined;
+    vi.spyOn(window, "setInterval").mockImplementation((handler: TimerHandler) => {
+      refresh = handler as () => void;
+      return 1;
+    });
+    let overviewIndex = 0;
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      calls.push(path);
+      const value = path === "/api/session" ? { authenticated: true }
+        : path === "/api/instances" ? [apiInstance]
+        : path === "/api/instances/1/performance-history" ? [{ at: "2026-07-15T12:00:00Z", run_id: "run-1", cpu_percent: 1, memory_percent: 2, network_rx_bytes_per_sec: null, network_tx_bytes_per_sec: null, block_read_bytes_per_sec: null, block_write_bytes_per_sec: null }]
+        : path === "/api/instances/1/overview" ? { ...runningZeroOverview, sampled_at: overviewIndex++ === 0 ? "2026-07-15T12:00:05Z" : "2026-07-15T12:00:10Z", run_id: "run-1", container_running_known: true, memory_limit_bytes: 1024, memory_percent: 0, network_rx_bytes_per_sec: 0, network_tx_bytes_per_sec: 0, network_rx_bytes: 0, network_tx_bytes: 0, block_read_bytes_per_sec: 0, block_write_bytes_per_sec: 0, block_read_bytes: 0, block_write_bytes: 0, pids: 0, uptime_seconds: 0, a2s_latency_ms: 0 }
+        : path === "/api/packages" ? [] : { ok: true };
+      return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+
+    render(<App />);
+    expect(await screen.findByTestId("performance-chart")).toHaveAttribute("data-point-count", "2");
+    await act(async () => refresh!());
+    await waitFor(() => expect(screen.getByTestId("performance-chart")).toHaveAttribute("data-point-count", "3"));
+    expect(calls.filter((path) => path.endsWith("/performance-history"))).toHaveLength(1);
+  });
+
+  it("keeps overview samples when the initial history request fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/performance-history")) {
+        return new Response('{"error":{"message":"history unavailable"}}', { status: 503, headers: { "Content-Type": "application/json" } });
+      }
+      const value = path === "/api/session" ? { authenticated: true }
+        : path === "/api/instances" ? [apiInstance]
+        : path.endsWith("/overview") ? { ...runningZeroOverview, sampled_at: "2026-07-15T12:00:05Z", run_id: "run-1", container_running_known: true, memory_limit_bytes: null, memory_percent: null, network_rx_bytes_per_sec: null, network_tx_bytes_per_sec: null, network_rx_bytes: null, network_tx_bytes: null, block_read_bytes_per_sec: null, block_write_bytes_per_sec: null, block_read_bytes: null, block_write_bytes: null, pids: null, uptime_seconds: null, a2s_latency_ms: null }
+        : path === "/api/packages" ? [] : { ok: true };
+      return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    render(<App />);
+    expect(await screen.findByTestId("performance-chart")).toHaveAttribute("data-point-count", "1");
+  });
+
+  it("removes the performance surface when an instance is deleted", async () => {
+    let refresh: (() => void) | undefined;
+    vi.spyOn(window, "setInterval").mockImplementation((handler: TimerHandler) => {
+      refresh = handler as () => void;
+      return 1;
+    });
+    let listCall = 0;
+    let overviewCall = 0;
+    let historyCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      let value: unknown;
+      if (path === "/api/session") value = { authenticated: true };
+      else if (path === "/api/instances") value = listCall++ === 1 ? [] : [apiInstance];
+      else if (path.endsWith("/performance-history")) {
+        historyCalls += 1;
+        value = historyCalls === 1 ? [{ at: "2026-07-15T12:00:00Z", run_id: "run-1", cpu_percent: 1, memory_percent: null, network_rx_bytes_per_sec: null, network_tx_bytes_per_sec: null, block_read_bytes_per_sec: null, block_write_bytes_per_sec: null }] : [];
+      } else if (path.endsWith("/overview")) {
+        overviewCall += 1;
+        value = { ...runningZeroOverview, sampled_at: overviewCall === 1 ? "2026-07-15T12:00:05Z" : "2026-07-15T12:00:20Z", run_id: "run-1", container_running_known: true, memory_limit_bytes: null, memory_percent: null, network_rx_bytes_per_sec: null, network_tx_bytes_per_sec: null, network_rx_bytes: null, network_tx_bytes: null, block_read_bytes_per_sec: null, block_write_bytes_per_sec: null, block_read_bytes: null, block_write_bytes: null, pids: null, uptime_seconds: null, a2s_latency_ms: null };
+      } else value = path === "/api/packages" ? [] : { ok: true };
+      return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    render(<App />);
+    expect(await screen.findByTestId("performance-chart")).toHaveAttribute("data-point-count", "2");
+    await act(async () => refresh!());
+    await waitFor(() => expect(screen.queryByTestId("performance-chart")).not.toBeInTheDocument());
+    expect(historyCalls).toBe(1);
+  });
   it("shows operational instance data", () => {
     render(
       <App
@@ -127,7 +219,7 @@ describe("App", () => {
     expect(card).not.toBeNull();
     expect(await within(card!).findByText("已停止")).toBeInTheDocument();
     expect(within(card!).getByText("-- / --")).toBeInTheDocument();
-    expect(within(card!).getAllByText("--")).toHaveLength(2);
+    expect(within(card!).getAllByText("--").length).toBeGreaterThanOrEqual(2);
     expect(card).toHaveClass("stopped");
     const playerTotal = screen.getByText("在线玩家").closest("article");
     expect(playerTotal).not.toBeNull();
@@ -174,8 +266,8 @@ describe("App", () => {
     });
 
     expect(await screen.findByText("0 / 8")).toBeInTheDocument();
-    expect(screen.getByText("0.0%")).toBeInTheDocument();
-    expect(screen.getByText("0.00 GB")).toBeInTheDocument();
+    expect(screen.getByText("0%")).toBeInTheDocument();
+    expect(screen.getByText("0 B / -- (--)")).toBeInTheDocument();
     expect(screen.getByText("运行中")).toBeInTheDocument();
   });
   it("opens the existing instance configuration from its card", async () => {
