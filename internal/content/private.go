@@ -397,13 +397,19 @@ func (m *PrivateManager) Delete(_ context.Context, instanceID, name string) erro
 	if err != nil {
 		return err
 	}
-	info, err := os.Stat(target)
-	if err != nil {
-		return err
-	}
 	lock := m.instanceLock(instanceID)
 	lock.Lock()
 	defer lock.Unlock()
+	if err := rejectSymlinkParents(m.root, target); err != nil {
+		return err
+	}
+	info, err := os.Lstat(target)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("symbolic links are forbidden")
+	}
 	if info.IsDir() {
 		return os.RemoveAll(target)
 	}

@@ -1318,8 +1318,11 @@ func (s *Server) requireExistingPrivateInstance(next http.Handler) http.Handler 
 					id = parts[0]
 				}
 			}
-			if _, err := s.store.Instance(r.Context(), id); err != nil {
+			if _, err := s.store.Instance(r.Context(), id); errors.Is(err, store.ErrNotFound) {
 				writeError(w, 404, "instance_not_found", "instance not found")
+				return
+			} else if err != nil {
+				writeError(w, 500, "store_error", "instance lookup failed")
 				return
 			}
 		}

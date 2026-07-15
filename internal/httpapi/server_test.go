@@ -294,6 +294,19 @@ func TestPrivateFileAPIContract(t *testing.T) {
 	}
 }
 
+func TestPrivateInstanceLookupFailureIsServerError(t *testing.T) {
+	s, db := testServer(t)
+	cookie := loginCookie(t, s)
+	_ = db.Close()
+	r := httptest.NewRequest(http.MethodGet, "/api/instances/abc/private/tree", nil)
+	r.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != 500 || !strings.Contains(w.Body.String(), `"code":"store_error"`) {
+		t.Fatalf("lookup failure: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func testServer(t *testing.T) (*Server, *store.Store) {
 	t.Helper()
 	root := t.TempDir()

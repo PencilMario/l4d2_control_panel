@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -49,6 +50,7 @@ func metadataWasCommitted(err error) bool {
 }
 
 var privateUploadFaultHook func(string) error
+var privateUploadSessionLocks sync.Map
 
 func setPrivateUploadFaultHook(hook func(string) error) { privateUploadFaultHook = hook }
 func runPrivateUploadFaultHook(stage string) error {
@@ -56,6 +58,12 @@ func runPrivateUploadFaultHook(stage string) error {
 		return privateUploadFaultHook(stage)
 	}
 	return nil
+}
+func (m *PrivateUploadManager) sessionLock(id string) *sync.Mutex {
+	root, _ := filepath.Abs(m.root)
+	key := filepath.Clean(root) + "\x00" + id
+	lock, _ := privateUploadSessionLocks.LoadOrStore(key, &sync.Mutex{})
+	return lock.(*sync.Mutex)
 }
 
 func NewPrivateUploadManager(root string, maxBytes int64) *PrivateUploadManager {
@@ -118,13 +126,13 @@ func (m *PrivateUploadManager) Begin(instanceID, name string, size int64, hash s
 }
 
 func (m *PrivateUploadManager) Write(id string, offset int64, reader io.Reader) (int64, error) {
+	sessionLock := m.sessionLock(id)
+	sessionLock.Lock()
+	defer sessionLock.Unlock()
 	s, part, meta, err := m.load(id)
 	if err != nil {
 		return 0, err
 	}
-	lock := m.private.instanceLock(s.InstanceID)
-	lock.Lock()
-	defer lock.Unlock()
 	info, err := os.Stat(part)
 	if err != nil {
 		return 0, err
@@ -182,6 +190,13 @@ func (m *PrivateUploadManager) Complete(id string) error {
 	lock := m.private.instanceLock(s.InstanceID)
 	lock.Lock()
 	defer lock.Unlock()
+	sessionLock := m.sessionLock(id)
+	sessionLock.Lock()
+	defer sessionLock.Unlock()
+	s, part, meta, err = m.load(id)
+	if err != nil {
+		return err
+	}
 	if s.Offset != s.Size {
 		return errors.New("upload incomplete")
 	}
@@ -466,6 +481,8 @@ func (m *PrivateUploadManager) Cleanup() error {
 				ids[id] = struct{}{}
 			}
 			for id := range ids {
+				sessionLock := m.sessionLock(id)
+				sessionLock.Lock()
 				part, meta := m.sessionPaths(uploadRoot, id)
 				if rejectSymlinkParents(m.root, part) != nil || rejectSymlinkParents(m.root, meta) != nil {
 					if removeErr := os.Remove(part); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
@@ -474,6 +491,7 @@ func (m *PrivateUploadManager) Cleanup() error {
 					if removeErr := os.Remove(meta); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 						result = errors.Join(result, removeErr)
 					}
+					sessionLock.Unlock()
 					continue
 				}
 				raw, metaErr := os.ReadFile(meta)
@@ -491,6 +509,7 @@ func (m *PrivateUploadManager) Cleanup() error {
 						result = errors.Join(result, removeErr)
 					}
 				}
+				sessionLock.Unlock()
 			}
 			if syncErr := syncDirectory(uploadRoot); syncErr != nil {
 				result = errors.Join(result, syncErr)

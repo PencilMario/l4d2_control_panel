@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -232,6 +233,82 @@ func TestPrivateUploadCleanupRejectsSymlinkRootWithoutTouchingOutside(t *testing
 		t.Fatal("unsafe upload root accepted")
 	}
 	if raw, err := os.ReadFile(sentinel); err != nil || string(raw) != "safe" {
+		t.Fatalf("outside changed: %q, %v", raw, err)
+	}
+}
+
+type blockingUploadReader struct {
+	entered chan struct{}
+	release chan struct{}
+	sent    bool
+}
+
+func (r *blockingUploadReader) Read(p []byte) (int, error) {
+	if r.sent {
+		return 0, io.EOF
+	}
+	close(r.entered)
+	<-r.release
+	r.sent = true
+	p[0] = 'x'
+	return 1, nil
+}
+
+func TestPrivateUploadSlowWriteDoesNotBlockWorkspace(t *testing.T) {
+	root := t.TempDir()
+	uploads := NewPrivateUploadManager(root, 1024)
+	private := NewPrivateManager(root, 1024)
+	s, err := uploads.Begin("abc", "slow.bin", 1, uploadHash([]byte("x")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &blockingUploadReader{entered: make(chan struct{}), release: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() { _, err := uploads.Write(s.ID, 0, reader); done <- err }()
+	<-reader.entered
+	saved := make(chan error, 1)
+	go func() { _, err := private.Save(context.Background(), "abc", "cfg/a", []byte("a")); saved <- err }()
+	select {
+	case err := <-saved:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("slow upload blocked workspace")
+	}
+	close(reader.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPrivateDeleteRevalidatesReplacementAfterWaitingForLock(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateManager(root, 1024)
+	if _, err := manager.Save(context.Background(), "abc", "cfg/a", []byte("old")); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "sentinel")
+	if err := os.WriteFile(outside, []byte("safe"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	lock := manager.instanceLock("abc")
+	lock.Lock()
+	done := make(chan error, 1)
+	go func() { done <- manager.Delete(context.Background(), "abc", "cfg/a") }()
+	target := filepath.Join(root, "instances", "abc", "private", "cfg", "a")
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, target); err != nil {
+		lock.Unlock()
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	lock.Unlock()
+	if err := <-done; err == nil {
+		t.Fatal("replacement symlink deleted")
+	}
+	if raw, err := os.ReadFile(outside); err != nil || string(raw) != "safe" {
 		t.Fatalf("outside changed: %q, %v", raw, err)
 	}
 }
