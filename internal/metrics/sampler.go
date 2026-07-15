@@ -248,12 +248,15 @@ func (s *Sampler) sampleInstance(ctx context.Context, instance domain.Instance) 
 	}()
 
 	statsResult, playerResult, _ := s.collectIndependent(ctx, now, instance, "")
-	imageResult := <-imageSizeCh
-	if imageResult.err != nil {
-		imageErr := imageResult.err
-		snapshot.Issues = append(snapshot.Issues, issue("docker_image", imageErr))
-	} else {
-		snapshot.ImageSizeBytes = uint64ptr(imageResult.size)
+	select {
+	case imageResult := <-imageSizeCh:
+		if imageResult.err != nil {
+			snapshot.Issues = append(snapshot.Issues, issue("docker_image", imageResult.err))
+		} else {
+			snapshot.ImageSizeBytes = uint64ptr(imageResult.size)
+		}
+	case <-ctx.Done():
+		snapshot.Issues = append(snapshot.Issues, issue("docker_image", ctx.Err()))
 	}
 	mergeSnapshot(&snapshot, statsResult.snapshot)
 	mergeSnapshot(&snapshot, playerResult)

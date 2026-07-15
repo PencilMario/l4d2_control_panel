@@ -224,6 +224,34 @@ func TestImageSizeQueryDoesNotBlockOtherSources(t *testing.T) {
 	<-done
 }
 
+func TestImageSizeQueryIgnoringContextDoesNotHangSample(t *testing.T) {
+	s, _, runtime, _, _, _ := testSampler(time.Now().UTC())
+	release := make(chan struct{})
+	defer close(release)
+	runtime.imageSizeFn = func(context.Context, string) (uint64, error) {
+		<-release
+		return 0, errors.New("late image result")
+	}
+	s.instanceTimeout = 20 * time.Millisecond
+	done := make(chan struct{})
+	go func() {
+		s.Sample(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Sample hung waiting for ImageSize provider that ignored context")
+	}
+	got, ok := s.Latest("one")
+	if !ok || !hasIssue(got.Issues, "docker_image") {
+		t.Fatalf("missing timeout observation: %+v ok=%v", got, ok)
+	}
+	if got.CPUPercent == nil || got.MemoryBytes == nil || got.Map == nil {
+		t.Fatalf("image timeout discarded completed metrics: %+v", got)
+	}
+}
+
 func TestMergeSnapshotCopiesImageSizePointer(t *testing.T) {
 	size := uint64(42)
 	source := Snapshot{ImageSizeBytes: &size}
