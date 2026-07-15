@@ -178,12 +178,18 @@ func (m *PrivateUploadManager) Write(id string, offset int64, reader io.Reader) 
 }
 
 func (m *PrivateUploadManager) Recover(id string) (PrivateUploadSession, error) {
+	lock := m.sessionLock(id)
+	lock.Lock()
+	defer lock.Unlock()
 	s, _, _, err := m.load(id)
 	return s, err
 }
 
 func (m *PrivateUploadManager) Complete(id string) error {
+	peekLock := m.sessionLock(id)
+	peekLock.Lock()
 	s, part, meta, err := m.load(id)
+	peekLock.Unlock()
 	if err != nil {
 		return err
 	}

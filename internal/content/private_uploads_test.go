@@ -312,3 +312,63 @@ func TestPrivateDeleteRevalidatesReplacementAfterWaitingForLock(t *testing.T) {
 		t.Fatalf("outside changed: %q, %v", raw, err)
 	}
 }
+
+func TestPrivateUploadRecoverWaitsForWriteCommit(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateUploadManager(root, 1024)
+	s, err := manager.Begin("abc", "recover.bin", 1, uploadHash([]byte("x")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &blockingUploadReader{entered: make(chan struct{}), release: make(chan struct{})}
+	writeDone := make(chan error, 1)
+	go func() { _, err := manager.Write(s.ID, 0, reader); writeDone <- err }()
+	<-reader.entered
+	recovered := make(chan PrivateUploadSession, 1)
+	recoverErr := make(chan error, 1)
+	go func() { got, err := manager.Recover(s.ID); recovered <- got; recoverErr <- err }()
+	select {
+	case <-recovered:
+		t.Fatal("Recover observed in-flight write")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(reader.release)
+	if err := <-writeDone; err != nil {
+		t.Fatal(err)
+	}
+	got := <-recovered
+	if err := <-recoverErr; err != nil || got.Offset != 1 {
+		t.Fatalf("recover=%+v, %v", got, err)
+	}
+}
+
+func TestPrivateUploadCompleteWaitsForWriteCommit(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateUploadManager(root, 1024)
+	s, err := manager.Begin("abc", "complete.bin", 1, uploadHash([]byte("x")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &blockingUploadReader{entered: make(chan struct{}), release: make(chan struct{})}
+	writeDone := make(chan error, 1)
+	go func() { _, err := manager.Write(s.ID, 0, reader); writeDone <- err }()
+	<-reader.entered
+	completeDone := make(chan error, 1)
+	go func() { completeDone <- manager.Complete(s.ID) }()
+	select {
+	case err := <-completeDone:
+		t.Fatalf("Complete returned during write: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(reader.release)
+	if err := <-writeDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-completeDone; err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "instances", "abc", "private", "complete.bin"))
+	if err != nil || string(raw) != "x" {
+		t.Fatalf("published=%q, %v", raw, err)
+	}
+}
