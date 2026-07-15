@@ -400,6 +400,12 @@ test("real HTTP administration journey survives refresh and streams recovery sta
     page.getByRole("button", { name: "应用更改" }).click(),
   );
   await waitForJob(page, secondPrivateApply.ID);
+  const restorableSnapshotID = await page.evaluate(async (id) => {
+    const response = await fetch(`/api/instances/${id}/private/snapshots`);
+    const values = await response.json() as Array<{ id: string }>;
+    if (!response.ok || !values[0]?.id) throw new Error("expected applied private snapshot");
+    return values[0].id;
+  }, initiallySaved.id);
   tree = await privateTree(page, mobile);
   await expect(tree.getByRole("treeitem", { name: "seeded.cfg" })).toBeVisible();
   await answerDialogs(page, [true]);
@@ -409,6 +415,13 @@ test("real HTTP administration journey survives refresh and streams recovery sta
     page.getByRole("button", { name: "应用更改" }).click(),
   );
   await waitForJob(page, deletePrivateApply.ID);
+  await page.getByRole("button", { name: "刷新" }).click();
+  tree = await privateTree(page, mobile);
+  const deletedCfg = tree.getByRole("treeitem", { name: "cfg", exact: true });
+  if (await deletedCfg.getAttribute("aria-expanded") !== "true") await deletedCfg.click();
+  await expect(tree.getByRole("treeitem", { name: "seeded.cfg" })).toHaveCount(0);
+  await expect(tree.getByRole("treeitem", { name: "binary.bin" })).toBeVisible();
+  await closePrivateTree(page, mobile);
   const lowerDiagnostic = await page.evaluate(async (id) => {
     const response = await fetch(`/__e2e/private-lower?id=${encodeURIComponent(id)}&path=cfg/seeded.cfg`);
     return { status: response.status, body: await response.text() };
@@ -417,12 +430,25 @@ test("real HTTP administration journey survives refresh and streams recovery sta
 
   await page.getByRole("button", { name: "历史快照" }).click();
   const snapshots = page.getByRole("dialog", { name: "历史快照" });
-  await expect.poll(() => snapshots.locator(".private-snapshot-row").count()).toBeGreaterThanOrEqual(3);
+  const snapshotIndex = await page.evaluate(async ({ id, snapshotID }) => {
+    const response = await fetch(`/api/instances/${id}/private/snapshots`);
+    const values = await response.json() as Array<{ id: string }>;
+    return values.findIndex((snapshot) => snapshot.id === snapshotID);
+  }, { id: initiallySaved.id, snapshotID: restorableSnapshotID });
+  expect(snapshotIndex).toBeGreaterThanOrEqual(0);
+  await expect.poll(() => snapshots.locator(".private-snapshot-row").count()).toBeGreaterThan(snapshotIndex);
   await answerDialogs(page, [true]);
-  await snapshots.getByRole("button", { name: /^恢复 / }).nth(1).click();
+  await snapshots.getByRole("button", { name: /^恢复 / }).nth(snapshotIndex).click();
   await expect(page.getByText("快照已恢复到暂存区", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "刷新" }).click();
   await expect(page.getByLabel("暂存更改状态")).toContainText("更改未应用");
+  tree = await privateTree(page, mobile);
+  const restoredCfg = tree.getByRole("treeitem", { name: "cfg", exact: true });
+  if (await restoredCfg.getAttribute("aria-expanded") !== "true") await restoredCfg.click();
+  await expect(tree.getByRole("treeitem", { name: "seeded.cfg" })).toBeVisible();
+  await expect(tree.getByRole("treeitem", { name: "binary.bin" })).toBeVisible();
+  await tree.getByLabel("编辑 seeded.cfg").click();
+  await expect(page.getByLabel("文件内容")).toHaveValue("private override\n");
   const restorePrivateApply = await captureJob(page, "/private/apply", () =>
     page.getByRole("button", { name: "应用更改" }).click(),
   );
@@ -460,17 +486,19 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   }).toBeLessThanOrEqual(2);
   expect.soft((await consolePosition(page)).scrollWidth).toBeLessThanOrEqual((await consolePosition(page)).clientWidth);
 
-  await consoleOutput.evaluate((output) => { output.scrollTop = 0; });
+  await consoleOutput.evaluate((output) => {
+    output.scrollTop = 0;
+    output.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await expect.poll(async () => (await consolePosition(page)).top).toBeLessThanOrEqual(2);
   await page.evaluate(async (id) => {
     await fetch(`/__e2e/console-output?id=${encodeURIComponent(id)}`, { method: "POST", body: "async held\n" });
   }, initiallySaved.id);
   await expect(consoleOutput).toContainText("async held");
   expect((await consolePosition(page)).top).toBeLessThanOrEqual(2);
 
-  await consoleOutput.evaluate((output) => {
-    output.scrollTop = output.scrollHeight;
-    output.dispatchEvent(new Event("scroll"));
-  });
+  await consoleOutput.hover();
+  await page.mouse.wheel(0, 100_000);
   await expect.poll(async () => {
     const position = await consolePosition(page);
     return Math.abs(position.top - position.bottom);
@@ -484,7 +512,11 @@ test("real HTTP administration journey survives refresh and streams recovery sta
     return Math.abs(position.top - position.bottom);
   }).toBeLessThanOrEqual(2);
 
-  await consoleOutput.evaluate((output) => { output.scrollTop = 0; });
+  await consoleOutput.evaluate((output) => {
+    output.scrollTop = 0;
+    output.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await expect.poll(async () => (await consolePosition(page)).top).toBeLessThanOrEqual(2);
   await page.locator(".terminal-modal input").fill("status");
   await page.locator(".terminal-modal").getByRole("button", { name: "发送" }).click();
   await expect(page.locator(".terminal-modal pre")).toContainText("echo:status");

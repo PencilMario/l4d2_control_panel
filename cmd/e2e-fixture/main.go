@@ -299,11 +299,26 @@ func privateLowerDiagnostic(root string) http.HandlerFunc {
 		}
 		id := r.URL.Query().Get("id")
 		name := filepath.Clean(filepath.FromSlash(r.URL.Query().Get("path")))
-		if id == "" || name == "." || filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
+		if filepath.Base(id) != id || id == "" || id == "." || id == ".." || strings.ContainsAny(id, `/\\`) || name == "." || filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
 			http.Error(w, "invalid diagnostic path", http.StatusBadRequest)
 			return
 		}
-		value, err := os.ReadFile(filepath.Join(root, "instances", id, "game", "left4dead2", name))
+		base, err := filepath.Abs(filepath.Join(root, "instances", id, "game", "left4dead2"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		target, err := filepath.Abs(filepath.Join(base, name))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		relative, err := filepath.Rel(base, target)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			http.Error(w, "invalid diagnostic path", http.StatusBadRequest)
+			return
+		}
+		value, err := os.ReadFile(target)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
