@@ -4,3 +4,11 @@
 
 - [L4D2 Control Panel design](specs/2026-07-14-l4d2-control-panel-design.md)
 - [Instance startup configuration and package selection](specs/2026-07-15-instance-startup-package-design.md)
+
+## Implementation Plans
+
+- [Instance startup configuration and package selection](plans/2026-07-15-instance-startup-packages.md)
+
+## Active Work
+
+- [Instance startup and package implementation](work/2026-07-15-instance-startup-packages/00-intent.md)
