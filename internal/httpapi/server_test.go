@@ -319,8 +319,22 @@ func TestPrivateFileAPIContract(t *testing.T) {
 	for {
 		job, ok := s.jobs.Get(started.ID)
 		if ok && job.Status == "succeeded" {
-			if job.Stage != "commit" {
-				t.Fatalf("final stage=%s", job.Stage)
+			if job.Stage != "complete" || job.Message != "Task completed" {
+				t.Fatalf("final job=%#v", job)
+			}
+			_, events, found, err := s.jobs.Details(started.ID)
+			if err != nil || !found {
+				t.Fatalf("events=%#v found=%v err=%v", events, found, err)
+			}
+			commitRecorded := false
+			for _, event := range events {
+				if event.Kind == "progress" && event.Stage == "commit" {
+					commitRecorded = true
+					break
+				}
+			}
+			if !commitRecorded {
+				t.Fatalf("commit progress missing from events=%#v", events)
 			}
 			break
 		}
@@ -1163,6 +1177,8 @@ func TestJobSettingsRejectInvalidValuesWithoutChangingStoredLimit(t *testing.T) 
 		`{"successful_job_limit":0}`,
 		`{"successful_job_limit":501}`,
 		`{"successful_job_limit":"many"}`,
+		`{"successful_job_limit":40} {}`,
+		`{"successful_job_limit":40} trailing`,
 	} {
 		r := httptest.NewRequest(http.MethodPut, "/api/settings/jobs", strings.NewReader(body))
 		r.AddCookie(cookie)

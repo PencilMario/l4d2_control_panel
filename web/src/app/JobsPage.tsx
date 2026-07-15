@@ -127,7 +127,7 @@ export function JobsPage() {
                 type="button"
                 aria-expanded={expanded}
                 aria-controls={panelID}
-                aria-label={`查看 ${type} 任务日志`}
+                aria-label={`查看 ${type} 任务日志，任务 ID ${item.ID}`}
                 onClick={() => toggle(item)}
               >
                 <span className="job-code">
@@ -289,17 +289,26 @@ function elapsed(from?: string | null, to?: string | null) {
 }
 
 function executionDuration(job: Job) {
-  if (!job.StartedAt) return job.Status === "pending" ? "尚未开始" : "--";
+  if (!job.StartedAt) {
+    if (TERMINAL_STATUSES.has(job.Status)) return "未执行";
+    return job.Status === "pending" ? "尚未开始" : "--";
+  }
   const end = job.FinishedAt || new Date().toISOString();
   return formatDuration(elapsed(job.StartedAt, end));
 }
 
 function queueDuration(job: Job) {
-  if (!job.StartedAt) return "排队中";
+  if (!job.StartedAt) {
+    return TERMINAL_STATUSES.has(job.Status)
+      ? formatDuration(elapsed(job.CreatedAt, job.FinishedAt))
+      : "排队中";
+  }
   return formatDuration(elapsed(job.CreatedAt, job.StartedAt));
 }
 
 function durationSummary(job: Job) {
-  if (!job.StartedAt) return "排队中";
+  if (!job.StartedAt) {
+    return TERMINAL_STATUSES.has(job.Status) ? "未执行" : "排队中";
+  }
   return executionDuration(job);
 }

@@ -19,6 +19,12 @@
 - [x] F2：Playwright 展开失败日志和保存设置。
 - [x] F3：Go、vet、Vitest、build、E2E 完整验证。
 - [x] F4：证据、diff、产物和副作用检查。
+- [x] G1：审查修复终态持久化失败、成功摘要和旧快照说明。
+- [x] G2：审查补足稳定清理排序、设置回滚、严格 JSON 与无障碍名称回归。
+- [x] G3：started 持久化失败回归红灯，阻止业务函数并记录 failed 终态。
+- [x] G4：Playwright 每项目重置成功任务上限，desktop/mobile 均验证 40 → 25。
+- [x] G5：刷新 Go、vet、Vitest、build、E2E 和视觉证据。
+- [x] G6：提交审查修复；最终复审无 Critical/Important，闭合未执行终态的 Minor 展示问题。
 
 ## 当前漂移检查
 

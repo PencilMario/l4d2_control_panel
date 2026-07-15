@@ -4,10 +4,10 @@
 
 - 当前目标：完成结构化任务日志、执行时间和全局成功任务保留设置。
 - 活动切片：完成候选，分支交付检查。
-- 已完成：规格/计划/基线、Store、Manager、HTTP、JobsPage、Settings、E2E、完整验证和证据。
+- 已完成：规格/计划/基线、Store、Manager、HTTP、JobsPage、Settings、E2E、最终复审修复、完整验证和视觉检查。
 - 待完成：分支集成方式确认。
 - 阻塞项：无。
-- 下一步：提交 E2E 与证据，执行 finishing-development-branch 流程。
+- 下一步：执行 finishing-development-branch 流程。
 
 ## Evidence
 
@@ -33,7 +33,15 @@
 - E2E 红灯：fixture_failure 无结构化事件且执行用时为 `--`。
 - E2E 绿灯：desktop/mobile 均展开四个生命周期事件、显示 2分18秒、保存设置 25，并通过无横向溢出断言。
 - 完整后端：go test ./... 全部通过；go vet ./... exit 0。
-- 完整前端：6 个 Vitest 文件、90 个测试通过；生产构建 exit 0。
+- 审查修复：生命周期持久化失败不再领先更新内存；started 写失败不运行业务函数，并持久化 failed 终态。
+- 审查修复：无进度成功任务写入 complete / Task completed，旧进度仍保留在事件历史。
+- 审查修复：旧快照保留原错误或消息并追加执行时间估算标记；相同结束时间按 ID 稳定清理；设置清理失败完整回滚。
+- 审查修复：设置 PUT 严格拒绝第二个 JSON 值和尾随文本；重复任务类型的日志按钮使用完整任务 ID 区分。
+- Manager 红灯：started 生命周期写入失败后业务函数仍运行；绿灯：业务函数未运行，最终事件为 queued、failed，StartedAt 为空。
+- E2E 隔离红灯：desktop 保存 25 后，mobile 期望 40 实际读到 25；绿灯：每个项目登录后重置 40，随后真实 UI 保存 25 并通过 API 回读。
+- 最终复审：Critical/Important 均为零；唯一 Minor 是未开始的终态任务错误显示“排队中”。
+- Minor 红灯：failed 且无 StartedAt 的任务摘要显示“排队中”；绿灯：摘要和执行用时显示“未执行”，排队耗时按 CreatedAt 到 FinishedAt 计算。
+- 完整前端：6 个 Vitest 文件、92 个测试通过；生产构建 exit 0。
 - 完整浏览器：2 个 Playwright 项目通过；桌面与移动任务日志截图已生成并人工检查。
 - 副作用：git diff --check 通过；无构建产物、数据库、依赖目录或锁文件进入 Git 状态。
 
@@ -43,7 +51,7 @@
 - 兼容边界：保留任务顶层字段、SSE、轮询和每实例串行执行。
 - 新所有者：job_events 由 Store 持久化、Manager 生成事件；没有重复日志路由。
 - 退休边界：App.tsx 内旧 JobsPage 在新组件接管后删除。
-- 决策：continue，完成候选证据充分，进入分支交付。
+- 决策：continue，最终复审问题已闭合，进入分支交付。
 
 ## Risk / Unknown
 

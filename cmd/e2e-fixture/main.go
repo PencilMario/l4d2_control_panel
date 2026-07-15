@@ -398,6 +398,9 @@ func newFixturePipeline(root string) (*updates.Pipeline, error) {
 }
 
 func seedJobs(db *store.Store) {
+	if err := db.SetSuccessfulJobLimit(40); err != nil {
+		log.Fatal(err)
+	}
 	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
 	successStarted := now.Add(time.Second)
 	successFinished := now.Add(30 * time.Second)

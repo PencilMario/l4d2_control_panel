@@ -60,7 +60,7 @@ func TestPersistentManagerReloadsCompletedJob(t *testing.T) {
 	}
 	defer db.Close()
 	reloaded, ok := NewPersistentManager(db).Get(job.ID)
-	if !ok || reloaded.Status != Succeeded || reloaded.Stage != "steamcmd" || reloaded.Percent != 100 {
+	if !ok || reloaded.Status != Succeeded || reloaded.Stage != "complete" || reloaded.Message != "Task completed" || reloaded.Percent != 100 {
 		t.Fatalf("reloaded=%#v ok=%v", reloaded, ok)
 	}
 }
@@ -124,6 +124,88 @@ func TestPersistentManagerPrunesSuccessfulJobsUsingGlobalLimit(t *testing.T) {
 	}
 }
 
+func TestPersistentManagerDoesNotExposeUnpersistedTerminalState(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	repo := &failNthLifecycleWriteRepository{
+		Store: db,
+		at:    3,
+		err:   errors.New("terminal write failed"),
+	}
+	manager := NewPersistentManager(repo)
+	created, err := manager.Start(context.Background(), "a", "install", func(context.Context, Reporter) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	job, events, found, err := manager.Details(created.ID)
+	if err != nil || !found || job.Status != Running {
+		t.Fatalf("job=%#v events=%#v found=%v err=%v", job, events, found, err)
+	}
+	assertEventKinds(t, events, "queued", "started")
+	stored, found, err := db.LoadJob(created.ID)
+	if err != nil || !found || stored.Status != string(Running) {
+		t.Fatalf("stored=%#v found=%v err=%v", stored, found, err)
+	}
+}
+
+func TestPersistentManagerDoesNotRunWhenStartedStatePersistenceFails(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	repo := &failNthLifecycleWriteRepository{
+		Store: db,
+		at:    2,
+		err:   errors.New("started write failed"),
+	}
+	manager := NewPersistentManager(repo)
+	ran := atomic.Bool{}
+	created, err := manager.Start(context.Background(), "a", "install", func(context.Context, Reporter) error {
+		ran.Store(true)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if ran.Load() {
+		t.Fatal("operation ran without a durable started transition")
+	}
+	job, events, found, err := manager.Details(created.ID)
+	if err != nil || !found || job.Status != Failed || job.Error == "" || job.StartedAt != nil {
+		t.Fatalf("job=%#v events=%#v found=%v err=%v", job, events, found, err)
+	}
+	assertEventKinds(t, events, "queued", "failed")
+}
+
+func TestPersistentManagerWritesTerminalSummaryWithoutProgress(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	manager := NewPersistentManager(db)
+	created, err := manager.Start(context.Background(), "a", "install", func(context.Context, Reporter) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	wait(t, manager, created.ID)
+	job, found := manager.Get(created.ID)
+	if !found || job.Status != Succeeded || job.Stage != "complete" || job.Message != "Task completed" {
+		t.Fatalf("job=%#v found=%v", job, found)
+	}
+}
+
 func TestPersistentManagerMarksStaleRunningJobInterrupted(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {
@@ -148,8 +230,16 @@ func TestReporterPersistsProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := wait(t, m, job.ID)
-	if got.Status != Succeeded || got.Stage != "steamcmd" || got.Percent != 100 {
+	if got.Status != Succeeded || got.Stage != "complete" || got.Message != "Task completed" || got.Percent != 100 {
 		t.Fatalf("job=%#v", got)
+	}
+	_, events, found, err := m.Details(job.ID)
+	if err != nil || !found {
+		t.Fatalf("events=%#v found=%v err=%v", events, found, err)
+	}
+	assertEventKinds(t, events, "queued", "started", "progress", "succeeded")
+	if events[2].Stage != "steamcmd" || events[2].Message != "downloading" {
+		t.Fatalf("progress event=%#v", events[2])
 	}
 }
 
@@ -160,6 +250,20 @@ func (failingRepository) LoadJob(string) (domain.JobRecord, bool, error) {
 	return domain.JobRecord{}, false, nil
 }
 func (failingRepository) JobEvents(string) ([]domain.JobEvent, error) { return nil, nil }
+
+type failNthLifecycleWriteRepository struct {
+	*store.Store
+	calls atomic.Int32
+	at    int32
+	err   error
+}
+
+func (r *failNthLifecycleWriteRepository) SaveJobWithEvent(record domain.JobRecord, event domain.JobEvent) error {
+	if r.calls.Add(1) == r.at {
+		return r.err
+	}
+	return r.Store.SaveJobWithEvent(record, event)
+}
 
 func TestStartReturnsInitialPersistenceFailureWithoutRunning(t *testing.T) {
 	want := errors.New("database unavailable")

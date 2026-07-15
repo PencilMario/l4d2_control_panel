@@ -41,12 +41,14 @@ func (r reporter) Progress(stage string, percent int, message string) {
 	j := r.m.jobs[r.id]
 	now := time.Now().UTC()
 	j.Stage, j.Percent, j.Message, j.UpdatedAt = stage, percent, message, now
-	r.m.jobs[r.id] = j
 	event := domain.JobEvent{JobID: j.ID, Kind: "progress", Stage: stage, Percent: percent, Message: message, CreatedAt: now}
-	r.m.events[j.ID] = append(r.m.events[j.ID], event)
 	var persistErr error
 	if r.m.repo != nil {
 		persistErr = r.m.repo.SaveJobWithEvent(toRecord(j), event)
+	}
+	if persistErr == nil {
+		r.m.jobs[r.id] = j
+		r.m.events[j.ID] = append(r.m.events[j.ID], event)
 	}
 	r.m.mu.Unlock()
 	if persistErr != nil {
@@ -103,12 +105,20 @@ func (m *Manager) Start(ctx context.Context, instanceID, kind string, fn func(co
 		defer m.wg.Done()
 		lock.Lock()
 		defer lock.Unlock()
-		m.setStatus(j.ID, Running, 0, "")
+		if err := m.setStatus(j.ID, Running, 0, ""); err != nil {
+			_ = m.setStatus(
+				j.ID,
+				Failed,
+				-1,
+				"Task could not start because its running state could not be persisted: "+err.Error(),
+			)
+			return
+		}
 		err := fn(ctx, reporter{m: m, id: j.ID})
 		if err != nil {
-			m.setStatus(j.ID, Failed, -1, err.Error())
+			_ = m.setStatus(j.ID, Failed, -1, err.Error())
 		} else {
-			m.setStatus(j.ID, Succeeded, 100, "")
+			_ = m.setStatus(j.ID, Succeeded, 100, "")
 		}
 	}()
 	return j, nil
@@ -127,7 +137,7 @@ func (m *Manager) Wait(ctx context.Context) error {
 		return ctx.Err()
 	}
 }
-func (m *Manager) setStatus(id string, status Status, percent int, message string) {
+func (m *Manager) setStatus(id string, status Status, percent int, message string) error {
 	m.mu.Lock()
 	j := m.jobs[id]
 	now := time.Now().UTC()
@@ -142,15 +152,25 @@ func (m *Manager) setStatus(id string, status Status, percent int, message strin
 		j.StartedAt = &now
 		event.Kind = "started"
 		event.Message = "Task started"
+		if j.Stage == "" {
+			j.Stage = "running"
+			event.Stage = j.Stage
+		}
+		j.Message = event.Message
 	case Succeeded:
 		j.FinishedAt = &now
 		event.Message = "Task completed"
+		j.Stage = "complete"
+		j.Message = event.Message
 	case Failed, Interrupted:
 		j.FinishedAt = &now
 		event.Message = message
+		if j.Stage == "" {
+			j.Stage = string(status)
+			event.Stage = j.Stage
+		}
+		j.Message = message
 	}
-	m.jobs[id] = j
-	m.events[id] = append(m.events[id], event)
 	var persistErr error
 	var pruneErr error
 	if m.repo != nil {
@@ -160,7 +180,11 @@ func (m *Manager) setStatus(id string, status Status, percent int, message strin
 				pruneErr = pruner.PruneSuccessfulJobs()
 			}
 		}
-		if persistErr == nil && (status == Succeeded || status == Failed || status == Interrupted) {
+	}
+	if persistErr == nil {
+		m.jobs[id] = j
+		m.events[id] = append(m.events[id], event)
+		if m.repo != nil && (status == Succeeded || status == Failed || status == Interrupted) {
 			delete(m.jobs, id)
 			delete(m.events, id)
 		}
@@ -168,11 +192,12 @@ func (m *Manager) setStatus(id string, status Status, percent int, message strin
 	m.mu.Unlock()
 	if persistErr != nil {
 		log.Printf("persist job status %s: %v", id, persistErr)
-		return
+		return persistErr
 	}
 	if pruneErr != nil {
 		log.Printf("prune successful jobs: %v", pruneErr)
 	}
+	return nil
 }
 func (m *Manager) Get(id string) (Job, bool) {
 	m.mu.RLock()

@@ -83,7 +83,7 @@ describe("JobsPage", () => {
     render(<JobsPage />);
     await userEvent.click(
       await screen.findByRole("button", {
-        name: "查看 game_update 任务日志",
+        name: "查看 game_update 任务日志，任务 ID job-running",
       }),
     );
     expect(await screen.findByText("phase one")).toBeVisible();
@@ -141,7 +141,7 @@ describe("JobsPage", () => {
 
     render(<JobsPage />);
     const toggle = await screen.findByRole("button", {
-      name: "查看 game_update 任务日志",
+      name: "查看 game_update 任务日志，任务 ID job-failed",
     });
     await userEvent.click(toggle);
     expect(await screen.findByText("任务失败")).toBeVisible();
@@ -156,6 +156,56 @@ describe("JobsPage", () => {
     await userEvent.click(toggle);
     expect(await screen.findByText("任务失败")).toBeVisible();
     expect(detailCalls).toBe(1);
+  });
+
+  it("shows a terminal job that never started as not executed", async () => {
+    const summary = {
+      ID: "job-start-failed",
+      Type: "install",
+      Status: "failed",
+      Stage: "failed",
+      Percent: 0,
+      Error: "running state could not be persisted",
+      CreatedAt: "2026-07-16T08:00:00Z",
+      UpdatedAt: "2026-07-16T08:00:05Z",
+      FinishedAt: "2026-07-16T08:00:05Z",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) =>
+        Response.json(
+          String(input) === "/api/jobs"
+            ? [summary]
+            : {
+                ...summary,
+                Events: [
+                  {
+                    ID: 1,
+                    JobID: summary.ID,
+                    Kind: "failed",
+                    Stage: "failed",
+                    Percent: 0,
+                    Message: summary.Error,
+                    CreatedAt: summary.FinishedAt,
+                  },
+                ],
+              },
+        ),
+      ),
+    );
+
+    render(<JobsPage />);
+    const toggle = await screen.findByRole("button", {
+      name: "查看 install 任务日志，任务 ID job-start-failed",
+    });
+    expect(toggle).toHaveTextContent("未执行");
+
+    await userEvent.click(toggle);
+    const details = await screen.findByRole("region", {
+      name: "install 任务日志",
+    });
+    expect(details).toHaveTextContent("排队耗时 5秒");
+    expect(details).toHaveTextContent("执行用时 未执行");
   });
 
   it("keeps only one task log expanded", async () => {
@@ -211,7 +261,7 @@ describe("JobsPage", () => {
     render(<JobsPage />);
     await userEvent.click(
       await screen.findByRole("button", {
-        name: "查看 game_update 任务日志",
+        name: "查看 game_update 任务日志，任务 ID job-one",
       }),
     );
     expect(
@@ -219,12 +269,48 @@ describe("JobsPage", () => {
     ).toHaveTextContent("job-one complete");
 
     await userEvent.click(
-      screen.getByRole("button", { name: "查看 plugin_update 任务日志" }),
+      screen.getByRole("button", {
+        name: "查看 plugin_update 任务日志，任务 ID job-two",
+      }),
     );
     expect(
       await screen.findByRole("region", { name: "plugin_update 任务日志" }),
     ).toHaveTextContent("job-two complete");
     expect(screen.queryByText("job-one complete")).not.toBeInTheDocument();
+  });
+
+  it("distinguishes log controls for jobs with the same type", async () => {
+    const jobs = [
+      {
+        ID: "apply-private-one",
+        Type: "apply_private",
+        Status: "succeeded",
+        Stage: "complete",
+        Percent: 100,
+        Error: "",
+      },
+      {
+        ID: "apply-private-two",
+        Type: "apply_private",
+        Status: "succeeded",
+        Stage: "complete",
+        Percent: 100,
+        Error: "",
+      },
+    ];
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(jobs)));
+
+    render(<JobsPage />);
+    expect(
+      await screen.findByRole("button", {
+        name: "查看 apply_private 任务日志，任务 ID apply-private-one",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", {
+        name: "查看 apply_private 任务日志，任务 ID apply-private-two",
+      }),
+    ).toBeVisible();
   });
 
   it("retries a failed detail request", async () => {
@@ -259,7 +345,7 @@ describe("JobsPage", () => {
     render(<JobsPage />);
     await userEvent.click(
       await screen.findByRole("button", {
-        name: "查看 game_update 任务日志",
+        name: "查看 game_update 任务日志，任务 ID job-retry",
       }),
     );
     expect(await screen.findByRole("alert")).toHaveTextContent(

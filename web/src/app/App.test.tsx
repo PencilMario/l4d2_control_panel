@@ -814,7 +814,9 @@ describe("App", () => {
     expect(await screen.findByText("game_update")).toBeInTheDocument();
     expect(screen.getByText("download interrupted")).toBeInTheDocument();
     await userEvent.click(
-      screen.getByRole("button", { name: "查看 game_update 任务日志" }),
+      screen.getByRole("button", {
+        name: "查看 game_update 任务日志，任务 ID job-1",
+      }),
     );
     expect(
       await screen.findByRole("region", { name: "game_update 任务日志" }),

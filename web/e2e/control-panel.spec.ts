@@ -114,6 +114,17 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await page.getByRole("button", { name: "进入作战室" }).click();
   await expect(page.getByRole("heading", { name: "服务器作战室" })).toBeVisible();
 
+  await page.evaluate(async () => {
+    const response = await fetch("/api/settings/jobs", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ successful_job_limit: 40 }),
+    });
+    if (!response.ok) {
+      throw new Error(`reset job settings failed with HTTP ${response.status}`);
+    }
+  });
+
   await page.getByRole("button", { name: "内容仓库" }).click();
   for (const name of [packageAName, packageBName]) {
     await page.locator('input[accept=".zip"]').setInputFiles({
@@ -759,7 +770,7 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await expect(page.locator(".job-row").first()).toBeVisible();
 
   const failedJob = page.getByRole("button", {
-    name: "查看 fixture_failure 任务日志",
+    name: "查看 fixture_failure 任务日志，任务 ID fixture-failure",
   });
   await failedJob.click();
   await expect(failedJob).toHaveAttribute("aria-expanded", "true");
@@ -823,7 +834,7 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   const retentionLimit = page.getByRole("spinbutton", {
     name: "成功任务保留数量",
   });
-  await expect(retentionLimit).toHaveValue("25");
+  await expect(retentionLimit).toHaveValue("40");
   await retentionLimit.fill("25");
   await page
     .getByRole("button", { name: "保存任务记录设置" })
@@ -831,6 +842,15 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await expect(page.getByRole("status")).toContainText(
     "任务记录设置已保存",
   );
+  await expect(retentionLimit).toHaveValue("25");
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const response = await fetch("/api/settings/jobs");
+        return (await response.json()).successful_job_limit;
+      }),
+    )
+    .toBe(25);
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= window.innerWidth,

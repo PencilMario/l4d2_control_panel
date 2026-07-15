@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -278,6 +279,7 @@ func TestJobHistoryMigrationBackfillsLegacySnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer s.Close()
 	job, found, err := s.LoadJob("legacy-failed")
 	if err != nil || !found {
 		t.Fatalf("job=%#v found=%v err=%v", job, found, err)
@@ -286,7 +288,10 @@ func TestJobHistoryMigrationBackfillsLegacySnapshot(t *testing.T) {
 		t.Fatalf("job times=%#v", job)
 	}
 	events, err := s.JobEvents(job.ID)
-	if err != nil || len(events) != 1 || events[0].Kind != "snapshot" || events[0].Message != "legacy failure" {
+	if err != nil || len(events) != 1 || events[0].Kind != "snapshot" ||
+		!strings.Contains(events[0].Message, "legacy failure") ||
+		!strings.Contains(events[0].Message, "升级前任务") ||
+		!strings.Contains(events[0].Message, "执行时间为估算值") {
 		t.Fatalf("events=%#v err=%v", events, err)
 	}
 	if err := s.Close(); err != nil {
@@ -390,6 +395,59 @@ func TestSuccessfulJobLimitPrunesOnlyOldestSucceeded(t *testing.T) {
 	if err != nil || len(events) != 0 {
 		t.Fatalf("deleted job events=%#v err=%v", events, err)
 	}
+}
+
+func TestSuccessfulJobLimitUsesStableIDOrderForEqualFinishTimes(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	finished := time.Date(2026, 7, 16, 3, 30, 0, 0, time.UTC)
+	for _, id := range []string{"success-a", "success-b", "success-c"} {
+		if err := s.SaveJobWithEvent(domain.JobRecord{
+			ID: id, Status: "succeeded", CreatedAt: finished, UpdatedAt: finished, FinishedAt: &finished,
+		}, domain.JobEvent{Kind: "succeeded", CreatedAt: finished}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetSuccessfulJobLimit(2); err != nil {
+		t.Fatal(err)
+	}
+	assertStoredJob(t, s, "success-a", false)
+	assertStoredJob(t, s, "success-b", true)
+	assertStoredJob(t, s, "success-c", true)
+}
+
+func TestSuccessfulJobLimitRollsBackSettingWhenPruneFails(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	base := time.Date(2026, 7, 16, 3, 40, 0, 0, time.UTC)
+	for index, id := range []string{"older-success", "newer-success"} {
+		finished := base.Add(time.Duration(index) * time.Minute)
+		if err := s.SaveJob(domain.JobRecord{
+			ID: id, Status: "succeeded", CreatedAt: base, UpdatedAt: finished, FinishedAt: &finished,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.Exec(`CREATE TRIGGER reject_success_delete
+BEFORE DELETE ON jobs WHEN OLD.status='succeeded'
+BEGIN SELECT RAISE(ABORT,'delete blocked'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSuccessfulJobLimit(1); err == nil {
+		t.Fatal("expected pruning failure")
+	}
+	limit, err := s.SuccessfulJobLimit()
+	if err != nil || limit != DefaultSuccessfulJobLimit {
+		t.Fatalf("limit=%d err=%v", limit, err)
+	}
+	assertStoredJob(t, s, "older-success", true)
+	assertStoredJob(t, s, "newer-success", true)
 }
 
 func TestRecoverJobsRecordsInterruptedEventAndFinishTime(t *testing.T) {

@@ -247,6 +247,10 @@ func (s *Server) setJobSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "invalid_job_settings", "successful_job_limit must be an integer between 1 and 500")
 		return
 	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_job_settings", "request body must contain exactly one job settings object")
+		return
+	}
 	if input.SuccessfulJobLimit < store.MinSuccessfulJobLimit || input.SuccessfulJobLimit > store.MaxSuccessfulJobLimit {
 		writeError(w, http.StatusUnprocessableEntity, "invalid_job_limit", "successful_job_limit must be between 1 and 500")
 		return

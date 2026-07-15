@@ -80,7 +80,8 @@ func migrateJobHistory(db *sql.DB) error {
 	}
 	if _, err := tx.Exec(`INSERT INTO job_events(job_id,kind,stage,percent,message,created_at)
 SELECT id,'snapshot',stage,percent,
- CASE WHEN error<>'' THEN error WHEN message<>'' THEN message ELSE '升级前任务，仅保留最终快照，执行时间为估算值' END,
+ (CASE WHEN error<>'' THEN error || ' · ' WHEN message<>'' THEN message || ' · ' ELSE '' END) ||
+ '升级前任务，仅保留最终快照，执行时间为估算值',
  updated_at
 FROM jobs
 WHERE NOT EXISTS (SELECT 1 FROM job_events WHERE job_events.job_id=jobs.id)`); err != nil {
