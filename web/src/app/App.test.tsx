@@ -35,11 +35,19 @@ describe("App", () => {
       constructor(public url: string) { sockets.push(this); }
     }
     vi.stubGlobal("WebSocket", FakeWebSocket);
+    let nextFrame = 1;
+    const frames = new Map<number, FrameRequestCallback>();
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-      callback(0);
-      return 1;
+      const id = nextFrame++;
+      frames.set(id, callback);
+      return id;
     });
-    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+    const flushFrames = () => {
+      const pending = [...frames.entries()];
+      frames.clear();
+      pending.forEach(([id, callback]) => callback(id));
+    };
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "控制台" }));
     const output = document.querySelector(".terminal-modal pre") as HTMLPreElement;
@@ -54,11 +62,13 @@ describe("App", () => {
       },
     });
     act(() => sockets[0].onmessage?.({ data: "ready\n" } as MessageEvent));
+    act(() => flushFrames());
     expect(output).toHaveTextContent("ready");
     expect(scrollTop).toBe(600);
 
     await userEvent.type(screen.getByRole("textbox"), "status");
     await userEvent.click(screen.getByRole("button", { name: "发送" }));
+    act(() => flushFrames());
     expect(sockets[0].send).toHaveBeenCalledWith("status\n");
     expect(scrollTop).toBe(600);
     expect(sockets[0].url).toContain("/api/instances/1/console");
@@ -68,6 +78,7 @@ describe("App", () => {
         sockets[0].onmessage?.({ data: `[${index}]\n` } as MessageEvent);
       }
     });
+    act(() => flushFrames());
     expect(output).not.toHaveTextContent("ready");
     expect(output).not.toHaveTextContent("[0]");
     expect(output).toHaveTextContent("[1]");

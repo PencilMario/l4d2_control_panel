@@ -144,15 +144,45 @@ describe("useConsoleFollow", () => {
     expect(geometry.scrollTop).toBe(300);
   });
 
-  it("ignores programmatic scroll events and cancels pending animation frames", () => {
+  it("lets a user scroll cancel a pending forced follow", () => {
     const raf = installRaf();
-    const geometry = { scrollHeight: 300, clientHeight: 100, scrollTop: 0 };
-    const { result, unmount } = renderHook(() => useConsoleFollow(0));
+    const geometry = { scrollHeight: 300, clientHeight: 100, scrollTop: 50 };
+    const { result } = renderHook(() => useConsoleFollow(0));
     const element = attach(result.current.outputRef, geometry);
 
     act(() => result.current.forceFollow());
+    geometry.scrollTop = 50;
     act(() => result.current.onScroll({ currentTarget: element } as never));
-    expect(result.current.isFollowing()).toBe(true);
+    expect(result.current.isFollowing()).toBe(false);
+    act(() => raf.flush());
+    expect(geometry.scrollTop).toBe(50);
+  });
+
+  it("keeps a user pause after sustained output reschedules the frame", () => {
+    const raf = installRaf();
+    const geometry = { scrollHeight: 300, clientHeight: 100, scrollTop: 50 };
+    const { result, rerender } = renderHook(
+      ({ version }) => useConsoleFollow(version),
+      { initialProps: { version: 0 } },
+    );
+    const element = attach(result.current.outputRef, geometry);
+
+    rerender({ version: 1 });
+    rerender({ version: 2 });
+    geometry.scrollTop = 50;
+    act(() => result.current.onScroll({ currentTarget: element } as never));
+    expect(result.current.isFollowing()).toBe(false);
+    act(() => raf.flush());
+    expect(geometry.scrollTop).toBe(50);
+  });
+
+  it("cancels a pending animation frame on unmount", () => {
+    const raf = installRaf();
+    const geometry = { scrollHeight: 300, clientHeight: 100, scrollTop: 0 };
+    const { result, unmount } = renderHook(() => useConsoleFollow(0));
+    attach(result.current.outputRef, geometry);
+
+    act(() => result.current.forceFollow());
     unmount();
     expect(cancelAnimationFrame).toHaveBeenCalled();
     act(() => raf.flush());

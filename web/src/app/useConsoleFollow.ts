@@ -10,20 +10,17 @@ const BOTTOM_TOLERANCE = 4;
 export function useConsoleFollow(outputVersion: unknown) {
   const outputRef = useRef<HTMLPreElement | null>(null);
   const following = useRef(true);
-  const programmaticScroll = useRef(false);
   const animationFrame = useRef<number | null>(null);
 
   const scrollToBottom = useCallback(() => {
     if (animationFrame.current !== null) {
       cancelAnimationFrame(animationFrame.current);
     }
-    programmaticScroll.current = true;
     animationFrame.current = requestAnimationFrame(() => {
       animationFrame.current = null;
       if (outputRef.current) {
         outputRef.current.scrollTop = outputRef.current.scrollHeight;
       }
-      programmaticScroll.current = false;
     });
   }, []);
 
@@ -33,10 +30,14 @@ export function useConsoleFollow(outputVersion: unknown) {
   }, [scrollToBottom]);
 
   const onScroll = useCallback((event: UIEvent<HTMLPreElement>) => {
-    if (programmaticScroll.current) return;
     const output = event.currentTarget;
     const distance = output.scrollHeight - output.clientHeight - output.scrollTop;
-    following.current = distance <= BOTTOM_TOLERANCE;
+    const atBottom = distance <= BOTTOM_TOLERANCE;
+    if (!atBottom && animationFrame.current !== null) {
+      cancelAnimationFrame(animationFrame.current);
+      animationFrame.current = null;
+    }
+    following.current = atBottom;
   }, []);
 
   useLayoutEffect(() => {
