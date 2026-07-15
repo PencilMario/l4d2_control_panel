@@ -2,12 +2,14 @@ package content
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestPrivateWorkspaceCRUDAndDiff(t *testing.T) {
@@ -128,11 +130,98 @@ func TestPrivateMoveOverwriteAndFailurePreservesDestination(t *testing.T) {
 	}
 }
 
+func TestPrivateTreeAndDiffIgnoreSaveTemporaryFiles(t *testing.T) {
+	manager := NewPrivateManager(t.TempDir(), 1<<20)
+	ctx := context.Background()
+	if _, err := manager.Save(ctx, "abc", "cfg/live.cfg", []byte("complete")); err != nil {
+		t.Fatal(err)
+	}
+	privateRoot, _ := manager.privateRoot("abc")
+	temporary := filepath.Join(privateRoot, "cfg", ".private-blocked")
+	if err := os.WriteFile(temporary, []byte("partial"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	lock := manager.instanceLock("abc")
+	lock.Lock()
+	treeResult := make(chan []PrivateEntry, 1)
+	diffResult := make(chan PrivateDiff, 1)
+	errorsSeen := make(chan error, 2)
+	go func() {
+		tree, err := manager.Tree(ctx, "abc")
+		if err != nil {
+			errorsSeen <- err
+		}
+		treeResult <- tree
+	}()
+	go func() {
+		diff, err := manager.Diff(ctx, "abc")
+		if err != nil {
+			errorsSeen <- err
+		}
+		diffResult <- diff
+	}()
+	select {
+	case <-treeResult:
+		t.Fatal("tree did not wait for active writer")
+	case <-diffResult:
+		t.Fatal("diff did not wait for active writer")
+	case <-time.After(25 * time.Millisecond):
+	}
+	lock.Unlock()
+	tree := <-treeResult
+	diff := <-diffResult
+	select {
+	case err := <-errorsSeen:
+		t.Fatal(err)
+	default:
+	}
+	if err := os.Remove(temporary); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range tree {
+		if strings.Contains(entry.Path, ".private-") {
+			t.Fatalf("tree exposed temporary entry: %#v", entry)
+		}
+	}
+	if diff.Summary.Added != 1 || len(diff.Changes) != 1 || diff.Changes[0].Path != "cfg/live.cfg" {
+		t.Fatalf("diff exposed temporary state: %#v", diff)
+	}
+}
+
+func TestPrivateMoveIntoAbsentDescendantLeavesTreeUnchanged(t *testing.T) {
+	manager := NewPrivateManager(t.TempDir(), 1<<20)
+	ctx := context.Background()
+	if _, err := manager.Save(ctx, "abc", "tree/keep.cfg", []byte("keep")); err != nil {
+		t.Fatal(err)
+	}
+	before, err := manager.Tree(ctx, "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Move(ctx, "abc", "tree", "tree/new/location", false); err == nil {
+		t.Fatal("move into absent descendant succeeded")
+	}
+	after, err := manager.Tree(ctx, "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != len(after) {
+		t.Fatalf("tree mutated: before=%#v after=%#v", before, after)
+	}
+	for i := range before {
+		if before[i].Path != after[i].Path || before[i].Hash != after[i].Hash {
+			t.Fatalf("tree mutated: before=%#v after=%#v", before, after)
+		}
+	}
+}
+
 func TestPrivateManifestRepeatedWrite(t *testing.T) {
 	root := t.TempDir()
 	manager := NewPrivateManager(root, 1<<20)
-	first := privateManifest{Entries: map[string]manifestEntry{"first.cfg": {Kind: "file", Hash: "first", Size: 1}}}
-	second := privateManifest{Entries: map[string]manifestEntry{"second.cfg": {Kind: "file", Hash: "second", Size: 2}}}
+	firstHash := strings.Repeat("a", 64)
+	secondHash := strings.Repeat("b", 64)
+	first := privateManifest{Entries: map[string]manifestEntry{"first.cfg": {Kind: "file", Hash: firstHash, Size: 1}}}
+	second := privateManifest{Entries: map[string]manifestEntry{"second.cfg": {Kind: "file", Hash: secondHash, Size: 2}}}
 	if err := manager.writePrivateManifest("abc", first); err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +232,7 @@ func TestPrivateManifestRepeatedWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded.Entries) != 1 || loaded.Entries["second.cfg"].Hash != "second" {
+	if len(loaded.Entries) != 1 || loaded.Entries["second.cfg"].Hash != secondHash {
 		t.Fatalf("manifest=%#v", loaded)
 	}
 }
@@ -151,7 +240,7 @@ func TestPrivateManifestRepeatedWrite(t *testing.T) {
 func TestPrivateManifestReplacementIsAtomicToReaders(t *testing.T) {
 	manager := NewPrivateManager(t.TempDir(), 1<<20)
 	manifest := func(hash string) privateManifest {
-		return privateManifest{Entries: map[string]manifestEntry{"state.cfg": {Kind: "file", Hash: hash, Size: 1}}}
+		return privateManifest{Entries: map[string]manifestEntry{"state.cfg": {Kind: "file", Hash: strings.Repeat(hash, 64), Size: 1}}}
 	}
 	if err := manager.writePrivateManifest("abc", manifest("a")); err != nil {
 		t.Fatal(err)
@@ -173,7 +262,7 @@ func TestPrivateManifestReplacementIsAtomicToReaders(t *testing.T) {
 				loaded, err := manager.readPrivateManifest("abc")
 				if err == nil {
 					hash := loaded.Entries["state.cfg"].Hash
-					if len(loaded.Entries) != 1 || (hash != "a" && hash != "b") {
+					if len(loaded.Entries) != 1 || (hash != strings.Repeat("a", 64) && hash != strings.Repeat("b", 64)) {
 						err = errors.New("reader observed missing or partial manifest")
 					}
 				}
@@ -210,7 +299,7 @@ func TestPrivateManifestReplacementIsAtomicToReaders(t *testing.T) {
 func TestPrivateManifestRejectsSymlinkEscape(t *testing.T) {
 	root := t.TempDir()
 	manager := NewPrivateManager(root, 1<<20)
-	manifest := privateManifest{Entries: map[string]manifestEntry{"first.cfg": {Kind: "file", Hash: "first", Size: 1}}}
+	manifest := privateManifest{Entries: map[string]manifestEntry{"first.cfg": {Kind: "file", Hash: strings.Repeat("a", 64), Size: 1}}}
 	outside := filepath.Join(root, "outside-instance")
 	if err := os.MkdirAll(outside, 0750); err != nil {
 		t.Fatal(err)
@@ -249,6 +338,42 @@ func TestPrivateManifestRejectsSymlinkEscape(t *testing.T) {
 	raw, err := os.ReadFile(outsideManifest)
 	if err != nil || string(raw) != "outside" {
 		t.Fatalf("outside manifest changed: %q err=%v", raw, err)
+	}
+}
+
+func TestPrivateManifestRejectsInvalidEntries(t *testing.T) {
+	tests := []struct {
+		name  string
+		path  string
+		entry manifestEntry
+	}{
+		{name: "parent", path: "../escape.cfg", entry: manifestEntry{Kind: "file", Hash: strings.Repeat("a", 64)}},
+		{name: "absolute", path: "C:/escape.cfg", entry: manifestEntry{Kind: "file", Hash: strings.Repeat("a", 64)}},
+		{name: "backslash", path: `cfg\escape.cfg`, entry: manifestEntry{Kind: "file", Hash: strings.Repeat("a", 64)}},
+		{name: "kind", path: "cfg/x", entry: manifestEntry{Kind: "link"}},
+		{name: "directory hash", path: "cfg", entry: manifestEntry{Kind: "directory", Hash: "bad"}},
+		{name: "directory size", path: "cfg", entry: manifestEntry{Kind: "directory", Size: 1}},
+		{name: "file hash", path: "cfg/x", entry: manifestEntry{Kind: "file", Hash: "bad"}},
+		{name: "negative size", path: "cfg/x", entry: manifestEntry{Kind: "file", Hash: strings.Repeat("a", 64), Size: -1}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			manager := NewPrivateManager(t.TempDir(), 1<<20)
+			path, _ := manager.manifestPath("abc")
+			if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(privateManifest{Version: privateManifestVersion, Entries: map[string]manifestEntry{test.path: test.entry}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, raw, 0640); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := manager.Diff(context.Background(), "abc"); err == nil {
+				t.Fatal("diff trusted invalid manifest")
+			}
+		})
 	}
 }
 

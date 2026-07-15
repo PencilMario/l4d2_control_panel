@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/not0721here/l4d2-control-panel/internal/safepath"
@@ -17,7 +18,14 @@ import (
 type PrivateManager struct {
 	root     string
 	maxBytes int
+	locks    sync.Map
 }
+
+func (m *PrivateManager) instanceLock(instanceID string) *sync.RWMutex {
+	lock, _ := m.locks.LoadOrStore(instanceID, &sync.RWMutex{})
+	return lock.(*sync.RWMutex)
+}
+
 type PrivateFile struct {
 	Path      string    `json:"path"`
 	Hash      string    `json:"hash,omitempty"`
@@ -44,6 +52,13 @@ func validateInstanceID(instanceID string) error {
 }
 
 func (m *PrivateManager) Save(_ context.Context, instanceID, name string, data []byte) (PrivateFile, error) {
+	lock := m.instanceLock(instanceID)
+	lock.Lock()
+	defer lock.Unlock()
+	return m.save(instanceID, name, data)
+}
+
+func (m *PrivateManager) save(instanceID, name string, data []byte) (PrivateFile, error) {
 	private, err := m.privateRoot(instanceID)
 	if err != nil {
 		return PrivateFile{}, err
@@ -100,6 +115,9 @@ func (m *PrivateManager) Save(_ context.Context, instanceID, name string, data [
 }
 
 func (m *PrivateManager) MakeDir(_ context.Context, instanceID, name string) error {
+	lock := m.instanceLock(instanceID)
+	lock.Lock()
+	defer lock.Unlock()
 	root, err := m.privateRoot(instanceID)
 	if err != nil {
 		return err
@@ -115,6 +133,9 @@ func (m *PrivateManager) MakeDir(_ context.Context, instanceID, name string) err
 }
 
 func (m *PrivateManager) Move(_ context.Context, instanceID, from, to string, overwrite bool) error {
+	lock := m.instanceLock(instanceID)
+	lock.Lock()
+	defer lock.Unlock()
 	root, err := m.privateRoot(instanceID)
 	if err != nil {
 		return err
@@ -136,8 +157,18 @@ func (m *PrivateManager) Move(_ context.Context, instanceID, from, to string, ov
 	if source == target {
 		return errors.New("source and destination are the same")
 	}
-	if _, err := os.Lstat(source); err != nil {
+	sourceInfo, err := os.Lstat(source)
+	if err != nil {
 		return err
+	}
+	if sourceInfo.IsDir() {
+		relative, err := filepath.Rel(source, target)
+		if err != nil {
+			return err
+		}
+		if relative != "." && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return errors.New("cannot move directory into itself")
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
 		return err
@@ -192,6 +223,9 @@ func replacePath(source, target string, overwrite bool) error {
 }
 
 func (m *PrivateManager) Tree(_ context.Context, instanceID string) ([]PrivateEntry, error) {
+	lock := m.instanceLock(instanceID)
+	lock.RLock()
+	defer lock.RUnlock()
 	root, err := m.privateRoot(instanceID)
 	if err != nil {
 		return nil, err
@@ -208,6 +242,9 @@ func (m *PrivateManager) Tree(_ context.Context, instanceID string) ([]PrivateEn
 	return result, nil
 }
 func (m *PrivateManager) History(_ context.Context, instanceID, name string) ([]PrivateFile, error) {
+	lock := m.instanceLock(instanceID)
+	lock.RLock()
+	defer lock.RUnlock()
 	if err := validateInstanceID(instanceID); err != nil {
 		return nil, err
 	}
@@ -244,6 +281,9 @@ func (m *PrivateManager) History(_ context.Context, instanceID, name string) ([]
 	return result, nil
 }
 func (m *PrivateManager) Apply(_ context.Context, instanceID string) error {
+	lock := m.instanceLock(instanceID)
+	lock.RLock()
+	defer lock.RUnlock()
 	if err := validateInstanceID(instanceID); err != nil {
 		return err
 	}
@@ -275,6 +315,9 @@ func rejectSymlinkParents(root, target string) error {
 	return nil
 }
 func (m *PrivateManager) Read(_ context.Context, instanceID, name string) ([]byte, error) {
+	lock := m.instanceLock(instanceID)
+	lock.RLock()
+	defer lock.RUnlock()
 	if err := validateInstanceID(instanceID); err != nil {
 		return nil, err
 	}
@@ -289,6 +332,9 @@ func (m *PrivateManager) Read(_ context.Context, instanceID, name string) ([]byt
 	return os.ReadFile(target)
 }
 func (m *PrivateManager) List(_ context.Context, instanceID string) ([]PrivateFile, error) {
+	lock := m.instanceLock(instanceID)
+	lock.RLock()
+	defer lock.RUnlock()
 	if err := validateInstanceID(instanceID); err != nil {
 		return nil, err
 	}
@@ -323,7 +369,7 @@ func (m *PrivateManager) List(_ context.Context, instanceID string) ([]PrivateFi
 	sort.Slice(result, func(i, j int) bool { return result[i].Path < result[j].Path })
 	return result, err
 }
-func (m *PrivateManager) Delete(ctx context.Context, instanceID, name string) error {
+func (m *PrivateManager) Delete(_ context.Context, instanceID, name string) error {
 	if err := validateInstanceID(instanceID); err != nil {
 		return err
 	}
@@ -335,7 +381,10 @@ func (m *PrivateManager) Delete(ctx context.Context, instanceID, name string) er
 	if _, err := os.Stat(target); err != nil {
 		return err
 	}
-	if _, err := m.Save(ctx, instanceID, name, []byte{}); err != nil {
+	lock := m.instanceLock(instanceID)
+	lock.Lock()
+	defer lock.Unlock()
+	if _, err := m.save(instanceID, name, []byte{}); err != nil {
 		return err
 	}
 	return os.Remove(target)

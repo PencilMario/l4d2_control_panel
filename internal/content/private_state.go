@@ -66,6 +66,12 @@ func scanPrivateTree(root string) (map[string]manifestEntry, error) {
 		if path == root {
 			return nil
 		}
+		if strings.HasPrefix(entry.Name(), ".private-") {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			return errors.New("symbolic links are forbidden")
 		}
@@ -130,7 +136,32 @@ func (m *PrivateManager) readPrivateManifest(instanceID string) (privateManifest
 	if manifest.Entries == nil {
 		manifest.Entries = map[string]manifestEntry{}
 	}
+	for path, entry := range manifest.Entries {
+		if err := validateManifestEntry(path, entry); err != nil {
+			return privateManifest{}, err
+		}
+	}
 	return manifest, nil
+}
+
+func validateManifestEntry(path string, entry manifestEntry) error {
+	if path == "" || strings.Contains(path, "\\") || filepath.IsAbs(path) || filepath.ToSlash(filepath.Clean(filepath.FromSlash(path))) != path || path == "." || strings.HasPrefix(path, "../") {
+		return errors.New("invalid private manifest path")
+	}
+	switch entry.Kind {
+	case "directory":
+		if entry.Hash != "" || entry.Size != 0 {
+			return errors.New("invalid private manifest directory")
+		}
+	case "file":
+		hash, err := hex.DecodeString(entry.Hash)
+		if err != nil || len(hash) != sha256.Size || entry.Size < 0 {
+			return errors.New("invalid private manifest file")
+		}
+	default:
+		return errors.New("invalid private manifest kind")
+	}
+	return nil
 }
 
 func (m *PrivateManager) writePrivateManifest(instanceID string, manifest privateManifest) error {
@@ -184,6 +215,9 @@ func isDiffResource(path string, entry manifestEntry, entries map[string]manifes
 }
 
 func (m *PrivateManager) Diff(_ context.Context, instanceID string) (PrivateDiff, error) {
+	lock := m.instanceLock(instanceID)
+	lock.RLock()
+	defer lock.RUnlock()
 	root, err := m.privateRoot(instanceID)
 	if err != nil {
 		return PrivateDiff{}, err
