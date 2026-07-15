@@ -34,7 +34,7 @@
 
 - 单调递增的事件 ID。
 - 所属任务 ID，并使用外键级联删除。
-- 事件类型：queued、started、progress、succeeded、failed 或 interrupted。
+- 事件类型：queued、started、progress、succeeded、failed、interrupted，或仅由旧数据迁移生成的 snapshot。
 - 事件发生时的阶段、进度、消息和 UTC 时间。
 
 事件按事件 ID 正序返回；时间用于展示，事件 ID 用于稳定排序，避免相同时间戳造成顺序不确定。

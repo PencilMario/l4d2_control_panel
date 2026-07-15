@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -258,5 +259,317 @@ func TestGitHubSourcesPersistAndDefaultIsSeeded(t *testing.T) {
 	}
 	if _, err := s.GitHubSource(ctx, source.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestJobHistoryMigrationBackfillsLegacySnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "panel.db")
+	created := time.Date(2026, 7, 16, 1, 0, 0, 0, time.UTC)
+	updated := created.Add(2 * time.Minute)
+	createLegacyJobsDatabase(t, path, domain.JobRecord{
+		ID:        "legacy-failed",
+		Status:    "failed",
+		Stage:     "steamcmd",
+		Error:     "legacy failure",
+		CreatedAt: created,
+		UpdatedAt: updated,
+	})
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	job, found, err := s.LoadJob("legacy-failed")
+	if err != nil || !found {
+		t.Fatalf("job=%#v found=%v err=%v", job, found, err)
+	}
+	if job.StartedAt == nil || !job.StartedAt.Equal(created) || job.FinishedAt == nil || !job.FinishedAt.Equal(updated) {
+		t.Fatalf("job times=%#v", job)
+	}
+	events, err := s.JobEvents(job.ID)
+	if err != nil || len(events) != 1 || events[0].Kind != "snapshot" ||
+		!strings.Contains(events[0].Message, "legacy failure") ||
+		!strings.Contains(events[0].Message, "升级前任务") ||
+		!strings.Contains(events[0].Message, "执行时间为估算值") {
+		t.Fatalf("events=%#v err=%v", events, err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	events, err = reopened.JobEvents(job.ID)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("reopened events=%#v err=%v", events, err)
+	}
+}
+
+func TestSaveJobWithEventPersistsSnapshotAndEvent(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	created := time.Date(2026, 7, 16, 2, 0, 0, 0, time.UTC)
+	started := created.Add(3 * time.Second)
+	record := domain.JobRecord{
+		ID:         "job-1",
+		InstanceID: "instance-1",
+		Type:       "game_update",
+		Status:     "running",
+		Stage:      "steamcmd",
+		Percent:    25,
+		Message:    "downloading",
+		CreatedAt:  created,
+		UpdatedAt:  started,
+		StartedAt:  &started,
+	}
+	event := domain.JobEvent{
+		JobID:     record.ID,
+		Kind:      "progress",
+		Stage:     record.Stage,
+		Percent:   record.Percent,
+		Message:   record.Message,
+		CreatedAt: started,
+	}
+	if err := s.SaveJobWithEvent(record, event); err != nil {
+		t.Fatal(err)
+	}
+	loaded, found, err := s.LoadJob(record.ID)
+	if err != nil || !found || loaded.StartedAt == nil || !loaded.StartedAt.Equal(started) || loaded.Message != "downloading" {
+		t.Fatalf("loaded=%#v found=%v err=%v", loaded, found, err)
+	}
+	events, err := s.JobEvents(record.ID)
+	if err != nil || len(events) != 1 || events[0].Kind != "progress" || events[0].ID == 0 {
+		t.Fatalf("events=%#v err=%v", events, err)
+	}
+}
+
+func TestSuccessfulJobLimitPrunesOnlyOldestSucceeded(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	limit, err := s.SuccessfulJobLimit()
+	if err != nil || limit != 25 {
+		t.Fatalf("default limit=%d err=%v", limit, err)
+	}
+
+	base := time.Date(2026, 7, 16, 3, 0, 0, 0, time.UTC)
+	for index, id := range []string{"oldest-succeeded", "middle-succeeded", "newest-succeeded"} {
+		finished := base.Add(time.Duration(index) * time.Minute)
+		record := domain.JobRecord{
+			ID: id, Type: "fixture", Status: "succeeded", Percent: 100,
+			CreatedAt: base, UpdatedAt: finished, StartedAt: &base, FinishedAt: &finished,
+		}
+		if err := s.SaveJobWithEvent(record, domain.JobEvent{Kind: "succeeded", CreatedAt: finished}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failedAt := base.Add(4 * time.Minute)
+	if err := s.SaveJobWithEvent(domain.JobRecord{
+		ID: "failed", Type: "fixture", Status: "failed", Error: "boom",
+		CreatedAt: base, UpdatedAt: failedAt, StartedAt: &base, FinishedAt: &failedAt,
+	}, domain.JobEvent{Kind: "failed", Message: "boom", CreatedAt: failedAt}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SetSuccessfulJobLimit(2); err != nil {
+		t.Fatal(err)
+	}
+	limit, err = s.SuccessfulJobLimit()
+	if err != nil || limit != 2 {
+		t.Fatalf("saved limit=%d err=%v", limit, err)
+	}
+	assertStoredJob(t, s, "oldest-succeeded", false)
+	assertStoredJob(t, s, "middle-succeeded", true)
+	assertStoredJob(t, s, "newest-succeeded", true)
+	assertStoredJob(t, s, "failed", true)
+	events, err := s.JobEvents("oldest-succeeded")
+	if err != nil || len(events) != 0 {
+		t.Fatalf("deleted job events=%#v err=%v", events, err)
+	}
+}
+
+func TestSuccessfulJobLimitUsesStableIDOrderForEqualFinishTimes(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	finished := time.Date(2026, 7, 16, 3, 30, 0, 0, time.UTC)
+	for _, id := range []string{"success-a", "success-b", "success-c"} {
+		if err := s.SaveJobWithEvent(domain.JobRecord{
+			ID: id, Status: "succeeded", CreatedAt: finished, UpdatedAt: finished, FinishedAt: &finished,
+		}, domain.JobEvent{Kind: "succeeded", CreatedAt: finished}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetSuccessfulJobLimit(2); err != nil {
+		t.Fatal(err)
+	}
+	assertStoredJob(t, s, "success-a", false)
+	assertStoredJob(t, s, "success-b", true)
+	assertStoredJob(t, s, "success-c", true)
+}
+
+func TestSuccessfulJobLimitRollsBackSettingWhenPruneFails(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	base := time.Date(2026, 7, 16, 3, 40, 0, 0, time.UTC)
+	for index, id := range []string{"older-success", "newer-success"} {
+		finished := base.Add(time.Duration(index) * time.Minute)
+		if err := s.SaveJob(domain.JobRecord{
+			ID: id, Status: "succeeded", CreatedAt: base, UpdatedAt: finished, FinishedAt: &finished,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.Exec(`CREATE TRIGGER reject_success_delete
+BEFORE DELETE ON jobs WHEN OLD.status='succeeded'
+BEGIN SELECT RAISE(ABORT,'delete blocked'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSuccessfulJobLimit(1); err == nil {
+		t.Fatal("expected pruning failure")
+	}
+	limit, err := s.SuccessfulJobLimit()
+	if err != nil || limit != DefaultSuccessfulJobLimit {
+		t.Fatalf("limit=%d err=%v", limit, err)
+	}
+	assertStoredJob(t, s, "older-success", true)
+	assertStoredJob(t, s, "newer-success", true)
+}
+
+func TestRecoverJobsRecordsInterruptedEventAndFinishTime(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	created := time.Date(2026, 7, 16, 4, 0, 0, 0, time.UTC)
+	if err := s.SaveJob(domain.JobRecord{
+		ID: "stale-running", Type: "game_update", Status: "running",
+		CreatedAt: created, UpdatedAt: created,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecoverJobs(); err != nil {
+		t.Fatal(err)
+	}
+	job, found, err := s.LoadJob("stale-running")
+	if err != nil || !found || job.Status != "interrupted" || job.FinishedAt == nil || job.Error == "" {
+		t.Fatalf("job=%#v found=%v err=%v", job, found, err)
+	}
+	events, err := s.JobEvents(job.ID)
+	if err != nil || len(events) != 1 || events[0].Kind != "interrupted" || events[0].Message == "" {
+		t.Fatalf("events=%#v err=%v", events, err)
+	}
+}
+
+func TestPruneSuccessfulJobsUsesSavedLimit(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.SetSuccessfulJobLimit(1); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 7, 16, 5, 0, 0, 0, time.UTC)
+	for index, id := range []string{"older-success", "newer-success"} {
+		finished := base.Add(time.Duration(index) * time.Minute)
+		if err := s.SaveJobWithEvent(domain.JobRecord{
+			ID: id, Status: "succeeded", CreatedAt: base, UpdatedAt: finished, FinishedAt: &finished,
+		}, domain.JobEvent{Kind: "succeeded", CreatedAt: finished}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.PruneSuccessfulJobs(); err != nil {
+		t.Fatal(err)
+	}
+	assertStoredJob(t, s, "older-success", false)
+	assertStoredJob(t, s, "newer-success", true)
+}
+
+func TestSuccessfulJobLimitRejectsOutOfRangeValues(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, value := range []int{0, 501} {
+		if err := s.SetSuccessfulJobLimit(value); err == nil {
+			t.Fatalf("limit %d was accepted", value)
+		}
+	}
+	limit, err := s.SuccessfulJobLimit()
+	if err != nil || limit != DefaultSuccessfulJobLimit {
+		t.Fatalf("limit=%d err=%v", limit, err)
+	}
+}
+
+func TestJobsIncludesExecutionTimes(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	created := time.Date(2026, 7, 16, 6, 0, 0, 0, time.UTC)
+	started := created.Add(2 * time.Second)
+	finished := started.Add(30 * time.Second)
+	if err := s.SaveJob(domain.JobRecord{
+		ID: "timed-job", Status: "succeeded", CreatedAt: created, UpdatedAt: finished,
+		StartedAt: &started, FinishedAt: &finished,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	items, err := s.Jobs(context.Background(), 10)
+	if err != nil || len(items) != 1 || items[0].StartedAt == nil || items[0].FinishedAt == nil {
+		t.Fatalf("items=%#v err=%v", items, err)
+	}
+	if !items[0].StartedAt.Equal(started) || !items[0].FinishedAt.Equal(finished) {
+		t.Fatalf("times=%#v", items[0])
+	}
+}
+
+func assertStoredJob(t *testing.T, store *Store, id string, want bool) {
+	t.Helper()
+	_, found, err := store.LoadJob(id)
+	if err != nil || found != want {
+		t.Fatalf("job %s found=%v want=%v err=%v", id, found, want, err)
+	}
+}
+
+func createLegacyJobsDatabase(t *testing.T, path string, record domain.JobRecord) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	_, err = db.Exec(`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+CREATE TABLE jobs (
+ id TEXT PRIMARY KEY, instance_id TEXT NOT NULL, type TEXT NOT NULL, status TEXT NOT NULL,
+ stage TEXT NOT NULL DEFAULT '', percent INTEGER NOT NULL DEFAULT 0, message TEXT NOT NULL DEFAULT '',
+ error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO jobs(id,instance_id,type,status,stage,percent,message,error,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		record.ID, record.InstanceID, record.Type, record.Status, record.Stage, record.Percent, record.Message, record.Error,
+		record.CreatedAt.Format(time.RFC3339Nano), record.UpdatedAt.Format(time.RFC3339Nano))
+	if err != nil {
+		t.Fatal(err)
 	}
 }

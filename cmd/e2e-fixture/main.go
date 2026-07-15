@@ -399,15 +399,57 @@ func newFixturePipeline(root string) (*updates.Pipeline, error) {
 }
 
 func seedJobs(db *store.Store) {
-	now := time.Now().UTC()
+	if err := db.SetSuccessfulJobLimit(40); err != nil {
+		log.Fatal(err)
+	}
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	successStarted := now.Add(time.Second)
+	successFinished := now.Add(30 * time.Second)
+	slowStarted := now.Add(2 * time.Second)
+	interruptedStarted := now.Add(3 * time.Second)
+	interruptedFinished := now.Add(45 * time.Second)
 	values := []domain.JobRecord{
-		{ID: "fixture-success", Type: "fixture_success", Stage: "complete", Status: "succeeded", Percent: 100, CreatedAt: now, UpdatedAt: now},
-		{ID: "fixture-failure", Type: "fixture_failure", Stage: "failed", Status: "failed", Error: "deterministic fixture failure", Percent: 45, CreatedAt: now, UpdatedAt: now},
-		{ID: "fixture-slow", Type: "fixture_slow", Stage: "waiting", Status: "running", Message: "deterministic slow job", Percent: 50, CreatedAt: now, UpdatedAt: now},
-		{ID: "fixture-interrupted", Type: "fixture_recovery", Stage: "recovered", Status: "interrupted", Error: "recovered after fixture restart", Percent: 25, CreatedAt: now, UpdatedAt: now},
+		{ID: "fixture-success", Type: "fixture_success", Stage: "complete", Status: "succeeded", Percent: 100, CreatedAt: now, UpdatedAt: successFinished, StartedAt: &successStarted, FinishedAt: &successFinished},
+		{ID: "fixture-slow", Type: "fixture_slow", Stage: "waiting", Status: "running", Message: "deterministic slow job", Percent: 50, CreatedAt: now, UpdatedAt: slowStarted, StartedAt: &slowStarted},
+		{ID: "fixture-interrupted", Type: "fixture_recovery", Stage: "recovered", Status: "interrupted", Error: "recovered after fixture restart", Percent: 25, CreatedAt: now, UpdatedAt: interruptedFinished, StartedAt: &interruptedStarted, FinishedAt: &interruptedFinished},
 	}
 	for _, value := range values {
 		if err := db.SaveJob(value); err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	failureStarted := now.Add(2 * time.Second)
+	failureProgress := now.Add(time.Minute)
+	failureFinished := now.Add(2*time.Minute + 20*time.Second)
+	failure := domain.JobRecord{ID: "fixture-failure", Type: "fixture_failure", CreatedAt: now}
+	steps := []struct {
+		status, stage, message, kind string
+		percent                      int
+		updated                      time.Time
+	}{
+		{status: "pending", message: "Task queued", kind: "queued", updated: now},
+		{status: "running", stage: "prepare", message: "Task started", kind: "started", updated: failureStarted},
+		{status: "running", stage: "download", message: "downloading fixture payload", kind: "progress", percent: 45, updated: failureProgress},
+		{status: "failed", stage: "download", message: "deterministic fixture failure", kind: "failed", percent: 45, updated: failureFinished},
+	}
+	for _, step := range steps {
+		failure.Status = step.status
+		failure.Stage = step.stage
+		failure.Message = step.message
+		failure.Percent = step.percent
+		failure.UpdatedAt = step.updated
+		if step.kind != "queued" {
+			failure.StartedAt = &failureStarted
+		}
+		if step.kind == "failed" {
+			failure.Error = step.message
+			failure.FinishedAt = &failureFinished
+		}
+		if err := db.SaveJobWithEvent(failure, domain.JobEvent{
+			JobID: failure.ID, Kind: step.kind, Stage: step.stage,
+			Percent: step.percent, Message: step.message, CreatedAt: step.updated,
+		}); err != nil {
 			log.Fatal(err)
 		}
 	}

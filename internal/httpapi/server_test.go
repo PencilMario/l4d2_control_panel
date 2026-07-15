@@ -320,8 +320,22 @@ func TestPrivateFileAPIContract(t *testing.T) {
 	for {
 		job, ok := s.jobs.Get(started.ID)
 		if ok && job.Status == "succeeded" {
-			if job.Stage != "commit" {
-				t.Fatalf("final stage=%s", job.Stage)
+			if job.Stage != "complete" || job.Message != "Task completed" {
+				t.Fatalf("final job=%#v", job)
+			}
+			_, events, found, err := s.jobs.Details(started.ID)
+			if err != nil || !found {
+				t.Fatalf("events=%#v found=%v err=%v", events, found, err)
+			}
+			commitRecorded := false
+			for _, event := range events {
+				if event.Kind == "progress" && event.Stage == "commit" {
+					commitRecorded = true
+					break
+				}
+			}
+			if !commitRecorded {
+				t.Fatalf("commit progress missing from events=%#v", events)
 			}
 			break
 		}
@@ -1200,6 +1214,117 @@ func TestInstanceActionRunsAsPersistentJob(t *testing.T) {
 	s.Handler().ServeHTTP(w, r)
 	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"succeeded"`)) {
 		t.Fatalf("job: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestJobDetailIncludesEventsAndSummariesDoNot(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	s = New(db, s.auth, WithOperations(nil, jobs.NewPersistentManager(db)))
+	cookie := loginCookie(t, s)
+	created := time.Date(2026, 7, 16, 7, 0, 0, 0, time.UTC)
+	started := created.Add(2 * time.Second)
+	finished := started.Add(30 * time.Second)
+	if err := db.SaveJobWithEvent(domain.JobRecord{
+		ID: "job-detail", Type: "game_update", Status: "failed", Stage: "steamcmd",
+		Error: "download interrupted", Percent: 40, CreatedAt: created, UpdatedAt: finished,
+		StartedAt: &started, FinishedAt: &finished,
+	}, domain.JobEvent{
+		JobID: "job-detail", Kind: "failed", Stage: "steamcmd", Percent: 40,
+		Message: "download interrupted", CreatedAt: finished,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/api/jobs/job-detail", nil)
+	r.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"Events"`) || !strings.Contains(w.Body.String(), "download interrupted") {
+		t.Fatalf("detail: status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"Status":"failed"`) {
+		t.Fatalf("detail lost existing top-level fields: %s", w.Body.String())
+	}
+
+	r = httptest.NewRequest(http.MethodGet, "/api/jobs", nil)
+	r.AddCookie(cookie)
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), `"Events"`) {
+		t.Fatalf("summary: status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestJobSettingsReadUpdateAndPrune(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	cookie := loginCookie(t, s)
+
+	r := httptest.NewRequest(http.MethodGet, "/api/settings/jobs", nil)
+	r.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"successful_job_limit":25`) {
+		t.Fatalf("get settings: status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	base := time.Date(2026, 7, 16, 8, 0, 0, 0, time.UTC)
+	for index, id := range []string{"old-success", "middle-success", "new-success"} {
+		finished := base.Add(time.Duration(index) * time.Minute)
+		if err := db.SaveJob(domain.JobRecord{
+			ID: id, Status: "succeeded", CreatedAt: base, UpdatedAt: finished, FinishedAt: &finished,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failedAt := base.Add(4 * time.Minute)
+	if err := db.SaveJob(domain.JobRecord{
+		ID: "kept-failure", Status: "failed", CreatedAt: base, UpdatedAt: failedAt, FinishedAt: &failedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r = httptest.NewRequest(http.MethodPut, "/api/settings/jobs", strings.NewReader(`{"successful_job_limit":2}`))
+	r.AddCookie(cookie)
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"successful_job_limit":2`) {
+		t.Fatalf("put settings: status=%d body=%s", w.Code, w.Body.String())
+	}
+	if _, found, err := db.LoadJob("old-success"); err != nil || found {
+		t.Fatalf("old success found=%v err=%v", found, err)
+	}
+	if _, found, err := db.LoadJob("kept-failure"); err != nil || !found {
+		t.Fatalf("failure found=%v err=%v", found, err)
+	}
+}
+
+func TestJobSettingsRejectInvalidValuesWithoutChangingStoredLimit(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	cookie := loginCookie(t, s)
+	if err := db.SetSuccessfulJobLimit(40); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{
+		`{"successful_job_limit":0}`,
+		`{"successful_job_limit":501}`,
+		`{"successful_job_limit":"many"}`,
+		`{"successful_job_limit":40} {}`,
+		`{"successful_job_limit":40} trailing`,
+	} {
+		r := httptest.NewRequest(http.MethodPut, "/api/settings/jobs", strings.NewReader(body))
+		r.AddCookie(cookie)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("body=%s status=%d response=%s", body, w.Code, w.Body.String())
+		}
+		limit, err := db.SuccessfulJobLimit()
+		if err != nil || limit != 40 {
+			t.Fatalf("body=%s limit=%d err=%v", body, limit, err)
+		}
 	}
 }
 

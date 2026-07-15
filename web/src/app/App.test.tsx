@@ -753,25 +753,80 @@ describe("App", () => {
     vi.unstubAllGlobals();
   });
   it("shows persisted jobs on a dedicated operations page", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/jobs") {
+        return new Response(
+          JSON.stringify([
+            {
+              ID: "job-1",
+              Type: "game_update",
+              Status: "failed",
+              Stage: "steamcmd",
+              Percent: 37,
+              Error: "download interrupted",
+              CreatedAt: "2026-07-16T08:00:00Z",
+              UpdatedAt: "2026-07-16T08:02:20Z",
+              StartedAt: "2026-07-16T08:00:02Z",
+              FinishedAt: "2026-07-16T08:02:20Z",
+            },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (String(input) === "/api/jobs/job-1") {
+        return new Response(
+          JSON.stringify({
+            ID: "job-1",
+            Type: "game_update",
+            Status: "failed",
+            Stage: "steamcmd",
+            Percent: 37,
+            Error: "download interrupted",
+            CreatedAt: "2026-07-16T08:00:00Z",
+            UpdatedAt: "2026-07-16T08:02:20Z",
+            StartedAt: "2026-07-16T08:00:02Z",
+            FinishedAt: "2026-07-16T08:02:20Z",
+            Events: [
+              {
+                ID: 1,
+                JobID: "job-1",
+                Kind: "failed",
+                Stage: "steamcmd",
+                Percent: 37,
+                Message: "download interrupted",
+                CreatedAt: "2026-07-16T08:02:20Z",
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("[]", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        if (String(input) === "/api/jobs") {
-          return new Response(
-            '[{"ID":"job-1","Type":"game_update","Status":"failed","Stage":"steamcmd","Percent":37,"Error":"download interrupted"}]',
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          );
-        }
-        return new Response("[]", {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }),
+      fetchMock,
     );
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "任务" }));
     expect(await screen.findByText("game_update")).toBeInTheDocument();
     expect(screen.getByText("download interrupted")).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: "查看 game_update 任务日志，任务 ID job-1",
+      }),
+    );
+    expect(
+      await screen.findByRole("region", { name: "game_update 任务日志" }),
+    ).toHaveTextContent("download interrupted");
+    expect(screen.getByText("执行用时 2分18秒")).toBeVisible();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/jobs/job-1",
+      expect.objectContaining({ credentials: "same-origin" }),
+    );
     vi.unstubAllGlobals();
   });
   it("loads VPK downloads from the content repository", async () => {
@@ -908,6 +963,110 @@ describe("App", () => {
     expect(
       await screen.findByText("匿名首装已支持；仅许可账号需要配置凭据"),
     ).toBeInTheDocument();
+  });
+
+  it("loads and updates the successful job retention limit", async () => {
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        if (path === "/api/settings/jobs") {
+          if (init?.method === "PUT") {
+            return Response.json({ successful_job_limit: 40 });
+          }
+          return Response.json({ successful_job_limit: 25 });
+        }
+        return Response.json({ configured: false });
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "系统设置" }));
+    const input = await screen.findByRole("spinbutton", {
+      name: "成功任务保留数量",
+    });
+    expect(input).toHaveValue(25);
+    expect(input).toHaveAttribute("min", "1");
+    expect(input).toHaveAttribute("max", "500");
+    expect(
+      screen.getByText("仅限制成功任务；失败和中断任务不会自动删除。"),
+    ).toBeVisible();
+
+    await userEvent.clear(input);
+    await userEvent.type(input, "40");
+    await userEvent.click(
+      screen.getByRole("button", { name: "保存任务记录设置" }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/settings/jobs",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ successful_job_limit: 40 }),
+      }),
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "任务记录设置已保存",
+    );
+  });
+
+  it("disables retention settings while the save is in progress", async () => {
+    const save = deferred<Response>();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === "/api/settings/jobs") {
+          if (init?.method === "PUT") return save.promise;
+          return Response.json({ successful_job_limit: 25 });
+        }
+        return Response.json({ configured: false });
+      }),
+    );
+
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "系统设置" }));
+    const saveButton = await screen.findByRole("button", {
+      name: "保存任务记录设置",
+    });
+    await waitFor(() => expect(saveButton).toBeEnabled());
+    await userEvent.click(saveButton);
+    expect(saveButton).toBeDisabled();
+
+    save.resolve(Response.json({ successful_job_limit: 25 }));
+    await waitFor(() => expect(saveButton).toBeEnabled());
+  });
+
+  it("restores the confirmed retention limit when saving fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === "/api/settings/jobs") {
+          if (init?.method === "PUT") {
+            return Response.json(
+              { error: { message: "保存任务设置失败" } },
+              { status: 500 },
+            );
+          }
+          return Response.json({ successful_job_limit: 25 });
+        }
+        return Response.json({ configured: false });
+      }),
+    );
+
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "系统设置" }));
+    const input = await screen.findByRole("spinbutton", {
+      name: "成功任务保留数量",
+    });
+    await userEvent.clear(input);
+    await userEvent.type(input, "40");
+    await userEvent.click(
+      screen.getByRole("button", { name: "保存任务记录设置" }),
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "保存任务设置失败",
+    );
+    expect(input).toHaveValue(25);
   });
 
   it("selects both forced reinstall targets by default", async () => {

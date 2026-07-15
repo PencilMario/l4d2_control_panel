@@ -118,6 +118,17 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await page.getByRole("button", { name: "进入作战室" }).click();
   await expect(page.getByRole("heading", { name: "服务器作战室" })).toBeVisible();
 
+  await page.evaluate(async () => {
+    const response = await fetch("/api/settings/jobs", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ successful_job_limit: 40 }),
+    });
+    if (!response.ok) {
+      throw new Error(`reset job settings failed with HTTP ${response.status}`);
+    }
+  });
+
   await page.getByRole("button", { name: "内容仓库" }).click();
   for (const name of [packageAName, packageBName]) {
     await page.locator('input[accept=".zip"]').setInputFiles({
@@ -826,6 +837,30 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   ).toContainText("succeeded");
   await expect(page.locator(".job-row").first()).toBeVisible();
 
+  const failedJob = page.getByRole("button", {
+    name: "查看 fixture_failure 任务日志，任务 ID fixture-failure",
+  });
+  await failedJob.click();
+  await expect(failedJob).toHaveAttribute("aria-expanded", "true");
+  const failedLog = page.getByRole("region", {
+    name: "fixture_failure 任务日志",
+  });
+  await expect(failedLog).toContainText("deterministic fixture failure");
+  await expect(failedLog).toContainText("进入队列");
+  await expect(failedLog).toContainText("开始执行");
+  await expect(failedLog).toContainText("执行进度");
+  await expect(failedLog).toContainText("任务失败");
+  await expect(failedLog).toContainText("执行用时 2分18秒");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("recent-job-logs.png"),
+    fullPage: true,
+  });
+
   const latestJob = page.locator(".activity");
   await expect.soft(latestJob).toContainText("任务已成功完成");
   await expect.soft(latestJob).not.toContainText("后台任务持久化执行中");
@@ -862,4 +897,31 @@ test("real HTTP administration journey survives refresh and streams recovery sta
     path: testInfo.outputPath(`${testInfo.project.name}-journey.png`),
     fullPage: true,
   });
+
+  await page.getByRole("button", { name: "系统设置" }).click();
+  const retentionLimit = page.getByRole("spinbutton", {
+    name: "成功任务保留数量",
+  });
+  await expect(retentionLimit).toHaveValue("40");
+  await retentionLimit.fill("25");
+  await page
+    .getByRole("button", { name: "保存任务记录设置" })
+    .click();
+  await expect(page.getByRole("status")).toContainText(
+    "任务记录设置已保存",
+  );
+  await expect(retentionLimit).toHaveValue("25");
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const response = await fetch("/api/settings/jobs");
+        return (await response.json()).successful_job_limit;
+      }),
+    )
+    .toBe(25);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
 });
