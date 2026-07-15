@@ -3,21 +3,21 @@
 - Updated: 2026-07-15
 - Worktree: `.worktrees/instance-performance-history`
 - Branch: `feature/instance-performance-history`
-- Current todo: Task 5 of 7, expose additive overview and history contracts.
-- Active slice: switch overview reads to sampler snapshots, add authenticated bounded history and retire request-time Docker/A2S fan-out.
-- Completed todos: Tasks 1-4 implemented with TDD and both review stages approved.
-- Evidence refs: Task 4 commits `f4629f4`, `36bf32b`, `e85b354`, `b9f25b6`, `43fa8ed`; focused transition/concurrency tests passed up to 100 repetitions; full Go/vet passed; spec and quality reviews approved.
+- Current todo: Task 6 of 7, render detailed metrics and Recharts history.
+- Active slice: add typed performance UI, unit formatting, four chart modes and responsive instance-card layout without duplicate full-history polling.
+- Completed todos: Tasks 1-5 implemented with TDD and both review stages approved.
+- Evidence refs: Task 5 commits `7f6737a`, `ea95182`; focused/full Go, tagged fixture and vet passed; overview fan-out retirement and history contract approved.
 - Blocked on: nothing.
-- Explicit non-edits: no React UI changes during Task 5.
-- Next step: dispatch Task 5 implementer, then run spec and quality reviews.
+- Explicit non-edits: no backend contract, proxy, sampler or lifecycle changes during Task 6.
+- Next step: dispatch Task 6 implementer, then run spec and quality reviews.
 
 ## ResumeStateHint
 
-Read `00-intent.md`, `10-baseline-readset.md`, `20-checkpoint.md`, `30-plan.md` and current git status. Continue only in the named worktree and branch. Do not start a later task until Task 5 has passed both review stages.
+Read `00-intent.md`, `10-baseline-readset.md`, `20-checkpoint.md`, `30-plan.md` and current git status. Continue only in the named worktree and branch. Do not start a later task until Task 6 has passed both review stages.
 
 ## DriftCheckDraft
 
 - Scope: aligned with the approved performance-history feature.
-- Compatibility: sampler is the sole current/history metrics owner; lifecycle and existing resource/player endpoints remain unchanged.
-- Retirement: Task 5 must remove overview request-time Docker/A2S fan-out while retaining `/resources` and `/players` for direct consumers.
+- Compatibility: overview/history contracts are additive and sampler-backed; direct resource/player routes remain.
+- Retirement: the old three-cell CPU/memory/player presentation is replaced by the focused performance panel, but status/map/actions remain.
 - Decision: continue.

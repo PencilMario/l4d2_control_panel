@@ -25,6 +25,10 @@
 - Task 4 stress: selected timeout, worker, stop/register transition and cleanup tests passed 20-100 repetitions.
 - Task 4 reviews: spec and quality approved after runtime unknown semantics, fixed workers, deadline coverage, stopped fast path and retryable traffic ownership were verified.
 - Task 4 residual: history is a bounded chronological 720-entry slice and copies entries when full rather than using a circular index; behavior and memory bounds are correct, with small steady-state allocation overhead.
+- Task 5 RED/GREEN: missing performance provider/route and unordered history were reproduced before sampler-backed handlers and stable newest-720 mapping.
+- Task 5 regression: focused HTTP tests, `go test -count=1 ./...`, tagged e2e fixture tests and `go vet ./...` passed.
+- Task 5 reviews: spec and quality approved; overview no longer calls request-time Docker/A2S providers, while `/resources` and `/players` remain.
+- Task 5 residual: the explicit history-provider-missing `503` branch is implemented but lacks a dedicated test; production and e2e fixture both inject the provider.
 
 ## Regression evidence
 
