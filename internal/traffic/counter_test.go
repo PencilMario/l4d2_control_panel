@@ -2,6 +2,7 @@ package traffic
 
 import (
 	"encoding/binary"
+	"errors"
 	"sync"
 	"testing"
 )
@@ -85,6 +86,29 @@ func TestCounterStopFreezesOnlyMatchingRun(t *testing.T) {
 	}
 }
 
+func TestCounterStopRejectsInvalidIdentifiers(t *testing.T) {
+	c := NewCounter()
+	mustRegister(t, c, Session{InstanceID: "instance-1", RunID: "run-1", Ports: []int{27015}})
+	tests := []struct {
+		instanceID string
+		runID      string
+	}{
+		{instanceID: "", runID: "run-1"},
+		{instanceID: "../escape", runID: "run-1"},
+		{instanceID: "instance-1", runID: ""},
+		{instanceID: "instance-1", runID: "bad/run"},
+	}
+	for _, tt := range tests {
+		err := c.Stop(tt.instanceID, tt.runID)
+		if !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("Stop(%q, %q) error = %v, want ErrInvalidInput", tt.instanceID, tt.runID, err)
+		}
+		if errors.Is(err, ErrNotFound) || errors.Is(err, ErrRunMismatch) {
+			t.Errorf("Stop(%q, %q) conflated invalid input with lookup state: %v", tt.instanceID, tt.runID, err)
+		}
+	}
+}
+
 func TestCounterConcurrentObserveAndRead(t *testing.T) {
 	c := NewCounter()
 	mustRegister(t, c, Session{InstanceID: "instance-1", RunID: "run-1", Ports: []int{27015}})
@@ -133,23 +157,85 @@ func TestDecodeFrameIPv4TCPAndVLANIPv6UDP(t *testing.T) {
 }
 
 func TestDecodeFrameIgnoresTruncatedUnsupportedAndNonInitialFragments(t *testing.T) {
-	frames := [][]byte{
-		make([]byte, 13),
-		append(make([]byte, 12), 0x08, 0x06),
-		func() []byte {
-			frame := make([]byte, 14+20+8)
-			binary.BigEndian.PutUint16(frame[12:14], 0x0800)
-			frame[14] = 0x45
-			frame[23] = 17
+	frames := map[string][]byte{
+		"truncated Ethernet": make([]byte, 13),
+		"unsupported EtherType": func() []byte {
+			frame := make([]byte, 14)
+			binary.BigEndian.PutUint16(frame[12:14], 0x0806)
+			return frame
+		}(),
+		"truncated VLAN header": func() []byte {
+			frame := make([]byte, 17)
+			binary.BigEndian.PutUint16(frame[12:14], 0x8100)
+			return frame
+		}(),
+		"truncated stacked VLAN header": func() []byte {
+			frame := make([]byte, 21)
+			binary.BigEndian.PutUint16(frame[12:14], 0x8100)
+			binary.BigEndian.PutUint16(frame[16:18], 0x88a8)
+			return frame
+		}(),
+		"truncated IPv4 base header": ipv4Frame(19, 5, 6),
+		"invalid IPv4 IHL":           ipv4Frame(20, 4, 6),
+		"truncated IPv4 IHL":         ipv4Frame(23, 6, 6),
+		"truncated IPv4 TCP ports":   ipv4Frame(23, 5, 6),
+		"truncated IPv4 UDP ports":   ipv4Frame(23, 5, 17),
+		"IPv4 non-initial fragment": func() []byte {
+			frame := ipv4Frame(28, 5, 17)
 			binary.BigEndian.PutUint16(frame[20:22], 1)
 			return frame
 		}(),
+		"truncated IPv6 base header": ipv6Frame(39, 6),
+		"truncated IPv6 TCP ports":   ipv6Frame(43, 6),
+		"truncated IPv6 UDP ports":   ipv6Frame(43, 17),
+		"truncated IPv6 extension header": func() []byte {
+			return ipv6Frame(41, 0)
+		}(),
+		"IPv6 extension length overflow": func() []byte {
+			frame := ipv6Frame(48, 0)
+			frame[54] = 17
+			frame[55] = 2
+			return frame
+		}(),
+		"IPv6 non-initial fragment": func() []byte {
+			frame := ipv6Frame(52, 44)
+			frame[54] = 17
+			binary.BigEndian.PutUint16(frame[56:58], 8)
+			return frame
+		}(),
+		"unsupported IPv6 next header": ipv6Frame(44, 59),
 	}
-	for _, frame := range frames {
-		if packet, ok := decodeFrame(frame, uint64(len(frame))); ok {
-			t.Fatalf("decodeFrame accepted invalid frame as %+v", packet)
-		}
+	for name, frame := range frames {
+		t.Run(name, func(t *testing.T) {
+			if packet, ok := decodeFrame(frame, uint64(len(frame))); ok {
+				t.Fatalf("decodeFrame accepted invalid frame as %+v", packet)
+			}
+		})
 	}
+}
+
+func ipv4Frame(payloadLength, ihl int, protocol byte) []byte {
+	frame := make([]byte, 14+payloadLength)
+	binary.BigEndian.PutUint16(frame[12:14], 0x0800)
+	if payloadLength > 0 {
+		frame[14] = 0x40 | byte(ihl)
+	}
+	if payloadLength > 9 {
+		frame[23] = protocol
+	}
+	return frame
+}
+
+func ipv6Frame(payloadLength int, nextHeader byte) []byte {
+	frame := make([]byte, 14+payloadLength)
+	binary.BigEndian.PutUint16(frame[12:14], 0x86dd)
+	if payloadLength > 0 {
+		frame[14] = 0x60
+	}
+	if payloadLength > 6 {
+		frame[20] = nextHeader
+	}
+	return frame
 }
 
 func mustRegister(t *testing.T, c *Counter, session Session) {

@@ -10,8 +10,9 @@ import (
 var safeID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 
 var (
-	ErrNotFound    = errors.New("traffic session not found")
-	ErrRunMismatch = errors.New("traffic session run ID mismatch")
+	ErrInvalidInput = errors.New("invalid traffic session input")
+	ErrNotFound     = errors.New("traffic session not found")
+	ErrRunMismatch  = errors.New("traffic session run ID mismatch")
 )
 
 type counterSession struct {
@@ -31,16 +32,16 @@ func NewCounter() *Counter {
 }
 
 func (c *Counter) Register(session Session) error {
-	if !safeID.MatchString(session.InstanceID) || !safeID.MatchString(session.RunID) {
-		return errors.New("instance_id and run_id must be safe nonempty identifiers")
+	if err := validateIDs(session.InstanceID, session.RunID); err != nil {
+		return err
 	}
 	if len(session.Ports) == 0 {
-		return errors.New("at least one port is required")
+		return fmt.Errorf("%w: at least one port is required", ErrInvalidInput)
 	}
 	ports := make(map[uint16]struct{}, len(session.Ports))
 	for _, port := range session.Ports {
 		if port < 1 || port > 65535 {
-			return fmt.Errorf("invalid port %d", port)
+			return fmt.Errorf("%w: invalid port %d", ErrInvalidInput, port)
 		}
 		ports[uint16(port)] = struct{}{}
 	}
@@ -62,6 +63,9 @@ func (c *Counter) Register(session Session) error {
 }
 
 func (c *Counter) Stop(instanceID, runID string) error {
+	if err := validateIDs(instanceID, runID); err != nil {
+		return err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	session, ok := c.sessions[instanceID]
@@ -72,6 +76,13 @@ func (c *Counter) Stop(instanceID, runID string) error {
 		return ErrRunMismatch
 	}
 	session.active = false
+	return nil
+}
+
+func validateIDs(instanceID, runID string) error {
+	if !safeID.MatchString(instanceID) || !safeID.MatchString(runID) {
+		return fmt.Errorf("%w: instance_id and run_id must be safe nonempty identifiers", ErrInvalidInput)
+	}
 	return nil
 }
 
