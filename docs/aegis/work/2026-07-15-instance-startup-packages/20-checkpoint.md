@@ -4,8 +4,8 @@ Updated: 2026-07-15
 
 ## Current Todo
 
-- Active: Task 5, extend strict instance create/update APIs.
-- Next: Task 6, build the shared React configuration modal and preview.
+- Active: Task 6, build the shared React configuration modal and preview.
+- Next: Task 7, update the real-browser journey and operational checks.
 - Later: provisioning, package intent preservation, HTTP reconfiguration, React UI, E2E, completion audit.
 
 ## Completed
@@ -18,6 +18,7 @@ Updated: 2026-07-15
 - Task 2 completed: Go owns argument validation/order and new containers pass validated JSON argv to Supervisor.
 - Task 3 completed: maintenance installation and package deployment finish before the first game container is created.
 - Task 4 completed: package updates preserve stopped/running intent and Coordinator owns applied-state writes.
+- Task 5 completed: strict create/update validation and one-Job reconfiguration are covered by HTTP integration tests.
 
 ## Evidence Refs
 
@@ -31,10 +32,10 @@ Updated: 2026-07-15
 ## Drift Check Draft
 
 - Scope: unchanged.
-- Compatibility: hot/full routes and Pipeline transactions remain unchanged; stopped instances no longer start as a side effect.
-- Retirement: HTTP no longer duplicates applied-package persistence; Coordinator is the single deployment-state owner.
+- Compatibility: route paths, strict decoding and persistent Job polling remain unchanged; name-only edits now avoid unnecessary downtime.
+- Retirement: unconditional installed-instance rebuild has been replaced by runtime/package diff planning.
 - Decision: continue.
 
 ## Next Step
 
-Write and run failing strict create/update tests for package validation, extra arguments, name-only edits and one-Job reconfiguration.
+Load frontend-design and React performance guidance, then write failing shared-modal, preview, create/edit payload and Job-response tests.

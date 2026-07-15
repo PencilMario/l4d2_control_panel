@@ -1,12 +1,14 @@
 package httpapi
 
 import (
+	"archive/zip"
 	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -23,6 +25,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/scheduler"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
+	"github.com/not0721here/l4d2-control-panel/internal/updates"
 )
 
 type fakeLifecycle struct{ action string }
@@ -47,7 +50,8 @@ func (f *fakeAttacher) AttachSupervisor(context.Context, string) (io.ReadWriteCl
 
 func testServer(t *testing.T) (*Server, *store.Store) {
 	t.Helper()
-	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "panel.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +59,66 @@ func testServer(t *testing.T) (*Server, *store.Store) {
 	if err := a.Bootstrap("correct horse battery staple"); err != nil {
 		t.Fatal(err)
 	}
-	return New(db, a), db
+	packages, err := content.NewPackageManager(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addTestPackage(t, packages, "default.zip", "default")
+	pipeline := updates.New(root)
+	return New(db, a, WithContent(nil, nil, packages, pipeline, nil)), db
+}
+
+func addTestPackage(t *testing.T, manager *content.PackageManager, name, version string) string {
+	t.Helper()
+	var raw bytes.Buffer
+	writer := zip.NewWriter(&raw)
+	file, err := writer.Create("cfg/plugin.cfg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("sm_cvar fixture 1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	item, err := manager.AddUpload(name, version, bytes.NewReader(raw.Bytes()), int64(raw.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return item.ID
+}
+
+func defaultPackageID(t *testing.T, server *Server) string {
+	t.Helper()
+	items, err := server.packages.List()
+	if err != nil || len(items) == 0 {
+		t.Fatalf("packages=%#v err=%v", items, err)
+	}
+	return items[0].ID
+}
+
+func authenticatedJSON(t *testing.T, server *Server, cookie *http.Cookie, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(method, path, strings.NewReader(body))
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	return response
+}
+
+func waitForJob(t *testing.T, manager *jobs.Manager, id string) jobs.Job {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		job, ok := manager.Get(id)
+		if ok && (job.Status == jobs.Succeeded || job.Status == jobs.Failed) {
+			return job
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("job did not finish")
+	return jobs.Job{}
 }
 func loginCookie(t *testing.T, s *Server) *http.Cookie {
 	t.Helper()
@@ -83,7 +146,7 @@ func TestCreateAndListInstance(t *testing.T) {
 	s, db := testServer(t)
 	defer db.Close()
 	cookie := loginCookie(t, s)
-	payload := map[string]any{"name": "Coop One", "game_port": 27015, "start_map": "c2m1_highway", "game_mode": "coop", "tickrate": 100, "max_players": 8}
+	payload := map[string]any{"name": "Coop One", "game_port": 27015, "start_map": "c2m1_highway", "game_mode": "coop", "tickrate": 100, "max_players": 8, "package_id": defaultPackageID(t, s)}
 	raw, _ := json.Marshal(payload)
 	r := httptest.NewRequest(http.MethodPost, "/api/instances", bytes.NewReader(raw))
 	r.AddCookie(cookie)
@@ -122,7 +185,8 @@ func TestCreateAndUpdateExposeSourceTVAndPluginPorts(t *testing.T) {
 	s, db := testServer(t)
 	defer db.Close()
 	cookie := loginCookie(t, s)
-	create := `{"name":"Ports","game_port":27015,"sourcetv_port":27020,"plugin_ports":[27021,27022],"start_map":"c2m1_highway","game_mode":"coop","tickrate":100,"max_players":8}`
+	packageID := defaultPackageID(t, s)
+	create := fmt.Sprintf(`{"name":"Ports","game_port":27015,"sourcetv_port":27020,"plugin_ports":[27021,27022],"start_map":"c2m1_highway","game_mode":"coop","tickrate":100,"max_players":8,"package_id":%q}`, packageID)
 	r := httptest.NewRequest(http.MethodPost, "/api/instances", bytes.NewBufferString(create))
 	r.AddCookie(cookie)
 	w := httptest.NewRecorder()
@@ -135,13 +199,105 @@ func TestCreateAndUpdateExposeSourceTVAndPluginPorts(t *testing.T) {
 		t.Fatal(err)
 	}
 	id, _ := created["ID"].(string)
-	update := `{"name":"Ports","game_port":27015,"sourcetv_port":27030,"plugin_ports":[27031],"start_map":"c2m1_highway","game_mode":"coop","tickrate":100,"max_players":8,"extra_args":""}`
+	update := fmt.Sprintf(`{"name":"Ports","game_port":27015,"sourcetv_port":27030,"plugin_ports":[27031],"start_map":"c2m1_highway","game_mode":"coop","tickrate":100,"max_players":8,"extra_args":"","package_id":%q}`, packageID)
 	r = httptest.NewRequest(http.MethodPut, "/api/instances/"+id, bytes.NewBufferString(update))
 	r.AddCookie(cookie)
 	w = httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, r)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"sourcetv_port":27030`) || !strings.Contains(w.Body.String(), `"plugin_ports":[27031]`) {
 		t.Fatalf("update: status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreatePersistsPackageAndExtraArgs(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	cookie := loginCookie(t, s)
+	packageID := defaultPackageID(t, s)
+	body := fmt.Sprintf(`{"name":"Startup","game_port":27015,"start_map":"c2m1_highway","game_mode":"coop","tickrate":100,"max_players":8,"extra_args":"-strictportbind +hostname \"Night Coop\"","package_id":%q}`, packageID)
+	response := authenticatedJSON(t, s, cookie, http.MethodPost, "/api/instances", body)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	items, err := db.Instances(context.Background())
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items=%#v err=%v", items, err)
+	}
+	if items[0].SelectedPackageID != packageID || items[0].PackageVersion != "" || items[0].ExtraArgs != `-strictportbind +hostname "Night Coop"` {
+		t.Fatalf("instance=%#v", items[0])
+	}
+}
+
+func TestCreateRejectsMissingPackageAndReservedArguments(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	cookie := loginCookie(t, s)
+
+	missing := authenticatedJSON(t, s, cookie, http.MethodPost, "/api/instances", `{"name":"Missing","game_port":27015,"start_map":"map","game_mode":"coop","tickrate":100,"max_players":8,"package_id":"00000000-0000-0000-0000-000000000000"}`)
+	if missing.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("missing: status=%d body=%s", missing.Code, missing.Body.String())
+	}
+
+	reservedBody := fmt.Sprintf(`{"name":"Reserved","game_port":27015,"start_map":"map","game_mode":"coop","tickrate":100,"max_players":8,"extra_args":"-port 27016","package_id":%q}`, defaultPackageID(t, s))
+	reserved := authenticatedJSON(t, s, cookie, http.MethodPost, "/api/instances", reservedBody)
+	if reserved.Code != http.StatusUnprocessableEntity || !strings.Contains(reserved.Body.String(), "managed by the Panel") {
+		t.Fatalf("reserved: status=%d body=%s", reserved.Code, reserved.Body.String())
+	}
+}
+
+func TestUpdatePlansOnlyRequiredRuntimeWork(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	packageA := defaultPackageID(t, s)
+	packageB := addTestPackage(t, s.packages, "second.zip", "second")
+	value := domain.Instance{ID: "configured", NodeID: "local", Name: "Configured", ContainerID: "container", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", SelectedPackageID: packageA, PackageVersion: packageA, DesiredState: domain.StateStopped, ActualState: domain.StateStopped}
+	if err := db.CreateInstance(context.Background(), value); err != nil {
+		t.Fatal(err)
+	}
+	life := &fakeLifecycle{}
+	manager := jobs.NewPersistentManager(db)
+	coordinator := &updates.Coordinator{Lifecycle: life, Deployer: s.updates, Instances: db}
+	s = New(db, s.auth, WithOperations(life, manager), WithContent(nil, nil, s.packages, s.updates, coordinator))
+	cookie := loginCookie(t, s)
+
+	nameOnly := fmt.Sprintf(`{"name":"Renamed","game_port":27015,"start_map":"map","game_mode":"coop","tickrate":100,"max_players":8,"extra_args":"","package_id":%q}`, packageA)
+	response := authenticatedJSON(t, s, cookie, http.MethodPut, "/api/instances/"+value.ID, nameOnly)
+	if response.Code != http.StatusOK || life.action != "" {
+		t.Fatalf("name only: status=%d action=%q body=%s", response.Code, life.action, response.Body.String())
+	}
+
+	runtimeOnly := fmt.Sprintf(`{"name":"Renamed","game_port":27015,"start_map":"map","game_mode":"coop","tickrate":100,"max_players":8,"extra_args":"-strictportbind","package_id":%q}`, packageA)
+	response = authenticatedJSON(t, s, cookie, http.MethodPut, "/api/instances/"+value.ID, runtimeOnly)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("runtime: status=%d body=%s", response.Code, response.Body.String())
+	}
+	var runtimeJob jobs.Job
+	if err := json.Unmarshal(response.Body.Bytes(), &runtimeJob); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitForJob(t, manager, runtimeJob.ID); got.Status != jobs.Succeeded || life.action != "rebuild" {
+		t.Fatalf("job=%#v action=%q", got, life.action)
+	}
+
+	life.action = ""
+	combined := fmt.Sprintf(`{"name":"Renamed","game_port":27015,"start_map":"map","game_mode":"coop","tickrate":100,"max_players":8,"extra_args":"+hostname \"Changed\"","package_id":%q}`, packageB)
+	response = authenticatedJSON(t, s, cookie, http.MethodPut, "/api/instances/"+value.ID, combined)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("combined: status=%d body=%s", response.Code, response.Body.String())
+	}
+	var combinedJob jobs.Job
+	if err := json.Unmarshal(response.Body.Bytes(), &combinedJob); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitForJob(t, manager, combinedJob.ID); got.Status != jobs.Succeeded || life.action != "rebuild" {
+		t.Fatalf("job=%#v action=%q", got, life.action)
+	}
+	stored, err := db.Instance(context.Background(), value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.SelectedPackageID != packageB || stored.PackageVersion != packageB || stored.ExtraArgs != `+hostname "Changed"` {
+		t.Fatalf("instance=%#v", stored)
 	}
 }
 
@@ -204,7 +360,7 @@ func TestInstanceActionRunsAsPersistentJob(t *testing.T) {
 	s, db := testServer(t)
 	defer db.Close()
 	cookie := loginCookie(t, s)
-	v := map[string]any{"name": "Coop", "game_port": 27015, "start_map": "map", "game_mode": "coop", "tickrate": 100, "max_players": 8}
+	v := map[string]any{"name": "Coop", "game_port": 27015, "start_map": "map", "game_mode": "coop", "tickrate": 100, "max_players": 8, "package_id": defaultPackageID(t, s)}
 	raw, _ := json.Marshal(v)
 	r := httptest.NewRequest(http.MethodPost, "/api/instances", bytes.NewReader(raw))
 	r.AddCookie(cookie)

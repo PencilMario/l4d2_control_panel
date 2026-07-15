@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/releases"
 	"github.com/not0721here/l4d2-control-panel/internal/scheduler"
 	"github.com/not0721here/l4d2-control-panel/internal/secrets"
+	"github.com/not0721here/l4d2-control-panel/internal/srcds"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 	"github.com/not0721here/l4d2-control-panel/internal/updates"
 )
@@ -357,52 +359,127 @@ func (s *Server) instanceResources(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, stats)
 }
 
+type instanceInput struct {
+	Name         string `json:"name"`
+	GamePort     int    `json:"game_port"`
+	SourceTVPort int    `json:"sourcetv_port"`
+	PluginPorts  []int  `json:"plugin_ports"`
+	StartMap     string `json:"start_map"`
+	GameMode     string `json:"game_mode"`
+	Tickrate     int    `json:"tickrate"`
+	MaxPlayers   int    `json:"max_players"`
+	ExtraArgs    string `json:"extra_args"`
+	PackageID    string `json:"package_id"`
+	RuntimeImage string `json:"runtime_image"`
+}
+
+func (s *Server) validateInstanceInput(input *instanceInput) (content.PackageVersion, error) {
+	if input.Name == "" || input.StartMap == "" || input.GameMode == "" || input.Tickrate < 30 || input.Tickrate > 128 || input.MaxPlayers < 1 || input.MaxPlayers > 32 {
+		return content.PackageVersion{}, errors.New("invalid instance configuration")
+	}
+	if err := validateDeclaredPorts(input.GamePort, input.SourceTVPort, input.PluginPorts); err != nil {
+		return content.PackageVersion{}, err
+	}
+	if _, err := srcds.ParseExtraArgs(input.ExtraArgs); err != nil {
+		return content.PackageVersion{}, err
+	}
+	item, err := s.packages.Get(input.PackageID)
+	if err != nil {
+		return content.PackageVersion{}, fmt.Errorf("invalid package: %w", err)
+	}
+	slices.Sort(input.PluginPorts)
+	return item, nil
+}
+
+func (input instanceInput) apply(instance domain.Instance) domain.Instance {
+	instance.Name = input.Name
+	instance.GamePort = input.GamePort
+	instance.SourceTVPort = input.SourceTVPort
+	instance.PluginPorts = append([]int(nil), input.PluginPorts...)
+	instance.StartMap = input.StartMap
+	instance.GameMode = input.GameMode
+	instance.Tickrate = input.Tickrate
+	instance.MaxPlayers = input.MaxPlayers
+	instance.ExtraArgs = input.ExtraArgs
+	instance.SelectedPackageID = input.PackageID
+	if input.RuntimeImage != "" {
+		instance.RuntimeImage = input.RuntimeImage
+	}
+	return instance
+}
+
+func runtimeConfigurationChanged(before, after domain.Instance) bool {
+	return before.GamePort != after.GamePort ||
+		before.SourceTVPort != after.SourceTVPort ||
+		!slices.Equal(before.PluginPorts, after.PluginPorts) ||
+		before.StartMap != after.StartMap ||
+		before.GameMode != after.GameMode ||
+		before.Tickrate != after.Tickrate ||
+		before.MaxPlayers != after.MaxPlayers ||
+		before.ExtraArgs != after.ExtraArgs ||
+		before.RuntimeImage != after.RuntimeImage
+}
+
 func (s *Server) updateInstance(w http.ResponseWriter, r *http.Request) {
 	instance, err := s.store.Instance(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		writeError(w, 404, "instance_not_found", err.Error())
 		return
 	}
-	var input struct {
-		Name         string `json:"name"`
-		GamePort     int    `json:"game_port"`
-		SourceTVPort int    `json:"sourcetv_port"`
-		PluginPorts  []int  `json:"plugin_ports"`
-		StartMap     string `json:"start_map"`
-		GameMode     string `json:"game_mode"`
-		Tickrate     int    `json:"tickrate"`
-		MaxPlayers   int    `json:"max_players"`
-		ExtraArgs    string `json:"extra_args"`
-		RuntimeImage string `json:"runtime_image"`
+	if s.packages == nil {
+		writeError(w, 503, "packages_unavailable", "package manager unavailable")
+		return
 	}
+	var input instanceInput
 	if decodeJSON(w, r, &input) != nil {
 		return
 	}
-	if input.Name == "" || input.StartMap == "" || input.GameMode == "" || input.Tickrate < 30 || input.Tickrate > 128 || input.MaxPlayers < 1 || input.MaxPlayers > 32 {
-		writeError(w, 422, "invalid_instance", "invalid instance configuration")
-		return
-	}
-	if err := validateDeclaredPorts(input.GamePort, input.SourceTVPort, input.PluginPorts); err != nil {
+	item, err := s.validateInstanceInput(&input)
+	if err != nil {
 		writeError(w, 422, "invalid_instance", err.Error())
 		return
 	}
-	instance.Name, instance.GamePort, instance.SourceTVPort, instance.PluginPorts, instance.StartMap, instance.GameMode, instance.Tickrate, instance.MaxPlayers, instance.ExtraArgs = input.Name, input.GamePort, input.SourceTVPort, input.PluginPorts, input.StartMap, input.GameMode, input.Tickrate, input.MaxPlayers, input.ExtraArgs
-	if input.RuntimeImage != "" {
-		instance.RuntimeImage = input.RuntimeImage
+	next := input.apply(instance)
+	runtimeChanged := runtimeConfigurationChanged(instance, next)
+	packageNeedsApply := instance.SelectedPackageID != input.PackageID || instance.PackageVersion != input.PackageID
+	requiresJob := instance.ContainerID != "" && (runtimeChanged || packageNeedsApply)
+	if requiresJob && s.jobs == nil {
+		writeError(w, 503, "operations_unavailable", "job manager unavailable")
+		return
 	}
-	if err := s.store.UpdateInstance(r.Context(), instance); err != nil {
+	if instance.ContainerID != "" && runtimeChanged && s.lifecycle == nil {
+		writeError(w, 503, "operations_unavailable", "lifecycle unavailable")
+		return
+	}
+	if instance.ContainerID != "" && packageNeedsApply && s.updateCoordinator == nil {
+		writeError(w, 503, "updates_unavailable", "update pipeline unavailable")
+		return
+	}
+	if err := s.store.UpdateInstance(r.Context(), next); err != nil {
 		writeError(w, 409, "instance_conflict", err.Error())
 		return
 	}
-	if instance.ContainerID != "" && s.lifecycle != nil && s.jobs != nil {
-		job, ok := s.startJob(w, r, instance.ID, "rebuild", func(ctx context.Context, _ jobs.Reporter) error { return s.lifecycle.Rebuild(ctx, instance.ID) })
-		if !ok {
-			return
-		}
-		writeJSON(w, 202, job)
+	if !requiresJob {
+		writeJSON(w, 200, next)
 		return
 	}
-	writeJSON(w, 200, instance)
+	job, ok := s.startJob(w, r, instance.ID, "reconfigure", func(ctx context.Context, reporter jobs.Reporter) error {
+		if packageNeedsApply {
+			reporter.Progress("package", 20, "deploying selected package")
+			if err := s.updateCoordinator.ApplyPackage(ctx, instance.ID, item, updates.Full); err != nil {
+				return err
+			}
+		}
+		if runtimeChanged {
+			reporter.Progress("container", 70, "rebuilding game container")
+			return s.lifecycle.Rebuild(ctx, instance.ID)
+		}
+		return nil
+	})
+	if !ok {
+		return
+	}
+	writeJSON(w, 202, job)
 }
 func (s *Server) deleteInstance(w http.ResponseWriter, r *http.Request) {
 	if s.lifecycle == nil || s.jobs == nil {
@@ -1021,28 +1098,19 @@ func (s *Server) listInstances(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, items)
 }
 func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) {
-	var in struct {
-		Name         string `json:"name"`
-		GamePort     int    `json:"game_port"`
-		SourceTVPort int    `json:"sourcetv_port"`
-		PluginPorts  []int  `json:"plugin_ports"`
-		StartMap     string `json:"start_map"`
-		GameMode     string `json:"game_mode"`
-		Tickrate     int    `json:"tickrate"`
-		MaxPlayers   int    `json:"max_players"`
+	if s.packages == nil {
+		writeError(w, 503, "packages_unavailable", "package manager unavailable")
+		return
 	}
+	var in instanceInput
 	if decodeJSON(w, r, &in) != nil {
 		return
 	}
-	if in.Name == "" || in.StartMap == "" || in.GameMode == "" || in.Tickrate < 30 || in.Tickrate > 128 || in.MaxPlayers < 1 || in.MaxPlayers > 32 {
-		writeError(w, 422, "invalid_instance", "name, valid port, map, mode, tickrate and player limit are required")
-		return
-	}
-	if err := validateDeclaredPorts(in.GamePort, in.SourceTVPort, in.PluginPorts); err != nil {
+	if _, err := s.validateInstanceInput(&in); err != nil {
 		writeError(w, 422, "invalid_instance", err.Error())
 		return
 	}
-	v := domain.Instance{ID: uuid.NewString(), NodeID: "local", Name: in.Name, GamePort: in.GamePort, SourceTVPort: in.SourceTVPort, PluginPorts: in.PluginPorts, StartMap: in.StartMap, GameMode: in.GameMode, Tickrate: in.Tickrate, MaxPlayers: in.MaxPlayers, RuntimeImage: "l4d2-server-runtime:latest", DesiredState: domain.StateStopped, ActualState: domain.StateUninstalled}
+	v := in.apply(domain.Instance{ID: uuid.NewString(), NodeID: "local", RuntimeImage: "l4d2-server-runtime:latest", DesiredState: domain.StateStopped, ActualState: domain.StateUninstalled})
 	if err := s.store.CreateInstance(r.Context(), v); err != nil {
 		writeError(w, 409, "instance_conflict", err.Error())
 		return

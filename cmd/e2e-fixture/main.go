@@ -48,6 +48,9 @@ func (l *fixtureLifecycle) Start(ctx context.Context, id string) error {
 		}
 	}
 	instance.ContainerID = "fixture-" + id
+	if instance.SelectedPackageID != "" {
+		instance.PackageVersion = instance.SelectedPackageID
+	}
 	instance.DesiredState = domain.StateRunning
 	instance.ActualState = domain.StateRunning
 	return l.db.UpdateInstance(ctx, instance)

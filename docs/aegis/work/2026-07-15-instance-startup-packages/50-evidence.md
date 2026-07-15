@@ -19,6 +19,19 @@ Implementation evidence will be appended after each red/green slice.
 - `go test -count=1 ./internal/store ./internal/httpapi`: PASS.
 - `git diff --check`: PASS.
 
+## Task 5: Strict Instance Configuration API
+
+- RED: HTTP tests returned `400 unknown field` for `package_id` and `extra_args`; installed name-only updates still used the unconditional rebuild path.
+- GREEN: shared input validation now requires an existing package, validates extra arguments, sorts plugin ports and plans runtime/package work by diff.
+- New instances store selected package with an empty applied package. Containerless edits return `200`; installed runtime/package edits return one serialized `reconfigure` Job.
+- `go test -count=1 ./internal/httpapi`: PASS.
+- `go test -count=10 -tags=e2e ./cmd/e2e-fixture -run TestFixtureStartupRecoversInterruptedPackageDeployment -v`: PASS after one non-reproducible Windows temporary-directory cleanup failure.
+- Root-cause judgment for that transient: the failure was in existing rollback cleanup, the relevant fixture diff only updates SQLite fields, and ten immediate reproductions plus the next tagged full run passed. No retry/fallback was added. Confidence B; retain as Windows filesystem residual risk.
+- `go test -count=1 ./...`: PASS.
+- `go test -count=1 -tags=e2e ./cmd/e2e-fixture`: PASS.
+- `go vet ./...`: PASS.
+- `git diff --check`: PASS.
+
 ## Task 4: Package Update Intent
 
 - RED: Coordinator tests failed to compile because it had no instance repository and could not own running intent or applied state.
