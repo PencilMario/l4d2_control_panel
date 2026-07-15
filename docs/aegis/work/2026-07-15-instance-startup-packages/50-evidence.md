@@ -60,3 +60,12 @@ Implementation evidence will be appended after each red/green slice.
 - `go test -count=1 ./...`: PASS.
 - `go vet ./...`: PASS.
 - `git diff --check`: PASS.
+
+## Task 6: Shared Instance Configuration UI
+
+- RED: `cd web && npm test -- --run` initially had three failures: the shared row component referenced a missing `ChevronRight` import, and content repository tests could no longer observe package refresh after package state moved to `App`.
+- GREEN: create and edit now share one controlled modal covering all managed startup fields, per-instance package selection, raw extra arguments and a live canonical-order command preview. Instance cards show selected package identity and pending application state.
+- Package and instance/health requests remain independent and execute in parallel; the content repository refreshes shared package state after mount and upload.
+- `cd web && npm test -- --run`: PASS, 22 tests.
+- `cd web && npm run build`: PASS.
+- `git diff --check`: PASS.

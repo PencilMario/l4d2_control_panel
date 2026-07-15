@@ -22,29 +22,28 @@ import {
   Server,
   Settings,
   ShieldCheck,
+  SlidersHorizontal,
   TerminalSquare,
   Users,
   X,
 } from "lucide-react";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { api, apiText, normalizeInstance, type Job } from "../api/client";
+import {
+  InstanceConfigModal,
+  type ConfigurableInstance,
+  type InstanceConfigValues,
+  type PackageVersion,
+} from "./InstanceConfigModal";
 import "../styles/app.css";
-export type Instance = {
-  id: string;
-  name: string;
-  actual_state: string;
-  game_port: number;
-  sourcetv_port: number;
-  plugin_ports: number[];
-  start_map: string;
-  game_mode: string;
-  max_players: number;
+export type Instance = ConfigurableInstance & {
   players: number;
   cpu: number;
   memory: number;
 };
 type Props = {
   initialInstances?: Instance[];
+  initialPackages?: PackageVersion[];
   onAction?: (id: string, action: string) => void;
 };
 type Page = "overview" | "content" | "jobs" | "schedules" | "settings";
@@ -62,11 +61,14 @@ type Confirmation = {
 const errorMessage = (reason: unknown) =>
   reason instanceof Error ? reason.message : String(reason);
 
-export function App({ initialInstances, onAction }: Props) {
+export function App({ initialInstances, initialPackages, onAction }: Props) {
   const injected = initialInstances !== undefined;
   const [auth, setAuth] = useState(injected ? "yes" : "checking");
   const [instances, setInstances] = useState<Instance[]>(
     initialInstances || [],
+  );
+  const [packages, setPackages] = useState<PackageVersion[]>(
+    initialPackages || [],
   );
   const [pending, setPending] = useState<Instance | null>(null);
   const [page, setPage] = useState<Page>("overview");
@@ -100,6 +102,9 @@ export function App({ initialInstances, onAction }: Props) {
     );
     setInstances(enriched);
   };
+  const loadPackages = async () => {
+    setPackages(await api<PackageVersion[]>("/api/packages"));
+  };
   const loadHealth = async () => {
     try {
       await api("/api/health");
@@ -113,7 +118,11 @@ export function App({ initialInstances, onAction }: Props) {
     api("/api/session")
       .then(() => {
         setAuth("yes");
-        void Promise.allSettled([loadInstances(), loadHealth()]);
+        void Promise.allSettled([
+          loadInstances(),
+          loadPackages(),
+          loadHealth(),
+        ]);
       })
       .catch(() => setAuth("no"));
   }, []);
@@ -163,7 +172,11 @@ export function App({ initialInstances, onAction }: Props) {
       <Login
         onSuccess={() => {
           setAuth("yes");
-          void Promise.allSettled([loadInstances(), loadHealth()]);
+          void Promise.allSettled([
+            loadInstances(),
+            loadPackages(),
+            loadHealth(),
+          ]);
         }}
       />
     );
@@ -266,6 +279,7 @@ export function App({ initialInstances, onAction }: Props) {
         {page === "overview" && (
           <Overview
             instances={instances}
+            packages={packages}
             running={running}
             setPending={setPending}
             action={action}
@@ -273,10 +287,19 @@ export function App({ initialInstances, onAction }: Props) {
             setPlayers={setPlayersTarget}
             queue={queue}
             reload={loadInstances}
+            acceptJob={(next) => {
+              setJob(next);
+              pollJob(next.ID);
+            }}
           />
         )}{" "}
         {page === "content" && (
-          <ContentPage instances={instances} queue={queue} />
+          <ContentPage
+            instances={instances}
+            packages={packages}
+            reloadPackages={loadPackages}
+            queue={queue}
+          />
         )}
         {page === "jobs" && <JobsPage />}
         {page === "schedules" && <SchedulesPage instances={instances} />}{" "}
@@ -366,6 +389,7 @@ function Nav({
 }
 function Overview({
   instances,
+  packages,
   running,
   setPending,
   action,
@@ -373,18 +397,42 @@ function Overview({
   setPlayers,
   queue,
   reload,
+  acceptJob,
 }: {
   instances: Instance[];
+  packages: PackageVersion[];
   running: number;
   setPending: (v: Instance) => void;
   action: (id: string, a: string) => void;
   setTerminal: (v: Instance) => void;
   setPlayers: (v: Instance) => void;
   queue: (path: string, body: any) => Promise<void>;
-  reload: () => void;
+  reload: () => Promise<void>;
+  acceptJob: (job: Job) => void;
 }) {
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<Instance | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const packagesByID = new globalThis.Map(
+    packages.map((item) => [item.id, item]),
+  );
+  const saveConfig = async (
+    values: InstanceConfigValues,
+    instance?: Instance,
+  ) => {
+    const result = await api<any>(
+      instance ? `/api/instances/${instance.id}` : "/api/instances",
+      {
+        method: instance ? "PUT" : "POST",
+        body: JSON.stringify(values),
+      },
+    );
+    if (result?.Status && result?.ID) {
+      acceptJob(result as Job);
+      return;
+    }
+    await reload();
+  };
   return (
     <>
       <section className="metrics">
@@ -425,114 +473,144 @@ function Overview({
           </button>
         </div>
         <div className="grid">
-          {instances.map((x) => (
-            <article className={`card ${x.actual_state}`} key={x.id}>
-              <div className="card-top">
-                <span className="status">
-                  <i></i>
-                  {stateLabel(x.actual_state)}
-                </span>
-                <button className="icon-btn">
-                  <ChevronRight />
-                </button>
-              </div>
-              <h3>{x.name}</h3>
-              <p className="endpoint">
-                LOCAL-01 : {x.game_port}
-                {x.sourcetv_port ? ` · TV ${x.sourcetv_port}` : ""}
-                {x.plugin_ports.length
-                  ? ` · 插件 ${x.plugin_ports.join(", ")}`
-                  : ""}
-              </p>
-              <div className="map">
-                <Map />
-                <span>
-                  <small>启动地图</small>
-                  <b>{x.start_map}</b>
-                </span>
-                <em>{x.game_mode.toUpperCase()}</em>
-              </div>
-              <div className="stats">
-                <span>
-                  <small>玩家</small>
-                  <b>
-                    {x.players} / {x.max_players}
-                  </b>
-                </span>
-                <span>
-                  <small>CPU</small>
-                  <b>{x.cpu.toFixed(1)}%</b>
-                </span>
-                <span>
-                  <small>内存</small>
-                  <b>{x.memory.toFixed(2)} GB</b>
-                </span>
-              </div>
-              <div className="bar">
-                <i
-                  style={{
-                    width: x.actual_state === "running" ? "100%" : "2%",
-                  }}
-                />
-              </div>
-              <div className="actions">
-                {x.actual_state === "running" ? (
+          {instances.map((x) => {
+            const selectedPackage = packagesByID.get(x.package_id);
+            const packagePending =
+              Boolean(x.package_id) && x.package_id !== x.applied_package_id;
+            return (
+              <article className={`card ${x.actual_state}`} key={x.id}>
+                <div className="card-top">
+                  <span className="status">
+                    <i></i>
+                    {stateLabel(x.actual_state)}
+                  </span>
                   <button
-                    aria-label={`停止 ${x.name}`}
-                    onClick={() => setPending(x)}
+                    className="icon-btn"
+                    aria-label={`配置 ${x.name}`}
+                    title="实例配置"
+                    onClick={() => setEditing(x)}
                   >
-                    <CircleStop />
-                    停止
+                    <SlidersHorizontal />
                   </button>
-                ) : (
-                  <button onClick={() => action(x.id, "start")}>
-                    <Play />
-                    启动
+                </div>
+                <h3>{x.name}</h3>
+                <p className="endpoint">
+                  LOCAL-01 : {x.game_port}
+                  {x.sourcetv_port ? ` · TV ${x.sourcetv_port}` : ""}
+                  {x.plugin_ports.length
+                    ? ` · 插件 ${x.plugin_ports.join(", ")}`
+                    : ""}
+                </p>
+                <div className="package-line">
+                  <span>
+                    <small>插件包</small>
+                    <b>
+                      {selectedPackage
+                        ? `${selectedPackage.filename} · ${selectedPackage.version}`
+                        : "未选择"}
+                    </b>
+                  </span>
+                  {packagePending ? <em>待应用</em> : null}
+                </div>
+                <div className="map">
+                  <Map />
+                  <span>
+                    <small>启动地图</small>
+                    <b>{x.start_map}</b>
+                  </span>
+                  <em>{x.game_mode.toUpperCase()}</em>
+                </div>
+                <div className="stats">
+                  <span>
+                    <small>玩家</small>
+                    <b>
+                      {x.players} / {x.max_players}
+                    </b>
+                  </span>
+                  <span>
+                    <small>CPU</small>
+                    <b>{x.cpu.toFixed(1)}%</b>
+                  </span>
+                  <span>
+                    <small>内存</small>
+                    <b>{x.memory.toFixed(2)} GB</b>
+                  </span>
+                </div>
+                <div className="bar">
+                  <i
+                    style={{
+                      width: x.actual_state === "running" ? "100%" : "2%",
+                    }}
+                  />
+                </div>
+                <div className="actions">
+                  {x.actual_state === "running" ? (
+                    <button
+                      aria-label={`停止 ${x.name}`}
+                      onClick={() => setPending(x)}
+                    >
+                      <CircleStop />
+                      停止
+                    </button>
+                  ) : (
+                    <button onClick={() => action(x.id, "start")}>
+                      <Play />
+                      启动
+                    </button>
+                  )}
+                  <button onClick={() => setTerminal(x)}>
+                    <TerminalSquare />
+                    控制台
                   </button>
-                )}
-                <button onClick={() => setTerminal(x)}>
-                  <TerminalSquare />
-                  控制台
-                </button>
-                <button onClick={() => setPlayers(x)}>
-                  <Users />
-                  玩家
-                </button>
-                <button
-                  onClick={() =>
-                    setConfirmation({
-                      title: `更新游戏 ${x.name}？`,
-                      description:
-                        "游戏更新会停止 SRCDS，完成校验与内容重放后再启动服务器。",
-                      confirmLabel: "确认更新游戏",
-                      confirm: () => {
-                        void queue(`/api/instances/${x.id}/game-update`, {
-                          confirm: true,
-                        });
-                      },
-                    })
-                  }
-                >
-                  <RefreshCw />
-                  更新
-                </button>
-              </div>
-            </article>
-          ))}
+                  <button onClick={() => setPlayers(x)}>
+                    <Users />
+                    玩家
+                  </button>
+                  <button
+                    onClick={() =>
+                      setConfirmation({
+                        title: `更新游戏 ${x.name}？`,
+                        description:
+                          "游戏更新会停止 SRCDS，完成校验与内容重放后再启动服务器。",
+                        confirmLabel: "确认更新游戏",
+                        confirm: () => {
+                          void queue(`/api/instances/${x.id}/game-update`, {
+                            confirm: true,
+                          });
+                        },
+                      })
+                    }
+                  >
+                    <RefreshCw />
+                    更新
+                  </button>
+                </div>
+              </article>
+            );
+          })}
         </div>
         {instances.length === 0 && (
           <div className="empty">尚无实例。创建第一个 Host 网络服务器。</div>
         )}
       </section>
       {creating && (
-        <CreateInstance
-          close={() => setCreating(false)}
-          done={() => {
-            setCreating(false);
-            reload();
-          }}
+        <InstanceConfigModal
+          mode="create"
+          packages={packages}
+          onClose={() => setCreating(false)}
+          onSubmit={(values) => saveConfig(values)}
         />
       )}
+      {editing ? (
+        <InstanceConfigModal
+          key={editing.id}
+          mode="edit"
+          instance={editing}
+          packages={packages}
+          onClose={() => setEditing(null)}
+          onSubmit={(values) => saveConfig(values, editing)}
+        />
+      ) : null}
       {confirmation && (
         <ConfirmationDialog
           {...confirmation}
@@ -544,98 +622,6 @@ function Overview({
         />
       )}
     </>
-  );
-}
-function CreateInstance({
-  close,
-  done,
-}: {
-  close: () => void;
-  done: () => void;
-}) {
-  const submit = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const data = new FormData(e.currentTarget);
-    const pluginPorts = String(data.get("plugin_ports") || "")
-      .split(",")
-      .map((value) => value.trim())
-      .filter(Boolean)
-      .map(Number);
-    await api("/api/instances", {
-      method: "POST",
-      body: JSON.stringify({
-        name: data.get("name"),
-        game_port: Number(data.get("port")),
-        sourcetv_port: Number(data.get("sourcetv_port")),
-        plugin_ports: pluginPorts,
-        start_map: data.get("map"),
-        game_mode: data.get("mode"),
-        tickrate: 100,
-        max_players: Number(data.get("players")),
-      }),
-    });
-    done();
-  };
-  return (
-    <div className="modal-wrap">
-      <form className="modal form" onSubmit={submit}>
-        <p className="eyebrow">NEW INSTANCE</p>
-        <h2>创建游戏实例</h2>
-        <label>
-          名称
-          <input name="name" required />
-        </label>
-        <label>
-          游戏端口
-          <input
-            name="port"
-            type="number"
-            min="1024"
-            max="65535"
-            defaultValue="27015"
-          />
-        </label>
-        <label>
-          SourceTV 端口
-          <input
-            name="sourcetv_port"
-            type="number"
-            min="0"
-            max="65535"
-            defaultValue="0"
-          />
-        </label>
-        <label>
-          插件端口
-          <input
-            name="plugin_ports"
-            inputMode="numeric"
-            placeholder="27021, 27022"
-          />
-        </label>
-        <label>
-          启动地图
-          <input name="map" defaultValue="c2m1_highway" />
-        </label>
-        <label>
-          模式
-          <select name="mode">
-            <option value="coop">合作</option>
-            <option value="realism">写实</option>
-          </select>
-        </label>
-        <label>
-          最大玩家
-          <input name="players" type="number" defaultValue="8" />
-        </label>
-        <div>
-          <button type="button" onClick={close}>
-            取消
-          </button>
-          <button className="create">创建</button>
-        </div>
-      </form>
-    </div>
   );
 }
 function Terminal({
@@ -781,13 +767,16 @@ const VPK_CHUNK_SIZE = 8 * 1024 * 1024;
 
 function ContentPage({
   instances,
+  packages,
+  reloadPackages,
   queue,
 }: {
   instances: Instance[];
+  packages: PackageVersion[];
+  reloadPackages: () => Promise<void>;
   queue: (path: string, body: any) => Promise<void>;
 }) {
   const [vpks, setVpks] = useState<any[]>([]);
-  const [packages, setPackages] = useState<any[]>([]);
   const [selected, setSelected] = useState(instances[0]?.id || "");
   const [privateFiles, setPrivateFiles] = useState<PrivateFileEntry[]>([]);
   const [privateHistory, setPrivateHistory] = useState<PrivateFileEntry[]>([]);
@@ -797,13 +786,11 @@ function ContentPage({
   const [contentError, setContentError] = useState("");
   const [vpkUploadStatus, setVPKUploadStatus] = useState("");
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
-  const load = () =>
-    Promise.all([
-      api<any[]>("/api/content/vpk").then(setVpks),
-      api<any[]>("/api/packages").then(setPackages),
-    ]);
+  const loadVPK = () => api<any[]>("/api/content/vpk").then(setVpks);
   useEffect(() => {
-    load().catch((reason) => setContentError(errorMessage(reason)));
+    Promise.all([loadVPK(), reloadPackages()]).catch((reason) =>
+      setContentError(errorMessage(reason)),
+    );
   }, []);
   useEffect(() => {
     let active = true;
@@ -865,7 +852,7 @@ function ContentPage({
       method: "POST",
       body: "{}",
     });
-    await load();
+    await loadVPK();
     setVPKUploadStatus("VPK 上传完成 · 100%");
   };
   const uploadPackage = async (file: File) => {
@@ -877,7 +864,7 @@ function ContentPage({
         body: file,
       },
     );
-    await load();
+    await Promise.all([loadVPK(), reloadPackages()]);
   };
   const renameVPK = async (name: string) => {
     const next = window.prompt("新的 VPK 文件名", name);
@@ -892,7 +879,7 @@ function ContentPage({
       method: "POST",
       body: JSON.stringify({ name: next, confirm: true }),
     });
-    await load();
+    await loadVPK();
   };
   const deleteVPK = async (name: string) => {
     if (!window.confirm(`删除 ${name}？运行中的实例可能仍缓存该内容。`)) {
@@ -901,7 +888,7 @@ function ContentPage({
     await api(`/api/content/vpk/${encodeURIComponent(name)}?confirm=true`, {
       method: "DELETE",
     });
-    await load();
+    await loadVPK();
   };
   const editPrivate = async (path: string) => {
     if (!selected) return;

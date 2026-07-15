@@ -298,6 +298,16 @@ header > div > p:last-child {
   border: 0;
   background: none;
   color: #71807a;
+  width: 34px;
+  height: 34px;
+  padding: 7px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 34px;
+}
+.icon-btn svg {
+  width: 18px;
+  height: 18px;
 }
 .card h3 {
   font-size: 25px;
@@ -307,6 +317,33 @@ header > div > p:last-child {
   font: 500 10px monospace;
   color: #69736f;
   margin-top: 2px;
+}
+.package-line {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+.package-line span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.package-line small {
+  color: var(--muted);
+  font-size: 9px;
+}
+.package-line b {
+  overflow-wrap: anywhere;
+  font: 600 11px monospace;
+}
+.package-line em {
+  flex: 0 0 auto;
+  color: var(--amber);
+  border: 1px solid #5b4725;
+  padding: 4px 6px;
+  font: 700 9px "Barlow Condensed";
 }
 .map {
   display: flex;
@@ -451,6 +488,110 @@ header > div > p:last-child {
   border-color: var(--red);
   color: #110605;
   font-weight: 700;
+}
+.instance-config-wrap {
+  z-index: 7;
+}
+.instance-config-modal {
+  width: min(820px, calc(100vw - 32px));
+  max-width: none;
+  max-height: calc(100vh - 32px);
+  padding: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  border-color: #3e4944;
+  overflow: hidden;
+}
+.instance-config-modal > .instance-config-head,
+.instance-config-modal > .instance-config-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.instance-config-head {
+  padding: 20px 22px;
+  border-bottom: 1px solid var(--line);
+  background: #111614;
+}
+.instance-config-head h2 {
+  font-size: 25px;
+}
+.instance-config-body {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 22px 22px;
+}
+.instance-config-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 16px;
+}
+.instance-config-fields label {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.instance-config-fields input,
+.instance-config-fields select,
+.instance-config-fields textarea {
+  width: 100%;
+  min-width: 0;
+  background: #090c0b;
+  color: #eef3ef;
+  border: 1px solid #36413d;
+  padding: 11px;
+}
+.instance-extra-args {
+  grid-column: 1 / -1;
+}
+.instance-extra-args textarea {
+  resize: vertical;
+  min-height: 76px;
+  font: 500 12px/1.6 monospace;
+}
+.command-section {
+  margin-top: 18px;
+  border: 1px solid #35403b;
+  background: #080b0a;
+}
+.command-section > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 11px;
+  color: var(--acid);
+  border-bottom: 1px solid #27312d;
+  font: 700 9px monospace;
+}
+.command-section svg {
+  width: 15px;
+  height: 15px;
+}
+.command-preview {
+  margin: 0;
+}
+.command-section pre {
+  min-height: 76px;
+  margin: 0;
+  padding: 13px;
+  color: #d7e1db;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 500 11px/1.7 monospace;
+}
+.instance-config-modal > .form-error {
+  margin: 0 22px;
+}
+.instance-config-actions {
+  padding: 15px 22px 18px;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  background: #111614;
+}
+.instance-config-actions button {
+  min-width: 112px;
 }
 @media (max-width: 900px) {
   .shell {
@@ -929,6 +1070,16 @@ textarea:focus-visible {
   .job-stage,
   .job-progress {
     grid-column: 1 / -1;
+  }
+  .instance-config-modal {
+    width: calc(100vw - 20px);
+    max-height: calc(100vh - 84px);
+  }
+  .instance-config-fields {
+    grid-template-columns: 1fr;
+  }
+  .instance-extra-args {
+    grid-column: 1;
   }
 }
 @media (max-width: 600px) {

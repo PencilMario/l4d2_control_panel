@@ -42,7 +42,12 @@ export const normalizeInstance = (value: any) => ({
   plugin_ports: value.plugin_ports ?? value.PluginPorts ?? [],
   start_map: value.start_map ?? value.StartMap,
   game_mode: value.game_mode ?? value.GameMode,
+  tickrate: value.tickrate ?? value.Tickrate ?? 100,
   max_players: value.max_players ?? value.MaxPlayers,
+  extra_args: value.extra_args ?? value.ExtraArgs ?? "",
+  package_id: value.package_id ?? value.SelectedPackageID ?? "",
+  applied_package_id:
+    value.applied_package_id ?? value.PackageVersion ?? "",
   players: value.players ?? 0,
   cpu: value.cpu ?? 0,
   memory: value.memory ?? 0,

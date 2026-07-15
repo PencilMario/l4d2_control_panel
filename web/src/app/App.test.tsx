@@ -11,7 +11,11 @@ const instance: Instance = {
   plugin_ports: [27021],
   start_map: "c2m1_highway",
   game_mode: "coop",
+  tickrate: 100,
   max_players: 8,
+  extra_args: `-strictportbind`,
+  package_id: "package-a",
+  applied_package_id: "package-a",
   players: 4,
   cpu: 31,
   memory: 2.4,
@@ -22,11 +26,48 @@ afterEach(() => {
 });
 describe("App", () => {
   it("shows operational instance data", () => {
-    render(<App initialInstances={[instance]} />);
+    render(
+      <App
+        initialInstances={[instance]}
+        initialPackages={[
+          {
+            id: "package-a",
+            filename: "coop-a.zip",
+            version: "v1",
+            size: 1024,
+            hot_compatible: true,
+          },
+        ]}
+      />,
+    );
     expect(screen.getByText("深夜战役")).toBeInTheDocument();
     expect(screen.getByText("4 / 8")).toBeInTheDocument();
     expect(screen.getByText("c2m1_highway")).toBeInTheDocument();
     expect(screen.getByText(/TV 27020.*插件 27021/)).toBeInTheDocument();
+    expect(screen.getByText(/coop-a\.zip.*v1/)).toBeInTheDocument();
+  });
+  it("opens the existing instance configuration from its card", async () => {
+    render(
+      <App
+        initialInstances={[instance]}
+        initialPackages={[
+          {
+            id: "package-a",
+            filename: "coop-a.zip",
+            version: "v1",
+            size: 1024,
+            hot_compatible: true,
+          },
+        ]}
+      />,
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "配置 深夜战役" }),
+    );
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByLabelText("额外 SRCDS 启动项")).toHaveValue(
+      "-strictportbind",
+    );
   });
   it("requires confirmation before stopping", async () => {
     const onAction = vi.fn();
@@ -53,7 +94,20 @@ describe("App", () => {
         });
       }),
     );
-    render(<App initialInstances={[]} />);
+    render(
+      <App
+        initialInstances={[]}
+        initialPackages={[
+          {
+            id: "package-a",
+            filename: "coop-a.zip",
+            version: "v1",
+            size: 1024,
+            hot_compatible: true,
+          },
+        ]}
+      />,
+    );
     await userEvent.click(screen.getByRole("button", { name: "创建实例" }));
     await userEvent.type(screen.getByLabelText("名称"), "端口测试");
     await userEvent.clear(screen.getByLabelText("SourceTV 端口"));
@@ -63,6 +117,7 @@ describe("App", () => {
     expect(submitted).toMatchObject({
       sourcetv_port: 27020,
       plugin_ports: [27021, 27022],
+      package_id: "package-a",
     });
   });
   it("logs in and loads real instances", async () => {

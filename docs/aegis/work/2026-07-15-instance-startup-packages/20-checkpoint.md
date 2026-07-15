@@ -4,9 +4,9 @@ Updated: 2026-07-15
 
 ## Current Todo
 
-- Active: Task 6, build the shared React configuration modal and preview.
-- Next: Task 7, update the real-browser journey and operational checks.
-- Later: provisioning, package intent preservation, HTTP reconfiguration, React UI, E2E, completion audit.
+- Active: Task 7, update the real-browser journey and operational checks.
+- Next: Task 8, review the complete branch and run the completion audit.
+- Later: final evidence and branch completion.
 
 ## Completed
 
@@ -19,6 +19,7 @@ Updated: 2026-07-15
 - Task 3 completed: maintenance installation and package deployment finish before the first game container is created.
 - Task 4 completed: package updates preserve stopped/running intent and Coordinator owns applied-state writes.
 - Task 5 completed: strict create/update validation and one-Job reconfiguration are covered by HTTP integration tests.
+- Task 6 completed: create/edit share one controlled modal with package selection, editable managed startup values, extra arguments, live command preview and pending package status.
 
 ## Evidence Refs
 
@@ -33,9 +34,9 @@ Updated: 2026-07-15
 
 - Scope: unchanged.
 - Compatibility: route paths, strict decoding and persistent Job polling remain unchanged; name-only edits now avoid unnecessary downtime.
-- Retirement: unconditional installed-instance rebuild has been replaced by runtime/package diff planning.
+- Retirement: the create-only form and content-page-owned package list have been replaced by one shared configuration contract and App-owned package state.
 - Decision: continue.
 
 ## Next Step
 
-Load frontend-design and React performance guidance, then write failing shared-modal, preview, create/edit payload and Job-response tests.
+Update the Playwright journey to upload two packages before creation, verify preview and first-start application, then edit to the second package through one reconfiguration Job.
