@@ -28,15 +28,20 @@ type Service struct {
 	host      string
 }
 type OnlinePlayer struct {
-	UserID   int           `json:"user_id"`
-	Name     string        `json:"name"`
-	Score    int32         `json:"score"`
-	Duration time.Duration `json:"duration"`
+	UserID    int           `json:"user_id"`
+	Name      string        `json:"name"`
+	UniqueID  string        `json:"unique_id"`
+	Connected string        `json:"connected"`
+	Ping      int           `json:"ping"`
+	Loss      int           `json:"loss"`
+	Score     *int32        `json:"score"`
+	Duration  time.Duration `json:"duration"`
 }
 type Snapshot struct {
 	Map        string         `json:"map"`
 	Players    []OnlinePlayer `json:"players"`
 	MaxPlayers int            `json:"max_players"`
+	Match      MatchInfo      `json:"match"`
 }
 type Summary struct {
 	Map        string `json:"map"`
@@ -83,19 +88,45 @@ func (s *Service) Online(ctx context.Context, id string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	byName := map[string][]int{}
-	for _, entry := range ParseStatus(statusRaw) {
-		byName[entry.Name] = append(byName[entry.Name], entry.UserID)
+	status := ParseStatusSnapshot(statusRaw)
+	if status.Match.Map == "" {
+		status.Match.Map = info.Map
 	}
-	result := make([]OnlinePlayer, 0, len(queried))
-	for _, player := range queried {
-		userID := 0
-		if ids := byName[player.Name]; len(ids) == 1 {
-			userID = ids[0]
+	if status.Match.MaxPlayers == 0 {
+		status.Match.MaxPlayers = info.MaxPlayers
+	}
+	queryByName := map[string][]int{}
+	for index, player := range queried {
+		queryByName[player.Name] = append(queryByName[player.Name], index)
+	}
+	statusNameCount := map[string]int{}
+	for _, player := range status.Players {
+		statusNameCount[player.Name]++
+	}
+	represented := make([]bool, len(queried))
+	result := make([]OnlinePlayer, 0, len(status.Players)+len(queried))
+	for _, player := range status.Players {
+		value := OnlinePlayer{UserID: player.UserID, Name: player.Name, UniqueID: player.SteamID, Connected: player.Connected, Ping: player.Ping, Loss: player.Loss}
+		indices := queryByName[player.Name]
+		for _, index := range indices {
+			represented[index] = true
 		}
-		result = append(result, OnlinePlayer{UserID: userID, Name: player.Name, Score: player.Score, Duration: time.Duration(float64(time.Second) * float64(player.Duration))})
+		if statusNameCount[player.Name] == 1 && len(indices) == 1 {
+			queriedPlayer := queried[indices[0]]
+			score := queriedPlayer.Score
+			value.Score = &score
+			value.Duration = time.Duration(float64(time.Second) * float64(queriedPlayer.Duration))
+		}
+		result = append(result, value)
 	}
-	return Snapshot{Map: info.Map, Players: result, MaxPlayers: info.MaxPlayers}, nil
+	for index, player := range queried {
+		if represented[index] {
+			continue
+		}
+		score := player.Score
+		result = append(result, OnlinePlayer{Name: player.Name, Score: &score, Duration: time.Duration(float64(time.Second) * float64(player.Duration))})
+	}
+	return Snapshot{Map: status.Match.Map, Players: result, MaxPlayers: status.Match.MaxPlayers, Match: status.Match}, nil
 }
 func (s *Service) Kick(ctx context.Context, id string, userID int) error {
 	instance, err := s.instances.Instance(ctx, id)

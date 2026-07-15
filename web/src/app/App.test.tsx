@@ -719,7 +719,7 @@ describe("App", () => {
         calls.push([input, init]);
         if (String(input).endsWith("/players") && !init?.method) {
           return new Response(
-            '{"players":[{"name":"Ellis","user_id":7,"score":2}]}',
+            '{"map":"c2m1_highway","max_players":12,"match":{"hostname":"6","version":"2.2.4.3 10097","secure":true,"os":"Linux Dedicated","map":"c2m1_highway","private_address":"127.0.1.1:27991","public_address":"221.215.78.153:27991","humans":1,"max_players":12},"players":[{"name":"Ellis","user_id":7,"unique_id":"STEAM_1:0:42","connected":"00:48","ping":29,"loss":0,"score":2}]}',
             { status: 200, headers: { "Content-Type": "application/json" } },
           );
         }
@@ -731,13 +731,21 @@ describe("App", () => {
     );
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "玩家" }));
+    const playerDialog = await screen.findByRole("dialog", { name: "深夜战役" });
+    expect(within(playerDialog).getByText("c2m1_highway")).toBeVisible();
+    expect(within(playerDialog).getByText("1 / 12")).toBeVisible();
+    expect(within(playerDialog).getByText("2.2.4.3 10097 · 安全")).toBeVisible();
+    expect(within(playerDialog).getByText("STEAM_1:0:42")).toBeVisible();
+    expect(within(playerDialog).getByText("00:48")).toBeVisible();
+    expect(within(playerDialog).getByText("29 ms")).toBeVisible();
+    expect(within(playerDialog).getByText("0%")).toBeVisible();
     await userEvent.click(await screen.findByRole("button", { name: "踢出" }));
     expect(calls.some(([, init]) => init?.method === "POST")).toBe(false);
     await userEvent.click(screen.getByRole("button", { name: "确认踢出" }));
     expect(calls.some(([, init]) => init?.method === "POST")).toBe(true);
 
     await userEvent.click(screen.getByRole("button", { name: "永久封禁" }));
-    expect(screen.getByRole("dialog")).toHaveTextContent("永久封禁 Ellis");
+    expect(screen.getByRole("dialog", { name: "永久封禁 Ellis？" })).toHaveTextContent("永久封禁 Ellis");
     await userEvent.click(screen.getByRole("button", { name: "确认永久封禁" }));
     expect(
       calls.some(([, init]) =>
