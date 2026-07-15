@@ -1,6 +1,6 @@
 # Atomic task status
 
-- [ ] Task 1: Expand canonical Docker runtime metrics.
+- [x] Task 1: Expand canonical Docker runtime metrics.
 - [ ] Task 2: Add declared-port traffic accounting to the restricted proxy.
 - [ ] Task 3: Move proxy transport to a shared Unix Socket.
 - [ ] Task 4: Build the five-second observation sampler and ring buffer.

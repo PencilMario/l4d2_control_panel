@@ -3,21 +3,21 @@
 - Updated: 2026-07-15
 - Worktree: `.worktrees/instance-performance-history`
 - Branch: `feature/instance-performance-history`
-- Current todo: Task 1 of 7, expand canonical Docker runtime metrics.
-- Active slice: add tested Docker runtime start time, memory limit, block I/O and PID metrics.
-- Completed todos: approved design, implementation plan, isolated worktree setup and clean baseline verification.
-- Evidence refs: `go test -count=1 ./...` passed; `npm test -- --run` passed 2 files and 27 tests in the isolated worktree.
+- Current todo: Task 2 of 7, add declared-port traffic accounting to the restricted proxy.
+- Active slice: implement payload-free port attribution, session counters, internal Unix-Socket HTTP client and Linux/non-Linux capture boundaries.
+- Completed todos: approved design, implementation plan, isolated worktree setup, clean baseline verification and Task 1 Docker runtime metrics with both reviews approved.
+- Evidence refs: Task 1 commit `51dd19c`; focused Docker RED/GREEN; `go test -count=1 ./internal/docker`; `go test -count=1 -tags e2e ./cmd/e2e-fixture`; spec and quality reviews approved.
 - Blocked on: nothing.
-- Explicit non-edits: no proxy transport, packet capture, sampler, HTTP or React changes during Task 1.
-- Next step: dispatch Task 1 implementer, then run spec and quality reviews.
+- Explicit non-edits: no Compose transport migration, Panel sampler, public HTTP or React changes during Task 2.
+- Next step: dispatch Task 2 implementer, then run spec and quality reviews.
 
 ## ResumeStateHint
 
-Read `00-intent.md`, `10-baseline-readset.md`, `20-checkpoint.md`, `30-plan.md` and current git status. Continue only in the named worktree and branch. Do not start a later task until Task 1 has passed both review stages.
+Read `00-intent.md`, `10-baseline-readset.md`, `20-checkpoint.md`, `30-plan.md` and current git status. Continue only in the named worktree and branch. Do not start a later task until Task 2 has passed both review stages.
 
 ## DriftCheckDraft
 
 - Scope: aligned with the approved performance-history feature.
-- Compatibility: baseline is clean; no implementation changes exist yet.
-- Retirement: Boolean-only Docker runtime probe retires only after all callers move to the richer runtime state.
+- Compatibility: Task 1 is additive; `Engine.Running` still delegates to `Runtime` for existing callers.
+- Retirement: Docker `networks` is not introduced as a fallback; Task 2 establishes the declared-port owner only.
 - Decision: continue.
