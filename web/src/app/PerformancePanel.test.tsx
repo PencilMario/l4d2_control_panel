@@ -9,6 +9,7 @@ import {
   formatDuration,
   formatLatency,
   formatPercent,
+  performancePanelPropsEqual,
   type PerformanceSnapshot,
   type PerformanceHistoryPoint,
 } from "./PerformancePanel";
@@ -62,6 +63,25 @@ describe("performance formatters", () => {
 });
 
 describe("PerformancePanel", () => {
+  it("memoizes by history reference, loading and snapshot scalars", () => {
+    const historyReference = history;
+    expect(performancePanelPropsEqual(
+      { snapshot, history: historyReference, loading: false },
+      { snapshot: { ...snapshot }, history: historyReference, loading: false },
+    )).toBe(true);
+    expect(performancePanelPropsEqual(
+      { snapshot, history: historyReference, loading: false },
+      { snapshot: { ...snapshot, a2s_latency_ms: 1 }, history: historyReference, loading: false },
+    )).toBe(false);
+    expect(performancePanelPropsEqual(
+      { snapshot, history: historyReference, loading: false },
+      { snapshot: { ...snapshot }, history: [...historyReference], loading: false },
+    )).toBe(false);
+    expect(performancePanelPropsEqual(
+      { snapshot, history: historyReference, loading: false },
+      { snapshot: { ...snapshot }, history: historyReference, loading: true },
+    )).toBe(false);
+  });
   it("renders current metrics and switches chart modes", async () => {
     render(<PerformancePanel snapshot={snapshot} history={history} />);
     expect(screen.getAllByText("CPU")).toHaveLength(3);

@@ -118,6 +118,13 @@ type GitHubSource = {
 
 const errorMessage = (reason: unknown) =>
   reason instanceof Error ? reason.message : String(reason);
+const EMPTY_PERFORMANCE_HISTORY: PerformanceHistoryPoint[] = [];
+
+type HistoryBootstrap = {
+  token: number;
+  controller: AbortController;
+  promise: Promise<PerformanceHistoryPoint[]>;
+};
 
 export function mergePerformanceHistory(
   existing: PerformanceHistoryPoint[],
@@ -193,11 +200,12 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
   const [performanceHistory, setPerformanceHistory] = useState<
     Record<string, PerformanceHistoryPoint[]>
   >({});
-  const [historyLoading, setHistoryLoading] = useState<Record<string, boolean>>(
-    {},
-  );
   const historyLoaded = useRef(new Set<string>());
-  const historyInFlight = useRef(new globalThis.Map<string, number>());
+  const historyInFlight = useRef(
+    new globalThis.Map<string, HistoryBootstrap>(),
+  );
+  const historyToken = useRef(0);
+  const liveInstanceIDs = useRef(new Set<string>());
   const loadGeneration = useRef(0);
   const mountedRef = useRef(true);
   const [pending, setPending] = useState<Instance | null>(null);
@@ -219,52 +227,58 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
     const base = (await api<any[]>("/api/instances")).map(normalizeInstance);
     if (!isCurrent()) return;
     const liveIDs = new Set(base.map((instance) => instance.id));
+    liveInstanceIDs.current = liveIDs;
     for (const id of historyLoaded.current) {
       if (!liveIDs.has(id)) historyLoaded.current.delete(id);
     }
-    for (const id of historyInFlight.current.keys()) {
-      if (!liveIDs.has(id)) historyInFlight.current.delete(id);
+    for (const [id, bootstrap] of historyInFlight.current) {
+      if (!liveIDs.has(id)) {
+        bootstrap.controller.abort();
+        historyInFlight.current.delete(id);
+      }
     }
-    const historyRequests = base
-      .filter((instance) => !historyLoaded.current.has(instance.id))
-      .map(async (instance) => {
-        if (!isCurrent()) return;
-        historyInFlight.current.set(instance.id, generation);
-        const ownsRequest = () =>
-          isCurrent() &&
-          historyInFlight.current.get(instance.id) === generation;
-        setHistoryLoading((current) =>
-          ownsRequest() ? { ...current, [instance.id]: true } : current,
-        );
-        try {
-          const history = await api<PerformanceHistoryPoint[]>(
-            `/api/instances/${instance.id}/performance-history`,
-          );
-          if (!ownsRequest()) return;
-          setPerformanceHistory((current) =>
-            isCurrent()
-              ? {
-                  ...current,
-                  [instance.id]: mergePerformanceHistory(
-                    current[instance.id] || [],
-                    Array.isArray(history) ? history : [],
-                  ),
-                }
-              : current,
-          );
+    for (const instance of base) {
+      if (
+        historyLoaded.current.has(instance.id) ||
+        historyInFlight.current.has(instance.id)
+      ) {
+        continue;
+      }
+      const token = ++historyToken.current;
+      const controller = new AbortController();
+      const promise = api<PerformanceHistoryPoint[]>(
+        `/api/instances/${instance.id}/performance-history`,
+        { signal: controller.signal },
+      );
+      const bootstrap = { token, controller, promise };
+      historyInFlight.current.set(instance.id, bootstrap);
+      void promise
+        .then((history) => {
+          const owner = historyInFlight.current.get(instance.id);
+          if (
+            !mountedRef.current ||
+            owner?.token !== token ||
+            !liveInstanceIDs.current.has(instance.id)
+          ) {
+            return;
+          }
+          historyInFlight.current.delete(instance.id);
           historyLoaded.current.add(instance.id);
-          historyInFlight.current.delete(instance.id);
-          setHistoryLoading((current) =>
-            isCurrent() ? { ...current, [instance.id]: false } : current,
-          );
-        } catch {
-          if (!ownsRequest()) return;
-          historyInFlight.current.delete(instance.id);
-          setHistoryLoading((current) =>
-            isCurrent() ? { ...current, [instance.id]: false } : current,
-          );
-        }
-      });
+          setPerformanceHistory((current) => ({
+            ...current,
+            [instance.id]: mergePerformanceHistory(
+              current[instance.id] || EMPTY_PERFORMANCE_HISTORY,
+              Array.isArray(history) ? history : EMPTY_PERFORMANCE_HISTORY,
+            ),
+          }));
+        })
+        .catch(() => {
+          const owner = historyInFlight.current.get(instance.id);
+          if (mountedRef.current && owner?.token === token) {
+            historyInFlight.current.delete(instance.id);
+          }
+        });
+    }
     const enrichedPromise = Promise.all(
       base.map(async (instance): Promise<Instance> => {
         try {
@@ -331,10 +345,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
         }
       }),
     );
-    const [enriched] = await Promise.all([
-      enrichedPromise,
-      Promise.allSettled(historyRequests),
-    ]);
+    const enriched = await enrichedPromise;
     if (!isCurrent()) return;
     setPerformanceHistory((current) => {
       if (!isCurrent()) return current;
@@ -343,14 +354,6 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
         if (!instance.sampled_at) continue;
         const point = historyPointFromOverview(instance);
         if (point) next[instance.id] = mergePerformanceHistory(next[instance.id] || [], [point]);
-      }
-      return next;
-    });
-    setHistoryLoading((current) => {
-      if (!isCurrent()) return current;
-      const next: Record<string, boolean> = {};
-      for (const [id, loading] of Object.entries(current)) {
-        if (liveIDs.has(id)) next[id] = loading;
       }
       return next;
     });
@@ -378,7 +381,11 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
       mountedRef.current = false;
       loadGeneration.current += 1;
       historyLoaded.current.clear();
+      for (const bootstrap of historyInFlight.current.values()) {
+        bootstrap.controller.abort();
+      }
       historyInFlight.current.clear();
+      liveInstanceIDs.current.clear();
     };
   }, []);
   useEffect(() => {
@@ -409,7 +416,11 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
       if (!mountedRef.current) return;
       loadGeneration.current += 1;
       historyLoaded.current.clear();
+      for (const bootstrap of historyInFlight.current.values()) {
+        bootstrap.controller.abort();
+      }
       historyInFlight.current.clear();
+      liveInstanceIDs.current.clear();
     };
   }, [auth, injected, loadInstances]);
   const queue = async (path: string, body: any) => {
@@ -570,7 +581,6 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
             packages={packages}
             running={running}
             performanceHistory={performanceHistory}
-            historyLoading={historyLoading}
             setPending={setPending}
             action={action}
             setTerminal={setTerminal}
@@ -682,7 +692,6 @@ function Overview({
   packages,
   running,
   performanceHistory,
-  historyLoading,
   setPending,
   action,
   setTerminal,
@@ -695,7 +704,6 @@ function Overview({
   packages: PackageVersion[];
   running: number;
   performanceHistory: Record<string, PerformanceHistoryPoint[]>;
-  historyLoading: Record<string, boolean>;
   setPending: (v: Instance) => void;
   action: (id: string, a: string) => void;
   setTerminal: (v: Instance) => void;
@@ -847,8 +855,7 @@ function Overview({
                     uptime_seconds: x.uptime_seconds ?? null,
                     a2s_latency_ms: x.a2s_latency_ms ?? null,
                   }}
-                  history={performanceHistory[x.id] || []}
-                  loading={historyLoading[x.id] || false}
+                  history={performanceHistory[x.id] || EMPTY_PERFORMANCE_HISTORY}
                 />
                 <div className="bar">
                   <i

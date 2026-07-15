@@ -41,6 +41,24 @@ export type PerformanceHistoryPoint = {
 
 type Mode = "CPU" | "内存" | "网络" | "磁盘";
 const MODES: Mode[] = ["CPU", "内存", "网络", "磁盘"];
+const SNAPSHOT_KEYS: ReadonlyArray<keyof PerformanceSnapshot> = [
+  "players",
+  "cpu_percent",
+  "memory_bytes",
+  "memory_limit_bytes",
+  "memory_percent",
+  "network_rx_bytes_per_sec",
+  "network_tx_bytes_per_sec",
+  "network_rx_bytes",
+  "network_tx_bytes",
+  "block_read_bytes_per_sec",
+  "block_write_bytes_per_sec",
+  "block_read_bytes",
+  "block_write_bytes",
+  "pids",
+  "uptime_seconds",
+  "a2s_latency_ms",
+];
 
 const trim = (value: number, digits = 1) =>
   value.toFixed(digits).replace(/\.0+$|(?<=\.[0-9]*[1-9])0+$/, "");
@@ -124,7 +142,23 @@ function Metric({ label, value, note }: { label: string; value: string; note?: s
   return <span className="performance-metric"><small>{label}</small><b>{value}</b>{note ? <em>{note}</em> : null}</span>;
 }
 
-export const PerformancePanel = memo(function PerformancePanel({ snapshot, history, initialMode = "CPU", loading = false }: { snapshot: PerformanceSnapshot; history: PerformanceHistoryPoint[]; initialMode?: Mode; loading?: boolean }) {
+export type PerformancePanelProps = { snapshot: PerformanceSnapshot; history: PerformanceHistoryPoint[]; initialMode?: Mode; loading?: boolean };
+
+export function performancePanelPropsEqual(
+  previous: PerformancePanelProps,
+  next: PerformancePanelProps,
+): boolean {
+  return (
+    previous.history === next.history &&
+    (previous.loading ?? false) === (next.loading ?? false) &&
+    (previous.initialMode ?? "CPU") === (next.initialMode ?? "CPU") &&
+    SNAPSHOT_KEYS.every(
+      (key) => previous.snapshot[key] === next.snapshot[key],
+    )
+  );
+}
+
+export const PerformancePanel = memo(function PerformancePanel({ snapshot, history, initialMode = "CPU", loading = false }: PerformancePanelProps) {
   const [mode, setMode] = useState<Mode>(initialMode);
   const data = useMemo<ChartPoint[]>(() => buildChartData(history), [history]);
   const series = useMemo(() => seriesFor(mode), [mode]);
@@ -162,4 +196,4 @@ export const PerformancePanel = memo(function PerformancePanel({ snapshot, histo
       </div>
     </section>
   );
-});
+}, performancePanelPropsEqual);
