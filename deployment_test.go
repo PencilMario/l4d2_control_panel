@@ -12,8 +12,18 @@ func TestControlServicesUseSharedUnixProxyAndPublishOnlyPanel(t *testing.T) {
 		t.Fatal(err)
 	}
 	compose := string(raw)
-	proxy := serviceBlock(t, compose, "socket-proxy")
-	panel := serviceBlock(t, compose, "panel")
+	services := serviceBlocks(t, compose)
+	proxy := services["socket-proxy"]
+	panel := services["panel"]
+	hostNetworkServices := make([]string, 0, 1)
+	for name, block := range services {
+		if strings.Contains(block, "network_mode: host") {
+			hostNetworkServices = append(hostNetworkServices, name)
+		}
+	}
+	if len(hostNetworkServices) != 1 || hostNetworkServices[0] != "socket-proxy" {
+		t.Fatalf("host networking services = %v, want [socket-proxy]", hostNetworkServices)
+	}
 
 	assertContains(t, proxy, "network_mode: host", "socket-proxy host networking")
 	assertContains(t, proxy, "cap_drop: [ALL]", "socket-proxy cap_drop")
@@ -53,25 +63,49 @@ func TestControlServicesUseSharedUnixProxyAndPublishOnlyPanel(t *testing.T) {
 	}
 }
 
-func serviceBlock(t *testing.T, compose, service string) string {
+func serviceBlocks(t *testing.T, compose string) map[string]string {
 	t.Helper()
-	marker := "  " + service + ":\n"
+	marker := "services:\n"
 	start := strings.Index(compose, marker)
 	if start < 0 {
-		t.Fatalf("service %q not found", service)
+		t.Fatal("services section not found")
 	}
-	block := compose[start+len(marker):]
-	lines := strings.Split(block, "\n")
-	for i, line := range lines {
+	services := make(map[string]string)
+	var name string
+	var block []string
+	flush := func() {
+		if name != "" {
+			services[name] = strings.Join(block, "\n")
+		}
+	}
+	for _, line := range strings.Split(compose[start+len(marker):], "\n") {
 		if line == "" {
+			if name != "" {
+				block = append(block, line)
+			}
 			continue
 		}
 		indent := len(line) - len(strings.TrimLeft(line, " "))
-		if indent <= 2 {
-			return strings.Join(lines[:i], "\n")
+		if indent == 0 {
+			break
+		}
+		if indent == 2 && strings.HasSuffix(line, ":") {
+			flush()
+			name = strings.TrimSuffix(strings.TrimSpace(line), ":")
+			block = nil
+			continue
+		}
+		if name != "" {
+			block = append(block, line)
 		}
 	}
-	return block
+	flush()
+	for _, required := range []string{"socket-proxy", "panel"} {
+		if _, ok := services[required]; !ok {
+			t.Fatalf("service %q not found", required)
+		}
+	}
+	return services
 }
 
 func assertContains(t *testing.T, block, expected, description string) {
