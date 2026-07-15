@@ -192,6 +192,7 @@ describe("App", () => {
 
     render(<App />);
     await waitFor(() => expect(historyCalls).toBe(1));
+    await waitFor(() => expect(refresh).toBeTypeOf("function"));
     await act(async () => refresh!());
     expect(await screen.findByText("尚无实例。创建第一个 Host 网络服务器。")).toBeInTheDocument();
 
@@ -209,6 +210,77 @@ describe("App", () => {
     await waitFor(() => expect(historyCalls).toBe(2));
     expect(await screen.findByText("深夜战役")).toBeInTheDocument();
     expect(await screen.findByTestId("performance-chart")).toHaveAttribute("data-point-count", "1");
+  });
+  it("lets a newer generation supersede stale history ownership without being poisoned by late completions", async () => {
+    let refresh: (() => void) | undefined;
+    vi.spyOn(window, "setInterval").mockImplementation(
+      (handler: TimerHandler, timeout?: number) => {
+        if (timeout === 5_000) refresh = handler as () => void;
+        return 1;
+      },
+    );
+    const oldHistory = deferred<Response>();
+    const stalledDeletion = deferred<Response>();
+    let listCalls = 0;
+    let historyCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/session") return new Response('{"authenticated":true}', { status: 200, headers: { "Content-Type": "application/json" } });
+      if (path === "/api/instances") {
+        listCalls += 1;
+        if (listCalls === 2) return stalledDeletion.promise;
+        return new Response(JSON.stringify([apiInstance]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (path === "/api/instances/1/performance-history") {
+        historyCalls += 1;
+        if (historyCalls === 1) return oldHistory.promise;
+        return new Response(JSON.stringify([{ at: "2026-07-15T12:00:10Z", run_id: "run-new", cpu_percent: 22, memory_percent: null, network_rx_bytes_per_sec: null, network_tx_bytes_per_sec: null, block_read_bytes_per_sec: null, block_write_bytes_per_sec: null }]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (path === "/api/instances/1/overview") return new Response(JSON.stringify({ ...runningZeroOverview, sampled_at: "2026-07-15T12:00:15Z", run_id: "run-new", container_running_known: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+      const value = path === "/api/packages" ? [] : { ok: true };
+      return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+
+    render(<App />);
+    await waitFor(() => expect(historyCalls).toBe(1));
+    await waitFor(() => expect(refresh).toBeTypeOf("function"));
+    await act(async () => refresh!());
+    await waitFor(() => expect(listCalls).toBe(2));
+    await act(async () => refresh!());
+    await waitFor(() => expect(historyCalls).toBe(2));
+    expect(await screen.findByTestId("performance-chart")).toHaveAttribute("data-point-count", "2");
+
+    oldHistory.resolve(new Response(JSON.stringify([{ at: "2026-07-15T12:00:00Z", run_id: "run-old", cpu_percent: 99, memory_percent: null, network_rx_bytes_per_sec: null, network_tx_bytes_per_sec: null, block_read_bytes_per_sec: null, block_write_bytes_per_sec: null }]), { status: 200, headers: { "Content-Type": "application/json" } }));
+    stalledDeletion.resolve(new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText("深夜战役")).toBeInTheDocument();
+    expect(screen.getByTestId("performance-chart")).toHaveAttribute("data-point-count", "2");
+
+    await act(async () => refresh!());
+    await waitFor(() => expect(listCalls).toBe(4));
+    expect(historyCalls).toBe(2);
+  });
+
+  it("does not continue session loading after unmount", async () => {
+    const session = deferred<Response>();
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      if (String(input) === "/api/session") return session.promise;
+      return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    const view = render(<App />);
+    expect(calls).toEqual(["/api/session"]);
+    view.unmount();
+    session.resolve(new Response('{"authenticated":true}', { status: 200, headers: { "Content-Type": "application/json" } }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(calls).toEqual(["/api/session"]);
   });
 
   it("keeps overview samples when the initial history request fails", async () => {

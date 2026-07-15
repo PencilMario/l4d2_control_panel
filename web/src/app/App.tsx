@@ -196,8 +196,10 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
   const [historyLoading, setHistoryLoading] = useState<Record<string, boolean>>(
     {},
   );
-  const historyRequested = useRef(new Set<string>());
+  const historyLoaded = useRef(new Set<string>());
+  const historyInFlight = useRef(new globalThis.Map<string, number>());
   const loadGeneration = useRef(0);
+  const mountedRef = useRef(true);
   const [pending, setPending] = useState<Instance | null>(null);
   const [page, setPage] = useState<Page>("overview");
   const [terminal, setTerminal] = useState<Instance | null>(null);
@@ -210,26 +212,35 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
       : { status: "checking", message: "正在检查 Docker API…" },
   );
   const loadInstances = useCallback(async () => {
+    if (!mountedRef.current) return;
     const generation = ++loadGeneration.current;
-    const isCurrent = () => generation === loadGeneration.current;
+    const isCurrent = () =>
+      mountedRef.current && generation === loadGeneration.current;
     const base = (await api<any[]>("/api/instances")).map(normalizeInstance);
     if (!isCurrent()) return;
     const liveIDs = new Set(base.map((instance) => instance.id));
-    for (const id of historyRequested.current) {
-      if (!liveIDs.has(id)) historyRequested.current.delete(id);
+    for (const id of historyLoaded.current) {
+      if (!liveIDs.has(id)) historyLoaded.current.delete(id);
+    }
+    for (const id of historyInFlight.current.keys()) {
+      if (!liveIDs.has(id)) historyInFlight.current.delete(id);
     }
     const historyRequests = base
-      .filter((instance) => !historyRequested.current.has(instance.id))
+      .filter((instance) => !historyLoaded.current.has(instance.id))
       .map(async (instance) => {
         if (!isCurrent()) return;
-        historyRequested.current.add(instance.id);
+        historyInFlight.current.set(instance.id, generation);
+        const ownsRequest = () =>
+          isCurrent() &&
+          historyInFlight.current.get(instance.id) === generation;
         setHistoryLoading((current) =>
-          isCurrent() ? { ...current, [instance.id]: true } : current,
+          ownsRequest() ? { ...current, [instance.id]: true } : current,
         );
         try {
           const history = await api<PerformanceHistoryPoint[]>(
             `/api/instances/${instance.id}/performance-history`,
           );
+          if (!ownsRequest()) return;
           setPerformanceHistory((current) =>
             isCurrent()
               ? {
@@ -241,9 +252,14 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
                 }
               : current,
           );
+          historyLoaded.current.add(instance.id);
+          historyInFlight.current.delete(instance.id);
+          setHistoryLoading((current) =>
+            isCurrent() ? { ...current, [instance.id]: false } : current,
+          );
         } catch {
-          // A failed initial history request must not erase collected samples.
-        } finally {
+          if (!ownsRequest()) return;
+          historyInFlight.current.delete(instance.id);
           setHistoryLoading((current) =>
             isCurrent() ? { ...current, [instance.id]: false } : current,
           );
@@ -330,23 +346,46 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
       }
       return next;
     });
+    setHistoryLoading((current) => {
+      if (!isCurrent()) return current;
+      const next: Record<string, boolean> = {};
+      for (const [id, loading] of Object.entries(current)) {
+        if (liveIDs.has(id)) next[id] = loading;
+      }
+      return next;
+    });
     setInstances((current) => (isCurrent() ? enriched : current));
   }, []);
   const loadPackages = async () => {
-    setPackages(await api<PackageVersion[]>("/api/packages"));
+    const next = await api<PackageVersion[]>("/api/packages");
+    if (mountedRef.current) setPackages(next);
   };
   const loadHealth = async () => {
     try {
       await api("/api/health");
-      setHealth({ status: "online", message: "Docker API 正常" });
+      if (mountedRef.current) {
+        setHealth({ status: "online", message: "Docker API 正常" });
+      }
     } catch (reason) {
-      setHealth({ status: "error", message: errorMessage(reason) });
+      if (mountedRef.current) {
+        setHealth({ status: "error", message: errorMessage(reason) });
+      }
     }
   };
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      loadGeneration.current += 1;
+      historyLoaded.current.clear();
+      historyInFlight.current.clear();
+    };
+  }, []);
   useEffect(() => {
     if (injected) return;
     api("/api/session")
       .then(() => {
+        if (!mountedRef.current) return;
         setAuth("yes");
         void Promise.allSettled([
           loadInstances(),
@@ -354,22 +393,21 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
           loadHealth(),
         ]);
       })
-      .catch(() => setAuth("no"));
+      .catch(() => {
+        if (mountedRef.current) setAuth("no");
+      });
   }, []);
   useEffect(() => {
     if (injected || auth !== "yes") return;
     const timer = window.setInterval(() => void loadInstances(), 5_000);
     return () => {
       window.clearInterval(timer);
+      if (!mountedRef.current) return;
       loadGeneration.current += 1;
+      historyLoaded.current.clear();
+      historyInFlight.current.clear();
     };
   }, [auth, injected, loadInstances]);
-  useEffect(
-    () => () => {
-      loadGeneration.current += 1;
-    },
-    [],
-  );
   const queue = async (path: string, body: any) => {
     const created = await api<Job>(path, {
       method: "POST",
