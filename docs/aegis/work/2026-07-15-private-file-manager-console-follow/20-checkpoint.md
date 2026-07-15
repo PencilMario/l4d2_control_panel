@@ -1,6 +1,6 @@
 # TodoCheckpointDraft
 
-Updated: 2026-07-15 18:10 +08:00
+Updated: 2026-07-15 19:25 +08:00
 
 ## Todo
 
@@ -10,11 +10,11 @@ Updated: 2026-07-15 18:10 +08:00
 - [x] Task 4: Independent private-files Tab
 - [x] Task 5: Console follow-latest state machine
 - [x] Task 6: Browser acceptance
-- [ ] Task 7: Full regression, documentation and retirement audit
+- [x] Task 7: Full regression, documentation and retirement audit
 
 ## Active slice
 
-Task 7. Run the complete verification matrix, audit retired owners, and record final documentation/evidence.
+Task 7 implementation is complete. Final whole-branch spec compliance and code quality review remain pending under the controller.
 
 ## Completed
 
@@ -41,12 +41,16 @@ Task 7. Run the complete verification matrix, audit retired owners, and record f
 - Task 5 spec and quality reviews approved after fixing pending-RAF user-scroll cancellation under sustained output.
 - Task 6 commits `828782a`, `da6a3e2`; fixture tests, Vitest, and Playwright desktop/mobile 2/2 passed.
 - Task 6 spec and quality reviews approved after fixture traversal hardening and deterministic delete/snapshot/scroll assertions.
+- Task 7 full Go regression, Vitest, production build, desktop/mobile Playwright and the tagged fixture test passed.
+- Task 7 retirement audit found no old immediate-apply UI or blind `private.Apply` call. Manual apply enters through HTTP `ApplyChangesWithProgress`; lower-layer deployment enters through the leased transaction `RebaseAndApply` path.
+- Task 7 README and evidence document the independent Tab, staged apply, 20-snapshot retention, lower-layer restoration, resumable uploads and console follow rules.
 
 ## Evidence refs
 
 - `docs/aegis/specs/2026-07-15-private-file-manager-console-follow-design.md`
 - `docs/aegis/plans/2026-07-15-private-file-manager-console-follow.md`
 - Baseline command outputs in the controlling session.
+- `docs/aegis/work/2026-07-15-private-file-manager-console-follow/50-evidence.md`
 
 ## Blocked on
 
@@ -54,7 +58,7 @@ Nothing.
 
 ## ResumeStateHint
 
-Read this checkpoint, the intent, baseline read set, approved spec and plan. Confirm the worktree branch and diff agree with this checkpoint. Resume Task 7 and final review only.
+Read this checkpoint, the intent, baseline read set, approved spec, plan and evidence. Confirm the worktree branch and diff agree with this checkpoint. Resume final whole-branch review only; do not repeat Task 7 unless evidence becomes stale.
 
 ## DriftCheckDraft
 
@@ -67,4 +71,4 @@ Read this checkpoint, the intent, baseline read set, approved spec and plan. Con
 - Task 2 residual: Windows normal symlinks are covered; junction/reparse subtype reporting remains dependent on Go runtime behavior.
 - Intermittent Windows TempDir cleanup/file-lock noise occurred across unrelated tests; required fresh and repeated focused suites passed.
 - Task 3 residual Minor: per-upload session mutex registry does not evict UUID locks.
-- Decision: continue to Task 7.
+- Decision: continue to final whole-branch review; no authoritative completion is claimed.
