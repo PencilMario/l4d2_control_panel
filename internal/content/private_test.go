@@ -85,6 +85,67 @@ func TestPrivateApplyDeleteRestoresCapturedLowerLayer(t *testing.T) {
 	}
 }
 
+func TestPrivateCompatibilityApplyUsesTransactionalSemantics(t *testing.T) {
+	root := t.TempDir()
+	m := NewPrivateManager(root, 1<<20)
+	ctx := context.Background()
+	target := filepath.Join(root, "instances", "abc", "game", "left4dead2", "cfg", "a.cfg")
+	if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("lower"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Save(ctx, "abc", "cfg/a.cfg", []byte("private")); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Apply(ctx, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "instances", "abc", "private-applied.json")); err != nil {
+		t.Fatal(err)
+	}
+	snapshots, err := m.Snapshots(ctx, "abc")
+	if err != nil || len(snapshots) != 1 {
+		t.Fatalf("snapshots=%v err=%v", snapshots, err)
+	}
+	if err := m.Delete(ctx, "abc", "cfg/a.cfg"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Apply(ctx, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(target); err != nil || string(raw) != "lower" {
+		t.Fatalf("game=%q err=%v", raw, err)
+	}
+}
+
+func TestPrivateCleanupFailureRecordsDiagnostic(t *testing.T) {
+	for _, phase := range []string{"prune", "work"} {
+		t.Run(phase, func(t *testing.T) {
+			root := t.TempDir()
+			m := NewPrivateManager(root, 1<<20)
+			if _, err := m.Save(context.Background(), "abc", "cfg/a.cfg", []byte("private")); err != nil {
+				t.Fatal(err)
+			}
+			setPrivateCleanupFailureHook(func(got string) error {
+				if got == phase {
+					return errors.New("injected " + phase)
+				}
+				return nil
+			})
+			t.Cleanup(func() { setPrivateCleanupFailureHook(nil) })
+			if err := m.ApplyChanges(context.Background(), "abc"); err != nil {
+				t.Fatal(err)
+			}
+			entries, err := os.ReadDir(filepath.Join(root, "instances", "abc", "backups", "private", "diagnostics"))
+			if err != nil || len(entries) != 1 {
+				t.Fatalf("diagnostics=%v err=%v", entries, err)
+			}
+		})
+	}
+}
+
 func TestPrivateApplyDeleteWithoutLowerRemovesTarget(t *testing.T) {
 	root := t.TempDir()
 	manager := NewPrivateManager(root, 1<<20)
@@ -295,7 +356,7 @@ func TestPrivateRecoverRollsBackInterruptedApply(t *testing.T) {
 	manager := NewPrivateManager(root, 1<<20)
 	base := filepath.Join(root, "instances", "abc")
 	target := filepath.Join(base, "game", "left4dead2", "cfg", "a.cfg")
-	work := filepath.Join(base, "backups", "private", "apply-test")
+	work := filepath.Join(base, "backups", "private", "apply-22222222-2222-2222-2222-222222222222")
 	if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
 		t.Fatal(err)
 	}
@@ -317,6 +378,52 @@ func TestPrivateRecoverRollsBackInterruptedApply(t *testing.T) {
 	}
 	if _, err := os.Stat(work); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("journal remains: %v", err)
+	}
+}
+
+func TestPrivateRecoverRejectsCorruptStageAndSnapshotID(t *testing.T) {
+	for _, tc := range []struct{ name, stage, id string }{{"stage", "evil", ""}, {"snapshot", "snapshotting", "../../outside"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			m := NewPrivateManager(root, 1<<20)
+			work := filepath.Join(root, "instances", "abc", "backups", "private", "apply-11111111-1111-1111-1111-111111111111")
+			outside := filepath.Join(root, "outside")
+			if err := os.MkdirAll(outside, 0750); err != nil {
+				t.Fatal(err)
+			}
+			journal := privateApplyJournal{Version: 1, InstanceID: "abc", Stage: tc.stage, SnapshotID: tc.id}
+			if err := writeJSONAtomic(filepath.Join(work, "journal.json"), journal); err != nil {
+				t.Fatal(err)
+			}
+			if err := m.Recover(context.Background()); err == nil {
+				t.Fatal("corrupt journal accepted")
+			}
+			if _, err := os.Stat(outside); err != nil {
+				t.Fatalf("outside changed: %v", err)
+			}
+		})
+	}
+}
+
+func TestPrivateRecoverRejectsSymlinkJournal(t *testing.T) {
+	root := t.TempDir()
+	m := NewPrivateManager(root, 1<<20)
+	outside := filepath.Join(root, "outside.json")
+	if err := os.WriteFile(outside, []byte(`{"version":1,"instance_id":"abc","stage":"committed"}`), 0640); err != nil {
+		t.Fatal(err)
+	}
+	work := filepath.Join(root, "instances", "abc", "backups", "private", "apply-44444444-4444-4444-4444-444444444444")
+	if err := os.MkdirAll(work, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(work, "journal.json")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := m.Recover(context.Background()); err == nil {
+		t.Fatal("symlink journal accepted")
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("outside changed: %v", err)
 	}
 }
 

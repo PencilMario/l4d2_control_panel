@@ -66,6 +66,7 @@ type deployment struct {
 	pipeline    *Pipeline
 	journalPath string
 	journal     updateJournal
+	private     *content.PrivateTransaction
 }
 
 func New(root string) *Pipeline { return &Pipeline{root: root} }
@@ -75,7 +76,10 @@ func (p *Pipeline) Apply(ctx context.Context, instanceID, archivePath, version s
 	if err != nil {
 		return err
 	}
-	return transaction.Commit()
+	if err := transaction.Commit(); err != nil {
+		return errors.Join(err, transaction.Rollback())
+	}
+	return nil
 }
 
 func (p *Pipeline) Begin(ctx context.Context, instanceID, archivePath, version string, mode Mode) (Deployment, error) {
@@ -127,7 +131,17 @@ func (p *Pipeline) Begin(ctx context.Context, instanceID, archivePath, version s
 		}
 	}
 	privateManager := content.NewPrivateManager(p.root, 1<<20)
-	privateTargets, err := privateManager.TransactionTargets(ctx, instanceID)
+	privateTransaction, err := privateManager.BeginTransaction(ctx, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	leaseOwned := true
+	defer func() {
+		if leaseOwned {
+			_ = privateTransaction.Rollback()
+		}
+	}()
+	privateTargets, err := privateTransaction.Targets(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -230,7 +244,7 @@ func (p *Pipeline) Begin(ctx context.Context, instanceID, archivePath, version s
 		return nil, err
 	}
 	keepWork = true
-	transaction := &deployment{pipeline: p, journalPath: journalPath, journal: value}
+	transaction := &deployment{pipeline: p, journalPath: journalPath, journal: value, private: privateTransaction}
 	fail := func(cause error) (Deployment, error) {
 		return nil, errors.Join(cause, transaction.Rollback())
 	}
@@ -263,7 +277,7 @@ func (p *Pipeline) Begin(ctx context.Context, instanceID, archivePath, version s
 			return fail(err)
 		}
 	}
-	if err := privateManager.RebaseAndApply(ctx, instanceID); err != nil {
+	if err := privateTransaction.RebaseAndApply(ctx); err != nil {
 		return fail(err)
 	}
 	if err := writeManifest(manifestPath, newManifest); err != nil {
@@ -273,6 +287,7 @@ func (p *Pipeline) Begin(ctx context.Context, instanceID, archivePath, version s
 	if err := writeJournal(journalPath, transaction.journal); err != nil {
 		return fail(err)
 	}
+	leaseOwned = false
 	return transaction, nil
 }
 
@@ -282,6 +297,9 @@ func (d *deployment) Commit() error {
 		return err
 	}
 	_ = os.RemoveAll(filepath.Dir(d.journalPath))
+	if d.private != nil {
+		return d.private.Commit()
+	}
 	return nil
 }
 
@@ -290,9 +308,17 @@ func (d *deployment) Rollback() error {
 	stageErr := writeJournal(d.journalPath, d.journal)
 	rollbackErr := d.pipeline.rollbackJournal(d.journalPath, d.journal)
 	if rollbackErr != nil {
+		if d.private != nil {
+			_ = d.private.Rollback()
+		}
 		return errors.Join(stageErr, rollbackErr)
 	}
-	return errors.Join(stageErr, os.RemoveAll(filepath.Dir(d.journalPath)))
+	cleanupErr := os.RemoveAll(filepath.Dir(d.journalPath))
+	var privateErr error
+	if d.private != nil {
+		privateErr = d.private.Rollback()
+	}
+	return errors.Join(stageErr, cleanupErr, privateErr)
 }
 
 func (p *Pipeline) Recover(ctx context.Context) error {
@@ -418,7 +444,16 @@ func directoryNames(root string) ([]string, error) {
 	}
 	result := make([]string, 0, len(entries))
 	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil, errors.New("symbolic links are forbidden")
+		}
 		if entry.IsDir() {
+			if !content.ValidPrivateSnapshotID(entry.Name()) {
+				if strings.HasPrefix(entry.Name(), ".snapshot-") {
+					continue
+				}
+				return nil, errors.New("invalid private snapshot id")
+			}
 			result = append(result, entry.Name())
 		}
 	}

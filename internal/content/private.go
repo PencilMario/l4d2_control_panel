@@ -309,18 +309,8 @@ func (m *PrivateManager) History(_ context.Context, instanceID, name string) ([]
 	sort.Slice(result, func(i, j int) bool { return result[i].UpdatedAt.After(result[j].UpdatedAt) })
 	return result, nil
 }
-func (m *PrivateManager) Apply(_ context.Context, instanceID string) error {
-	lock := m.instanceLock(instanceID)
-	lock.RLock()
-	defer lock.RUnlock()
-	if err := validateInstanceID(instanceID); err != nil {
-		return err
-	}
-	source := filepath.Join(m.root, "instances", instanceID, "private")
-	if _, err := os.Stat(source); errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return ApplyTree(source, filepath.Join(m.root, "instances", instanceID, "game", "left4dead2"))
+func (m *PrivateManager) Apply(ctx context.Context, instanceID string) error {
+	return m.ApplyChanges(ctx, instanceID)
 }
 func rejectSymlinkParents(root, target string) error {
 	relative, err := filepath.Rel(root, target)

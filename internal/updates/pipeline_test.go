@@ -4,9 +4,12 @@ import (
 	"archive/zip"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 )
@@ -115,6 +118,68 @@ func TestPackageRollbackRestoresPrivateLowerLayer(t *testing.T) {
 	}
 }
 
+func TestPipelinePrivateTransactionBlocksConcurrentSave(t *testing.T) {
+	root := t.TempDir()
+	p := New(root)
+	ctx := context.Background()
+	m := content.NewPrivateManager(root, 1<<20)
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	p.AfterDeploy = func() error {
+		go func() { close(started); _, err := m.Save(ctx, "abc", "cfg/concurrent.cfg", []byte("x")); done <- err }()
+		<-started
+		select {
+		case err := <-done:
+			t.Fatalf("save escaped transaction: %v", err)
+		case <-time.After(100 * time.Millisecond):
+		}
+		return errors.New("rollback")
+	}
+	if err := p.Apply(ctx, "abc", zipFile(t, map[string]string{"cfg/a.cfg": "new"}), "v2", Hot); err == nil {
+		t.Fatal("expected rollback")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("save remained blocked")
+	}
+}
+
+func TestPipelineRollbackDoesNotPrunePrivateSnapshots(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	m := content.NewPrivateManager(root, 1<<20)
+	for i := 0; i < 20; i++ {
+		if _, err := m.Save(ctx, "abc", "cfg/a.cfg", []byte(strconv.Itoa(i))); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.ApplyChanges(ctx, "abc"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := m.Snapshots(ctx, "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := New(root).Begin(ctx, "abc", zipFile(t, map[string]string{"cfg/a.cfg": "package"}), "v2", Hot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deployment.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	after, err := m.Snapshots(ctx, "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(before) != fmt.Sprint(after) {
+		t.Fatalf("snapshots changed\nbefore=%v\nafter=%v", before, after)
+	}
+}
+
 func TestPackageRollbackRestoresDeletedAppliedEmptyDirectory(t *testing.T) {
 	root := t.TempDir()
 	pipeline := New(root)
@@ -187,6 +252,21 @@ func TestPipelineRejectsGameTargetSymlink(t *testing.T) {
 	}
 	if raw, err := os.ReadFile(outside); err != nil || string(raw) != "outside" {
 		t.Fatalf("outside=%q err=%v", raw, err)
+	}
+}
+
+func TestPipelineRejectsMalformedPrivateSnapshotName(t *testing.T) {
+	root := t.TempDir()
+	bad := filepath.Join(root, "instances", "abc", "backups", "private", "snapshots", "not-a-snapshot")
+	if err := os.MkdirAll(bad, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := New(root).Apply(context.Background(), "abc", zipFile(t, map[string]string{"cfg/a.cfg": "new"}), "v1", Hot); err == nil {
+		t.Fatal("malformed snapshot accepted")
+	}
+	target := filepath.Join(root, "instances", "abc", "game", "left4dead2", "cfg", "a.cfg")
+	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("game mutated: %v", err)
 	}
 }
 func TestUpdateStripsReleaseWrapperDirectory(t *testing.T) {
@@ -291,7 +371,7 @@ func TestPipelineRecoverRollsBackInterruptedPrivateApply(t *testing.T) {
 	root := t.TempDir()
 	base := filepath.Join(root, "instances", "abc")
 	target := filepath.Join(base, "game", "left4dead2", "cfg", "a.cfg")
-	work := filepath.Join(base, "backups", "private", "apply-crash")
+	work := filepath.Join(base, "backups", "private", "apply-33333333-3333-3333-3333-333333333333")
 	if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
 		t.Fatal(err)
 	}

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -117,6 +118,32 @@ var privateApplyFailureState struct {
 var privateSnapshotFailureState struct {
 	sync.RWMutex
 	hook func() error
+}
+
+var privateCleanupFailureState struct {
+	sync.RWMutex
+	hook func(string) error
+}
+
+func setPrivateCleanupFailureHook(hook func(string) error) {
+	privateCleanupFailureState.Lock()
+	privateCleanupFailureState.hook = hook
+	privateCleanupFailureState.Unlock()
+}
+func runPrivateCleanupFailureHook(phase string) error {
+	privateCleanupFailureState.RLock()
+	hook := privateCleanupFailureState.hook
+	privateCleanupFailureState.RUnlock()
+	if hook != nil {
+		return hook(phase)
+	}
+	return nil
+}
+
+var privateSnapshotIDPattern = regexp.MustCompile(`^\d{8}T\d{6}\.\d{9}Z-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+func ValidPrivateSnapshotID(id string) bool {
+	return filepath.Base(id) == id && privateSnapshotIDPattern.MatchString(id)
 }
 
 func setPrivateSnapshotFailureHook(hook func() error) {
@@ -407,17 +434,21 @@ func privateDiff(current map[string]manifestEntry, applied privateManifest) Priv
 }
 
 func (m *PrivateManager) ApplyChanges(ctx context.Context, instanceID string) error {
-	return m.applyPrivate(ctx, instanceID, false)
+	return m.applyPrivate(ctx, instanceID, false, true)
 }
 
 func (m *PrivateManager) RebaseAndApply(ctx context.Context, instanceID string) error {
-	return m.applyPrivate(ctx, instanceID, true)
+	return m.applyPrivate(ctx, instanceID, true, true)
 }
 
-func (m *PrivateManager) applyPrivate(ctx context.Context, instanceID string, rebase bool) error {
+func (m *PrivateManager) applyPrivate(ctx context.Context, instanceID string, rebase, prune bool) error {
 	lock := m.instanceLock(instanceID)
 	lock.Lock()
 	defer lock.Unlock()
+	return m.applyPrivateLocked(ctx, instanceID, rebase, prune)
+}
+
+func (m *PrivateManager) applyPrivateLocked(ctx context.Context, instanceID string, rebase, prune bool) error {
 	if err := validateInstanceID(instanceID); err != nil {
 		return err
 	}
@@ -612,8 +643,106 @@ func (m *PrivateManager) applyPrivate(ctx context.Context, instanceID string, re
 	if err = writeJSONAtomic(filepath.Join(work, "journal.json"), journal); err != nil {
 		return rollback(err)
 	}
-	_ = prunePrivateSnapshots(base, 20)
-	_ = os.RemoveAll(work)
+	if prune {
+		m.cleanupPrivate(base, "prune", func() error { return prunePrivateSnapshots(base, 20) })
+	}
+	m.cleanupPrivate(base, "work", func() error { return os.RemoveAll(work) })
+	return nil
+}
+
+func (m *PrivateManager) cleanupPrivate(base, phase string, operation func() error) {
+	err := runPrivateCleanupFailureHook(phase)
+	if err == nil {
+		err = operation()
+	}
+	if err != nil {
+		_ = recordPrivateDiagnostic(base, phase, err)
+	}
+}
+func recordPrivateDiagnostic(base, phase string, cause error) error {
+	value := struct {
+		At    time.Time `json:"at"`
+		Phase string    `json:"phase"`
+		Error string    `json:"error"`
+	}{time.Now().UTC(), phase, cause.Error()}
+	return writeJSONAtomic(filepath.Join(base, "backups", "private", "diagnostics", time.Now().UTC().Format("20060102T150405.000000000Z")+"-"+uuid.NewString()+".json"), value)
+}
+
+type PrivateTransaction struct {
+	manager          *PrivateManager
+	instanceID, base string
+	lock             *sync.RWMutex
+	closed           bool
+}
+
+func (m *PrivateManager) BeginTransaction(ctx context.Context, instanceID string) (*PrivateTransaction, error) {
+	lock := m.instanceLock(instanceID)
+	lock.Lock()
+	if err := validateInstanceID(instanceID); err != nil {
+		lock.Unlock()
+		return nil, err
+	}
+	base := filepath.Join(m.root, "instances", instanceID)
+	if err := m.recoverPrivateInstanceLocked(ctx, instanceID, base); err != nil {
+		lock.Unlock()
+		return nil, err
+	}
+	return &PrivateTransaction{manager: m, instanceID: instanceID, base: base, lock: lock}, nil
+}
+func (t *PrivateTransaction) Targets(ctx context.Context) ([]PrivateTarget, error) {
+	if t.closed {
+		return nil, errors.New("private transaction closed")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	root, err := t.manager.privateRoot(t.instanceID)
+	if err != nil {
+		return nil, err
+	}
+	current, err := scanPrivateTree(root)
+	if err != nil {
+		return nil, err
+	}
+	applied, err := t.manager.readPrivateManifest(t.instanceID)
+	if err != nil {
+		return nil, err
+	}
+	union := map[string]string{}
+	for path, entry := range applied.Entries {
+		union[path] = entry.Kind
+	}
+	for path, entry := range current {
+		union[path] = entry.Kind
+	}
+	result := make([]PrivateTarget, 0, len(union))
+	for path, kind := range union {
+		result = append(result, PrivateTarget{Path: path, Kind: kind})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Path < result[j].Path })
+	return result, nil
+}
+func (t *PrivateTransaction) RebaseAndApply(ctx context.Context) error {
+	if t.closed {
+		return errors.New("private transaction closed")
+	}
+	return t.manager.applyPrivateLocked(ctx, t.instanceID, true, false)
+}
+func (t *PrivateTransaction) Commit() error {
+	if t.closed {
+		return errors.New("private transaction closed")
+	}
+	t.manager.cleanupPrivate(t.base, "prune", func() error { return prunePrivateSnapshots(t.base, 20) })
+	t.closed = true
+	t.lock.Unlock()
+	return nil
+}
+func (t *PrivateTransaction) Rollback() error {
+	if t.closed {
+		return nil
+	}
+	t.closed = true
+	t.lock.Unlock()
 	return nil
 }
 
@@ -896,6 +1025,23 @@ func (m *PrivateManager) recoverPrivateInstanceLocked(ctx context.Context, insta
 }
 
 func (m *PrivateManager) recoverPrivateJournalLocked(journalPath, base, instanceID string) error {
+	work := filepath.Dir(journalPath)
+	expectedRoot := filepath.Join(base, "backups", "private")
+	relative, relErr := filepath.Rel(expectedRoot, work)
+	if relErr != nil || strings.Contains(relative, string(filepath.Separator)) || !strings.HasPrefix(relative, "apply-") {
+		return errors.New("invalid private apply journal path")
+	}
+	if _, err := uuid.Parse(strings.TrimPrefix(relative, "apply-")); err != nil {
+		return errors.New("invalid private apply journal id")
+	}
+	if err := rejectSymlinkParents(expectedRoot, journalPath); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(journalPath); err != nil {
+		return err
+	} else if info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("symbolic links are forbidden")
+	}
 	raw, err := os.ReadFile(journalPath)
 	if err != nil {
 		return err
@@ -906,6 +1052,13 @@ func (m *PrivateManager) recoverPrivateJournalLocked(journalPath, base, instance
 	}
 	if journal.Version != 1 || journal.InstanceID != instanceID || filepath.Base(instanceID) != instanceID {
 		return errors.New("invalid private apply journal identity")
+	}
+	allowed := map[string]bool{"prepared": true, "applying": true, "snapshotting": true, "rolling_back": true, "committed": true}
+	if !allowed[journal.Stage] {
+		return errors.New("invalid private apply journal stage")
+	}
+	if journal.SnapshotID != "" && !ValidPrivateSnapshotID(journal.SnapshotID) {
+		return errors.New("invalid private snapshot id")
 	}
 	for _, entry := range journal.Affected {
 		if entry.Kind != "file" && entry.Kind != "directory" {
@@ -920,7 +1073,6 @@ func (m *PrivateManager) recoverPrivateJournalLocked(journalPath, base, instance
 			return err
 		}
 	}
-	work := filepath.Dir(journalPath)
 	if journal.Stage == "committed" {
 		return os.RemoveAll(work)
 	}
