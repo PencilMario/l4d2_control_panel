@@ -60,8 +60,8 @@ Desktop and mobile Playwright exercised the real HTTP fixture journey, including
 
 ## DriftCheckDraft
 
-- Scope: Task 7 changed only README and Aegis work records.
-- Compatibility: documented behavior matches the verified API/UI paths; no product behavior changed.
+- Scope: Task 7 changed README and Aegis work records, and final review added the `4a79f45` upload identity product correction.
+- Compatibility: the private upload API is unchanged; client resume matching now requires the instance, target path and complete file fingerprint to match, and legacy fingerprints are discarded.
 - Retirement: old immediate apply and blind apply caller remain absent; one private transactional owner retains manual apply and lower-layer rebase entry points.
 - Decision: ready for controller-owned final whole-branch review; Task 7 spec/code-quality review and final review remain open.
 
