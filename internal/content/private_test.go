@@ -130,62 +130,6 @@ func TestPrivateMoveOverwriteAndFailurePreservesDestination(t *testing.T) {
 	}
 }
 
-func TestPrivateTreeAndDiffIgnoreSaveTemporaryFiles(t *testing.T) {
-	manager := NewPrivateManager(t.TempDir(), 1<<20)
-	ctx := context.Background()
-	if _, err := manager.Save(ctx, "abc", "cfg/live.cfg", []byte("complete")); err != nil {
-		t.Fatal(err)
-	}
-	temporaryRoot := filepath.Join(manager.root, "instances", "abc", "backups", "private", "workspace-temp")
-	if err := os.MkdirAll(temporaryRoot, 0750); err != nil {
-		t.Fatal(err)
-	}
-	temporary := filepath.Join(temporaryRoot, "blocked-partial")
-	if err := os.WriteFile(temporary, []byte("partial"), 0640); err != nil {
-		t.Fatal(err)
-	}
-	lock := manager.instanceLock("abc")
-	lock.Lock()
-	treeResult := make(chan []PrivateEntry, 1)
-	diffResult := make(chan PrivateDiff, 1)
-	errorsSeen := make(chan error, 2)
-	go func() {
-		tree, err := manager.Tree(ctx, "abc")
-		if err != nil {
-			errorsSeen <- err
-		}
-		treeResult <- tree
-	}()
-	go func() {
-		diff, err := manager.Diff(ctx, "abc")
-		if err != nil {
-			errorsSeen <- err
-		}
-		diffResult <- diff
-	}()
-	select {
-	case <-treeResult:
-		t.Fatal("tree did not wait for active writer")
-	case <-diffResult:
-		t.Fatal("diff did not wait for active writer")
-	case <-time.After(25 * time.Millisecond):
-	}
-	lock.Unlock()
-	<-treeResult
-	diff := <-diffResult
-	select {
-	case err := <-errorsSeen:
-		t.Fatal(err)
-	default:
-	}
-	if err := os.Remove(temporary); err != nil {
-		t.Fatal(err)
-	}
-	if diff.Summary.Added != 1 || len(diff.Changes) != 1 || diff.Changes[0].Path != "cfg/live.cfg" {
-		t.Fatalf("diff exposed temporary state: %#v", diff)
-	}
-}
-
 func TestPrivateWorkspacePreservesPrivatePrefixedDotfiles(t *testing.T) {
 	manager := NewPrivateManager(t.TempDir(), 1<<20)
 	ctx := context.Background()
@@ -227,49 +171,80 @@ func TestPrivateWorkspacePreservesPrivatePrefixedDotfiles(t *testing.T) {
 	if len(listed) != 2 {
 		t.Fatalf("list=%#v", listed)
 	}
-	temporaryRoot := filepath.Join(manager.root, "instances", "abc", "backups", "private", "workspace-temp")
-	temporaryEntries, err := os.ReadDir(temporaryRoot)
+	temporaryEntries, err := filepath.Glob(filepath.Join(manager.root, "instances", "abc", "private", "**", ".private-save-*"))
 	if err != nil || len(temporaryEntries) != 0 {
 		t.Fatalf("save temporary artifacts=%v err=%v", temporaryEntries, err)
 	}
 }
 
-func TestPrivateWorkspaceTempIsOutsideTreeAcrossManagers(t *testing.T) {
+func TestPrivateManagersShareInstanceLock(t *testing.T) {
 	root := t.TempDir()
-	managerA := NewPrivateManager(root, 1<<20)
-	managerB := NewPrivateManager(root, 1<<20)
+	a := NewPrivateManager(root, 1<<20)
+	b := NewPrivateManager(filepath.Join(root, "."), 1<<20)
+	if a.instanceLock("abc") != b.instanceLock("abc") {
+		t.Fatal("managers for the same canonical root do not share a lock")
+	}
+}
+
+func TestPrivateSaveAndMoveHideIntermediateStateAcrossManagers(t *testing.T) {
+	root := t.TempDir()
+	a := NewPrivateManager(root, 1<<20)
+	b := NewPrivateManager(root, 1<<20)
 	ctx := context.Background()
-	if _, err := managerA.Save(ctx, "abc", "cfg/live.cfg", []byte("live")); err != nil {
+	if _, err := a.Save(ctx, "abc", "cfg/target.cfg", []byte("old")); err != nil {
 		t.Fatal(err)
 	}
-	tempRoot := filepath.Join(root, "instances", "abc", "backups", "private", "workspace-temp")
-	if err := os.MkdirAll(tempRoot, 0750); err != nil {
+	if _, err := a.Save(ctx, "abc", "cfg/source.cfg", []byte("new")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(tempRoot, "blocked-partial"), []byte("partial"), 0640); err != nil {
-		t.Fatal(err)
-	}
-	tree, err := managerB.Tree(ctx, "abc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(tree) != 2 || tree[1].Path != "cfg/live.cfg" {
-		t.Fatalf("tree exposed staging metadata: %#v", tree)
-	}
-	diff, err := managerB.Diff(ctx, "abc")
-	if err != nil || diff.Summary.Added != 1 {
-		t.Fatalf("diff=%#v err=%v", diff, err)
-	}
-	if err := managerB.Apply(ctx, "abc"); err != nil {
-		t.Fatal(err)
-	}
-	game := filepath.Join(root, "instances", "abc", "game", "left4dead2")
-	if _, err := os.Stat(filepath.Join(game, "blocked-partial")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("apply copied staging metadata: %v", err)
-	}
-	raw, err := os.ReadFile(filepath.Join(game, "cfg", "live.cfg"))
-	if err != nil || string(raw) != "live" {
-		t.Fatalf("applied=%q err=%v", raw, err)
+
+	for _, phase := range []string{"save-temp-created", "move-destination-swapped"} {
+		t.Run(phase, func(t *testing.T) {
+			reached := make(chan string, 1)
+			release := make(chan struct{})
+			setPrivateOperationHook(func(gotPhase, path string) {
+				if gotPhase == phase {
+					if gotPhase == "save-temp-created" && filepath.Dir(path) != filepath.Join(root, "instances", "abc", "private", "cfg") {
+						t.Errorf("temp directory=%q", filepath.Dir(path))
+					}
+					reached <- path
+					<-release
+				}
+			})
+			t.Cleanup(func() { setPrivateOperationHook(nil) })
+			done := make(chan error, 1)
+			if phase == "save-temp-created" {
+				go func() { _, err := a.Save(ctx, "abc", "cfg/saved.cfg", []byte("saved")); done <- err }()
+			} else {
+				go func() { done <- a.Move(ctx, "abc", "cfg/source.cfg", "cfg/target.cfg", true) }()
+			}
+			<-reached
+			observed := make(chan error, 1)
+			go func() {
+				if _, err := b.Tree(ctx, "abc"); err != nil {
+					observed <- err
+					return
+				}
+				if _, err := b.Diff(ctx, "abc"); err != nil {
+					observed <- err
+					return
+				}
+				observed <- b.Apply(ctx, "abc")
+			}()
+			select {
+			case err := <-observed:
+				t.Fatalf("observer did not block: %v", err)
+			case <-time.After(25 * time.Millisecond):
+			}
+			close(release)
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			if err := <-observed; err != nil {
+				t.Fatal(err)
+			}
+			setPrivateOperationHook(nil)
+		})
 	}
 }
 

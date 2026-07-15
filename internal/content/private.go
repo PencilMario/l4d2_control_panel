@@ -18,11 +18,38 @@ import (
 type PrivateManager struct {
 	root     string
 	maxBytes int
-	locks    sync.Map
+}
+
+// Locks are shared by all managers in the process for the bounded set of instance roots.
+var privateInstanceLocks sync.Map
+
+var privateHookState struct {
+	sync.RWMutex
+	hook func(string, string)
+}
+
+func setPrivateOperationHook(hook func(string, string)) {
+	privateHookState.Lock()
+	privateHookState.hook = hook
+	privateHookState.Unlock()
+}
+
+func runPrivateOperationHook(phase, path string) {
+	privateHookState.RLock()
+	hook := privateHookState.hook
+	privateHookState.RUnlock()
+	if hook != nil {
+		hook(phase, path)
+	}
 }
 
 func (m *PrivateManager) instanceLock(instanceID string) *sync.RWMutex {
-	lock, _ := m.locks.LoadOrStore(instanceID, &sync.RWMutex{})
+	root, err := filepath.Abs(m.root)
+	if err != nil {
+		root = m.root
+	}
+	key := filepath.Clean(root) + "\x00" + instanceID
+	lock, _ := privateInstanceLocks.LoadOrStore(key, &sync.RWMutex{})
 	return lock.(*sync.RWMutex)
 }
 
@@ -90,16 +117,13 @@ func (m *PrivateManager) save(instanceID, name string, data []byte) (PrivateFile
 	if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
 		return PrivateFile{}, err
 	}
-	temporaryRoot := filepath.Join(m.root, "instances", instanceID, "backups", "private", "workspace-temp")
-	if err := os.MkdirAll(temporaryRoot, 0750); err != nil {
-		return PrivateFile{}, err
-	}
-	temporary, err := os.CreateTemp(temporaryRoot, "save-*")
+	temporary, err := os.CreateTemp(filepath.Dir(target), ".private-save-*")
 	if err != nil {
 		return PrivateFile{}, err
 	}
 	temporaryName := temporary.Name()
 	defer os.Remove(temporaryName)
+	runPrivateOperationHook("save-temp-created", temporaryName)
 	if err := temporary.Chmod(0640); err != nil {
 		temporary.Close()
 		return PrivateFile{}, err
@@ -213,6 +237,7 @@ func replacePath(source, target string, overwrite bool) error {
 	if err := os.Rename(target, backup); err != nil {
 		return err
 	}
+	runPrivateOperationHook("move-destination-swapped", backup)
 	if err := os.Rename(source, target); err != nil {
 		if rollbackErr := os.Rename(backup, target); rollbackErr != nil {
 			removeBackup = false
