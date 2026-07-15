@@ -20,6 +20,11 @@
 - Task 3 regression: `go test -count=1 ./...`, `go vet ./...` and `docker compose --env-file .env.example config --quiet` passed after the final security change.
 - Task 3 Linux build: amd64 `CGO_ENABLED=0` Panel and socket-proxy binaries compiled.
 - Task 3 reviews: spec and quality approved after removing unsafe post-close deletion, scoping deployment assertions, proving unique Host networking, enforcing `root:10001` directory/socket permissions, preserving active sockets and removing `EXPOSE 2375`.
+- Task 4 RED/GREEN: missing sampler, failure isolation, bounded workers/deadlines, cleanup retries and traffic ownership transitions were each reproduced before fixes; focused metrics tests pass.
+- Task 4 regression: `go test -count=1 ./...` and `go vet ./...` passed after the final state-machine fix.
+- Task 4 stress: selected timeout, worker, stop/register transition and cleanup tests passed 20-100 repetitions.
+- Task 4 reviews: spec and quality approved after runtime unknown semantics, fixed workers, deadline coverage, stopped fast path and retryable traffic ownership were verified.
+- Task 4 residual: history is a bounded chronological 720-entry slice and copies entries when full rather than using a circular index; behavior and memory bounds are correct, with small steady-state allocation overhead.
 
 ## Regression evidence
 
