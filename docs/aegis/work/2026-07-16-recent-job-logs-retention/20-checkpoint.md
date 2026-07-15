@@ -3,11 +3,11 @@
 ## TodoCheckpointDraft
 
 - 当前目标：完成结构化任务日志、执行时间和全局成功任务保留设置。
-- 活动切片：F1，E2E 夹具和浏览器主流程。
-- 已完成：规格/计划/基线、Store、Manager、HTTP 详情与设置、JobsPage、Settings。
-- 待完成：E2E、完整验证。
+- 活动切片：完成候选，分支交付检查。
+- 已完成：规格/计划/基线、Store、Manager、HTTP、JobsPage、Settings、E2E、完整验证和证据。
+- 待完成：分支集成方式确认。
 - 阻塞项：无。
-- 下一步：提交 Settings 切片，再扩展确定性任务夹具和 Playwright 断言。
+- 下一步：提交 E2E 与证据，执行 finishing-development-branch 流程。
 
 ## Evidence
 
@@ -30,6 +30,12 @@
 - Settings 红灯：三个任务保留设置测试均因表单不存在而失败。
 - Settings 绿灯：默认值、1–500 边界、PUT、保存禁用、失败恢复和范围说明通过。
 - App 全量组件回归：npm test -- --run src/app/App.test.tsx，41 个测试通过。
+- E2E 红灯：fixture_failure 无结构化事件且执行用时为 `--`。
+- E2E 绿灯：desktop/mobile 均展开四个生命周期事件、显示 2分18秒、保存设置 25，并通过无横向溢出断言。
+- 完整后端：go test ./... 全部通过；go vet ./... exit 0。
+- 完整前端：6 个 Vitest 文件、90 个测试通过；生产构建 exit 0。
+- 完整浏览器：2 个 Playwright 项目通过；桌面与移动任务日志截图已生成并人工检查。
+- 副作用：git diff --check 通过；无构建产物、数据库、依赖目录或锁文件进入 Git 状态。
 
 ## DriftCheckDraft
 
@@ -37,9 +43,11 @@
 - 兼容边界：保留任务顶层字段、SSE、轮询和每实例串行执行。
 - 新所有者：job_events 由 Store 持久化、Manager 生成事件；没有重复日志路由。
 - 退休边界：App.tsx 内旧 JobsPage 在新组件接管后删除。
-- 决策：continue，进入 E2E 与完整验证切片。
+- 决策：continue，完成候选证据充分，进入分支交付。
 
 ## Risk / Unknown
 
 - 旧任务执行时间只能估算，必须显示 snapshot 说明。
 - 成功记录删除不可恢复，设置更新与清理必须同事务。
+- SQLite 为前向迁移，未验证旧二进制降级；回滚部署前需备份数据库。
+- Vite 保留既存的单 bundle 体积提示，本任务不扩展到拆包。
