@@ -8,6 +8,88 @@ import (
 	"testing"
 )
 
+func TestPrivateWorkspaceCRUDAndDiff(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateManager(root, 1<<20)
+	ctx := context.Background()
+
+	if err := manager.MakeDir(ctx, "abc", "cfg/sourcemod"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Save(ctx, "abc", "cfg/server.cfg", []byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Move(ctx, "abc", "cfg/server.cfg", "cfg/sourcemod/server.cfg", false); err != nil {
+		t.Fatal(err)
+	}
+
+	tree, err := manager.Tree(ctx, "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tree) != 3 {
+		t.Fatalf("tree=%#v", tree)
+	}
+	wantPaths := []string{"cfg", "cfg/sourcemod", "cfg/sourcemod/server.cfg"}
+	wantKinds := []string{"directory", "directory", "file"}
+	for i := range tree {
+		if tree[i].Path != wantPaths[i] || tree[i].Kind != wantKinds[i] {
+			t.Fatalf("tree[%d]=%#v", i, tree[i])
+		}
+	}
+	if tree[2].Size != 5 {
+		t.Fatalf("file size=%d", tree[2].Size)
+	}
+
+	diff, err := manager.Diff(ctx, "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff.Summary != (DiffSummary{Added: 1}) {
+		t.Fatalf("summary=%#v", diff.Summary)
+	}
+	if len(diff.Changes) != 1 || diff.Changes[0].Path != "cfg/sourcemod/server.cfg" || diff.Changes[0].Kind != "added" {
+		t.Fatalf("changes=%#v", diff.Changes)
+	}
+}
+
+func TestPrivatePathRejectsEscapeSymlinkAndOverwrite(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateManager(root, 1<<20)
+	ctx := context.Background()
+
+	if _, err := manager.Save(ctx, "abc", "../outside", []byte("x")); err == nil {
+		t.Fatal("escape accepted")
+	}
+	if err := manager.MakeDir(ctx, "abc", "cfg"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Save(ctx, "abc", "cfg/a.cfg", []byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Save(ctx, "abc", "cfg/b.cfg", []byte("b")); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Move(ctx, "abc", "cfg/a.cfg", "cfg/b.cfg", false); err == nil || !strings.Contains(err.Error(), "exists") {
+		t.Fatalf("move conflict err=%v", err)
+	}
+
+	privateRoot := filepath.Join(root, "instances", "abc", "private")
+	outside := filepath.Join(root, "outside")
+	if err := os.MkdirAll(outside, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(privateRoot, "linked")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := manager.Save(ctx, "abc", "linked/escape.cfg", []byte("x")); err == nil {
+		t.Fatal("symlink parent accepted")
+	}
+	if _, err := manager.Tree(ctx, "abc"); err == nil {
+		t.Fatal("tree accepted symlink")
+	}
+}
+
 func TestPrivateFilesVersionAndApplyLast(t *testing.T) {
 	root := t.TempDir()
 	manager := NewPrivateManager(root, 1024)

@@ -5,12 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"github.com/not0721here/l4d2-control-panel/internal/safepath"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/not0721here/l4d2-control-panel/internal/safepath"
 )
 
 type PrivateManager struct {
@@ -28,6 +29,13 @@ func NewPrivateManager(root string, maxBytes int) *PrivateManager {
 	return &PrivateManager{root: root, maxBytes: maxBytes}
 }
 
+func (m *PrivateManager) privateRoot(instanceID string) (string, error) {
+	if err := validateInstanceID(instanceID); err != nil {
+		return "", err
+	}
+	return filepath.Join(m.root, "instances", instanceID, "private"), nil
+}
+
 func validateInstanceID(instanceID string) error {
 	if filepath.Base(instanceID) != instanceID || instanceID == "" || instanceID == "." || instanceID == ".." {
 		return errors.New("invalid instance id")
@@ -36,13 +44,13 @@ func validateInstanceID(instanceID string) error {
 }
 
 func (m *PrivateManager) Save(_ context.Context, instanceID, name string, data []byte) (PrivateFile, error) {
-	if err := validateInstanceID(instanceID); err != nil {
+	private, err := m.privateRoot(instanceID)
+	if err != nil {
 		return PrivateFile{}, err
 	}
 	if len(data) > m.maxBytes {
 		return PrivateFile{}, errors.New("private file exceeds editor limit")
 	}
-	private := filepath.Join(m.root, "instances", instanceID, "private")
 	target, err := safepath.Join(private, name)
 	if err != nil {
 		return PrivateFile{}, err
@@ -67,15 +75,98 @@ func (m *PrivateManager) Save(_ context.Context, instanceID, name string, data [
 	if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
 		return PrivateFile{}, err
 	}
-	temporary := target + ".tmp"
-	if err := os.WriteFile(temporary, data, 0640); err != nil {
+	temporary, err := os.CreateTemp(filepath.Dir(target), ".private-*")
+	if err != nil {
 		return PrivateFile{}, err
 	}
-	if err := os.Rename(temporary, target); err != nil {
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if err := temporary.Chmod(0640); err != nil {
+		temporary.Close()
+		return PrivateFile{}, err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		temporary.Close()
+		return PrivateFile{}, err
+	}
+	if err := temporary.Close(); err != nil {
+		return PrivateFile{}, err
+	}
+	if err := os.Rename(temporaryName, target); err != nil {
 		return PrivateFile{}, err
 	}
 	digest := sha256.Sum256(data)
 	return PrivateFile{Path: filepath.ToSlash(name), Hash: hex.EncodeToString(digest[:]), Size: int64(len(data)), UpdatedAt: time.Now().UTC()}, nil
+}
+
+func (m *PrivateManager) MakeDir(_ context.Context, instanceID, name string) error {
+	root, err := m.privateRoot(instanceID)
+	if err != nil {
+		return err
+	}
+	target, err := safepath.Join(root, name)
+	if err != nil {
+		return err
+	}
+	if err := rejectSymlinkParents(root, target); err != nil {
+		return err
+	}
+	return os.MkdirAll(target, 0750)
+}
+
+func (m *PrivateManager) Move(_ context.Context, instanceID, from, to string, overwrite bool) error {
+	root, err := m.privateRoot(instanceID)
+	if err != nil {
+		return err
+	}
+	source, err := safepath.Join(root, from)
+	if err != nil {
+		return err
+	}
+	target, err := safepath.Join(root, to)
+	if err != nil {
+		return err
+	}
+	if err := rejectSymlinkParents(root, source); err != nil {
+		return err
+	}
+	if err := rejectSymlinkParents(root, target); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(source); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(target); err == nil {
+		if !overwrite {
+			return errors.New("destination exists")
+		}
+		if err := os.RemoveAll(target); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
+		return err
+	}
+	return os.Rename(source, target)
+}
+
+func (m *PrivateManager) Tree(_ context.Context, instanceID string) ([]PrivateEntry, error) {
+	root, err := m.privateRoot(instanceID)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := scanPrivateTree(root)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]PrivateEntry, 0, len(entries))
+	for path, entry := range entries {
+		result = append(result, PrivateEntry{Path: path, Kind: entry.Kind, Hash: entry.Hash, Size: entry.Size, UpdatedAt: entry.UpdatedAt})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Path < result[j].Path })
+	return result, nil
 }
 func (m *PrivateManager) History(_ context.Context, instanceID, name string) ([]PrivateFile, error) {
 	if err := validateInstanceID(instanceID); err != nil {
