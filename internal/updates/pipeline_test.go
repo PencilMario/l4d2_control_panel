@@ -213,6 +213,59 @@ func TestPackageRollbackRestoresDeletedAppliedEmptyDirectory(t *testing.T) {
 	}
 }
 
+func TestPipelineJournalNormalizesNestedDirectoryBackup(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	base := filepath.Join(root, "instances", "abc")
+	game := filepath.Join(base, "game", "left4dead2", "cfg")
+	if err := os.MkdirAll(filepath.Join(game, "nested"), 0750); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 12; i++ {
+		if err := os.WriteFile(filepath.Join(game, "nested", fmt.Sprintf("%02d.cfg", i)), []byte(strconv.Itoa(i)), 0640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := content.NewPrivateManager(root, 1<<20)
+	if err := m.MakeDir(ctx, "abc", "cfg"); err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := New(root).Begin(ctx, "abc", zipFile(t, map[string]string{"cfg/package.cfg": "new"}), "v2", Hot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journals, _ := filepath.Glob(filepath.Join(base, "backups", "update-*", "journal.json"))
+	value, err := readJournal(journals[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(value.Affected) != 1 || value.Affected[0].Path != "cfg" {
+		t.Fatalf("affected=%v", value.Affected)
+	}
+	backupRoot := filepath.Join(filepath.Dir(journals[0]), "replaced")
+	files := 0
+	if err := filepath.WalkDir(backupRoot, func(_ string, e os.DirEntry, err error) error {
+		if err == nil && !e.IsDir() {
+			files++
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if files != 12 {
+		t.Fatalf("backup files=%d", files)
+	}
+	if err := deployment.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 12; i++ {
+		raw, err := os.ReadFile(filepath.Join(game, "nested", fmt.Sprintf("%02d.cfg", i)))
+		if err != nil || string(raw) != strconv.Itoa(i) {
+			t.Fatalf("%d=%q err=%v", i, raw, err)
+		}
+	}
+}
+
 func TestPipelineRejectsPrivateWorkspaceSymlink(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(root, "outside.cfg")

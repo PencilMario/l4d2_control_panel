@@ -110,6 +110,13 @@ type privateApplyJournal struct {
 	SnapshotID      string              `json:"snapshot_id,omitempty"`
 }
 
+type privateRestoreJournal struct {
+	Version    int    `json:"version"`
+	InstanceID string `json:"instance_id"`
+	Stage      string `json:"stage"`
+	HadOld     bool   `json:"had_old"`
+}
+
 var privateApplyFailureState struct {
 	sync.RWMutex
 	hook func(int) error
@@ -987,39 +994,51 @@ func (m *PrivateManager) Snapshots(_ context.Context, instanceID string) ([]Priv
 }
 
 func (m *PrivateManager) Recover(ctx context.Context) error {
-	pattern := filepath.Join(m.root, "instances", "*", "backups", "private", "apply-*", "journal.json")
-	paths, err := filepath.Glob(pattern)
-	if err != nil {
-		return err
-	}
 	var result error
-	for _, journalPath := range paths {
-		if err := ctx.Err(); err != nil {
+	for _, kind := range []string{"apply-*", "restore-*"} {
+		paths, err := filepath.Glob(filepath.Join(m.root, "instances", "*", "backups", "private", kind, "journal.json"))
+		if err != nil {
 			return errors.Join(result, err)
 		}
-		work := filepath.Dir(journalPath)
-		base := filepath.Dir(filepath.Dir(filepath.Dir(work)))
-		instanceID := filepath.Base(base)
-		lock := m.instanceLock(instanceID)
-		lock.Lock()
-		recoverErr := m.recoverPrivateJournalLocked(journalPath, base, instanceID)
-		lock.Unlock()
-		result = errors.Join(result, recoverErr)
+		for _, journalPath := range paths {
+			if err := ctx.Err(); err != nil {
+				return errors.Join(result, err)
+			}
+			work := filepath.Dir(journalPath)
+			base := filepath.Dir(filepath.Dir(filepath.Dir(work)))
+			instanceID := filepath.Base(base)
+			lock := m.instanceLock(instanceID)
+			lock.Lock()
+			var recoverErr error
+			if strings.HasPrefix(filepath.Base(work), "restore-") {
+				recoverErr = m.recoverPrivateRestoreLocked(journalPath, base, instanceID)
+			} else {
+				recoverErr = m.recoverPrivateJournalLocked(journalPath, base, instanceID)
+			}
+			lock.Unlock()
+			result = errors.Join(result, recoverErr)
+		}
 	}
 	return result
 }
 
 func (m *PrivateManager) recoverPrivateInstanceLocked(ctx context.Context, instanceID, base string) error {
-	paths, err := filepath.Glob(filepath.Join(base, "backups", "private", "apply-*", "journal.json"))
-	if err != nil {
-		return err
-	}
 	var result error
-	for _, path := range paths {
-		if err := ctx.Err(); err != nil {
+	for _, kind := range []string{"apply-*", "restore-*"} {
+		paths, err := filepath.Glob(filepath.Join(base, "backups", "private", kind, "journal.json"))
+		if err != nil {
 			return errors.Join(result, err)
 		}
-		result = errors.Join(result, m.recoverPrivateJournalLocked(path, base, instanceID))
+		for _, path := range paths {
+			if err := ctx.Err(); err != nil {
+				return errors.Join(result, err)
+			}
+			if strings.HasPrefix(filepath.Base(filepath.Dir(path)), "restore-") {
+				result = errors.Join(result, m.recoverPrivateRestoreLocked(path, base, instanceID))
+			} else {
+				result = errors.Join(result, m.recoverPrivateJournalLocked(path, base, instanceID))
+			}
+		}
 	}
 	return result
 }
@@ -1079,49 +1098,183 @@ func (m *PrivateManager) recoverPrivateJournalLocked(journalPath, base, instance
 	return rollbackPrivateApply(work, base, journal)
 }
 
-func (m *PrivateManager) RestoreSnapshot(_ context.Context, instanceID, snapshotID string) error {
+func (m *PrivateManager) RestoreSnapshot(ctx context.Context, instanceID, snapshotID string) error {
 	lock := m.instanceLock(instanceID)
 	lock.Lock()
 	defer lock.Unlock()
 	if err := validateInstanceID(instanceID); err != nil {
 		return err
 	}
-	if snapshotID == "" || filepath.Base(snapshotID) != snapshotID {
+	if !ValidPrivateSnapshotID(snapshotID) {
 		return errors.New("invalid snapshot id")
 	}
 	base := filepath.Join(m.root, "instances", instanceID)
-	source := filepath.Join(base, "backups", "private", "snapshots", snapshotID, "tree")
+	if err := m.recoverPrivateInstanceLocked(ctx, instanceID, base); err != nil {
+		return err
+	}
+	snapshot := filepath.Join(base, "backups", "private", "snapshots", snapshotID)
+	source := filepath.Join(snapshot, "tree")
 	if err := rejectSymlinkParents(base, source); err != nil {
 		return err
 	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(source), "snapshot.json")); err != nil {
+	var metadata struct {
+		PrivateSnapshot
+		Manifest privateManifest `json:"manifest"`
+	}
+	raw, err := os.ReadFile(filepath.Join(snapshot, "snapshot.json"))
+	if err != nil {
 		return err
 	}
-	parent := filepath.Join(base)
-	staging := filepath.Join(parent, ".private-restore-"+uuid.NewString())
+	if err = json.Unmarshal(raw, &metadata); err != nil || metadata.ID != snapshotID || metadata.Manifest.Version != privateManifestVersion || metadata.Manifest.Entries == nil {
+		return errors.New("invalid private snapshot metadata")
+	}
+	for path, entry := range metadata.Manifest.Entries {
+		if err = validateManifestEntry(path, entry); err != nil {
+			return err
+		}
+	}
+	actual, err := scanPrivateTree(source)
+	if err != nil {
+		return err
+	}
+	if !samePrivateTree(actual, metadata.Manifest.Entries) {
+		return errors.New("private snapshot tree does not match manifest")
+	}
+	work := filepath.Join(base, "backups", "private", "restore-"+uuid.NewString())
+	staging := filepath.Join(work, "staged")
 	if err := copyTreeExact(source, staging); err != nil {
 		return err
 	}
 	workspace := filepath.Join(base, "private")
-	backup := filepath.Join(parent, ".private-old-"+uuid.NewString())
+	backup := filepath.Join(work, "old")
 	hadOld := false
 	if _, err := os.Stat(workspace); err == nil {
 		hadOld = true
-		if err = os.Rename(workspace, backup); err != nil {
-			_ = os.RemoveAll(staging)
-			return err
-		}
 	} else if !errors.Is(err, os.ErrNotExist) {
+		_ = os.RemoveAll(work)
 		return err
+	}
+	journal := privateRestoreJournal{Version: 1, InstanceID: instanceID, Stage: "prepared", HadOld: hadOld}
+	journalPath := filepath.Join(work, "journal.json")
+	if err := writeJSONAtomic(journalPath, journal); err != nil {
+		return err
+	}
+	fail := func(cause error) error {
+		return errors.Join(cause, m.rollbackPrivateRestore(work, base, journal))
+	}
+	journal.Stage = "old_moved"
+	if err = writeJSONAtomic(journalPath, journal); err != nil {
+		return fail(err)
+	}
+	if hadOld {
+		if err = os.Rename(workspace, backup); err != nil {
+			return fail(err)
+		}
 	}
 	if err := os.Rename(staging, workspace); err != nil {
-		if hadOld {
-			_ = os.Rename(backup, workspace)
+		return fail(err)
+	}
+	journal.Stage = "published"
+	if err = writeJSONAtomic(journalPath, journal); err != nil {
+		return fail(err)
+	}
+	journal.Stage = "committed"
+	if err = writeJSONAtomic(journalPath, journal); err != nil {
+		return fail(err)
+	}
+	m.cleanupPrivate(base, "restore-work", func() error { return os.RemoveAll(work) })
+	return nil
+}
+
+func samePrivateTree(actual, expected map[string]manifestEntry) bool {
+	if len(actual) != len(expected) {
+		return false
+	}
+	for path, want := range expected {
+		got, ok := actual[path]
+		if !ok || got.Kind != want.Kind || got.Hash != want.Hash || got.Size != want.Size {
+			return false
 		}
+	}
+	return true
+}
+
+func (m *PrivateManager) recoverPrivateRestoreLocked(journalPath, base, instanceID string) error {
+	work := filepath.Dir(journalPath)
+	root := filepath.Join(base, "backups", "private")
+	name := filepath.Base(work)
+	if filepath.Dir(work) != root || !strings.HasPrefix(name, "restore-") {
+		return errors.New("invalid private restore journal path")
+	}
+	if _, err := uuid.Parse(strings.TrimPrefix(name, "restore-")); err != nil {
+		return errors.New("invalid private restore journal id")
+	}
+	if err := rejectSymlinkParents(root, journalPath); err != nil {
 		return err
 	}
-	_ = os.RemoveAll(backup)
-	return nil
+	raw, err := os.ReadFile(journalPath)
+	if err != nil {
+		return err
+	}
+	var journal privateRestoreJournal
+	if err = json.Unmarshal(raw, &journal); err != nil {
+		return err
+	}
+	if journal.Version != 1 || journal.InstanceID != instanceID || filepath.Base(instanceID) != instanceID {
+		return errors.New("invalid private restore journal identity")
+	}
+	if !map[string]bool{"prepared": true, "old_moved": true, "published": true, "committed": true}[journal.Stage] {
+		return errors.New("invalid private restore journal stage")
+	}
+	for _, path := range []string{work, journalPath, filepath.Join(work, "old"), filepath.Join(work, "staged")} {
+		if _, statErr := os.Lstat(path); statErr == nil {
+			if err = rejectSymlinkParents(root, path); err != nil {
+				return err
+			}
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
+		}
+	}
+	if info, statErr := os.Lstat(work); statErr != nil || !info.IsDir() {
+		return errors.New("invalid private restore work directory")
+	}
+	if info, statErr := os.Lstat(journalPath); statErr != nil || !info.Mode().IsRegular() {
+		return errors.New("invalid private restore journal file")
+	}
+	if info, statErr := os.Lstat(filepath.Join(work, "old")); statErr == nil && !info.IsDir() {
+		return errors.New("invalid private restore backup")
+	} else if journal.Stage == "published" && journal.HadOld && errors.Is(statErr, os.ErrNotExist) {
+		return errors.New("private restore backup is missing")
+	}
+	if journal.Stage == "committed" {
+		m.cleanupPrivate(base, "restore-work", func() error { return os.RemoveAll(work) })
+		return nil
+	}
+	return m.rollbackPrivateRestore(work, base, journal)
+}
+
+func (m *PrivateManager) rollbackPrivateRestore(work, base string, journal privateRestoreJournal) error {
+	workspace := filepath.Join(base, "private")
+	old := filepath.Join(work, "old")
+	var result error
+	if journal.Stage == "old_moved" || journal.Stage == "published" {
+		oldInfo, oldErr := os.Lstat(old)
+		if oldErr != nil && !errors.Is(oldErr, os.ErrNotExist) {
+			result = errors.Join(result, oldErr)
+		} else if journal.HadOld && oldErr == nil && oldInfo.IsDir() {
+			if err := os.RemoveAll(workspace); err != nil {
+				result = errors.Join(result, err)
+			} else {
+				result = errors.Join(result, os.Rename(old, workspace))
+			}
+		} else if !journal.HadOld {
+			result = errors.Join(result, os.RemoveAll(workspace))
+		}
+	}
+	if result == nil {
+		result = os.RemoveAll(work)
+	}
+	return result
 }
 
 func prunePrivateSnapshots(base string, keep int) error {

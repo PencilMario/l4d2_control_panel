@@ -151,6 +151,15 @@ func (p *Pipeline) Begin(ctx context.Context, instanceID, archivePath, version s
 	if err := collectFiles(filepath.Join(base, "private"), affected); err != nil {
 		return nil, err
 	}
+	for path := range affected {
+		parts := strings.Split(path, "/")
+		for i := 1; i < len(parts); i++ {
+			if affected[strings.Join(parts[:i], "/")] {
+				delete(affected, path)
+				break
+			}
+		}
+	}
 	paths := make([]string, 0, len(affected))
 	for path := range affected {
 		paths = append(paths, path)

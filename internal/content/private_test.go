@@ -1,6 +1,7 @@
 package content
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -304,6 +305,88 @@ func TestPrivateSnapshotsRetainAndRestoreWorkspace(t *testing.T) {
 	after, _ := manager.Snapshots(ctx, "abc")
 	if after[0].ID == selected.ID {
 		t.Fatal("apply rewrote snapshot history")
+	}
+}
+
+func TestPrivateRestoreSnapshotRejectsTampering(t *testing.T) {
+	for _, kind := range []string{"file", "extra", "metadata"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			m := NewPrivateManager(root, 1<<20)
+			ctx := context.Background()
+			if _, err := m.Save(ctx, "abc", "cfg/a.cfg", []byte("one")); err != nil {
+				t.Fatal(err)
+			}
+			if err := m.ApplyChanges(ctx, "abc"); err != nil {
+				t.Fatal(err)
+			}
+			snapshots, _ := m.Snapshots(ctx, "abc")
+			snapshot := filepath.Join(root, "instances", "abc", "backups", "private", "snapshots", snapshots[0].ID)
+			switch kind {
+			case "file":
+				if err := os.WriteFile(filepath.Join(snapshot, "tree", "cfg", "a.cfg"), []byte("tampered"), 0640); err != nil {
+					t.Fatal(err)
+				}
+			case "extra":
+				if err := os.WriteFile(filepath.Join(snapshot, "tree", "extra.cfg"), []byte("x"), 0640); err != nil {
+					t.Fatal(err)
+				}
+			case "metadata":
+				raw, _ := os.ReadFile(filepath.Join(snapshot, "snapshot.json"))
+				raw = bytes.Replace(raw, []byte(snapshots[0].ID), []byte("20000101T000000.000000000Z-11111111-1111-1111-1111-111111111111"), 1)
+				if err := os.WriteFile(filepath.Join(snapshot, "snapshot.json"), raw, 0640); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, _ := m.Read(ctx, "abc", "cfg/a.cfg")
+			if err := m.RestoreSnapshot(ctx, "abc", snapshots[0].ID); err == nil {
+				t.Fatal("tampered snapshot accepted")
+			}
+			after, _ := m.Read(ctx, "abc", "cfg/a.cfg")
+			if string(after) != string(before) {
+				t.Fatal("workspace changed")
+			}
+		})
+	}
+}
+
+func TestPrivateRecoverRollsBackInterruptedRestore(t *testing.T) {
+	for _, stage := range []string{"old_moved", "published"} {
+		t.Run(stage, func(t *testing.T) {
+			root := t.TempDir()
+			m := NewPrivateManager(root, 1<<20)
+			base := filepath.Join(root, "instances", "abc")
+			work := filepath.Join(base, "backups", "private", "restore-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+			workspace := filepath.Join(base, "private")
+			if err := os.MkdirAll(filepath.Join(work, "old", "cfg"), 0750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(work, "old", "cfg", "a.cfg"), []byte("old"), 0640); err != nil {
+				t.Fatal(err)
+			}
+			if stage == "published" {
+				if err := os.MkdirAll(filepath.Join(workspace, "cfg"), 0750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(workspace, "cfg", "a.cfg"), []byte("new"), 0640); err != nil {
+					t.Fatal(err)
+				}
+			}
+			journal := privateRestoreJournal{Version: 1, InstanceID: "abc", Stage: stage, HadOld: true}
+			if err := writeJSONAtomic(filepath.Join(work, "journal.json"), journal); err != nil {
+				t.Fatal(err)
+			}
+			if err := m.Recover(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(filepath.Join(workspace, "cfg", "a.cfg"))
+			if err != nil || string(raw) != "old" {
+				t.Fatalf("workspace=%q err=%v", raw, err)
+			}
+			if _, err := os.Stat(work); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("journal remains: %v", err)
+			}
+		})
 	}
 }
 
