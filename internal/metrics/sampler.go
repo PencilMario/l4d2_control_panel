@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"log"
 	"sort"
 	"sync"
 	"time"
@@ -61,7 +62,7 @@ type Issue struct {
 type Snapshot struct {
 	Timestamp                time.Time `json:"timestamp"`
 	RunID                    string    `json:"run_id"`
-	ContainerRunning         bool      `json:"container_running"`
+	ContainerRunning         *bool     `json:"container_running"`
 	CPUPercent               *float64  `json:"cpu_percent"`
 	MemoryBytes              *uint64   `json:"memory_bytes"`
 	MemoryLimitBytes         *uint64   `json:"memory_limit_bytes"`
@@ -96,22 +97,23 @@ type Sampler struct {
 	players   PlayerProvider
 	clock     Clock
 
-	mu        sync.RWMutex
-	latest    map[string]Snapshot
-	history   map[string][]Snapshot
-	previous  map[string]counterSample
-	runs      map[string]string
-	startOnce sync.Once
-	stopOnce  sync.Once
-	cancel    context.CancelFunc
-	done      chan struct{}
+	mu          sync.RWMutex
+	latest      map[string]Snapshot
+	history     map[string][]Snapshot
+	previous    map[string]counterSample
+	runs        map[string]string
+	workerCount int
+	startOnce   sync.Once
+	stopOnce    sync.Once
+	cancel      context.CancelFunc
+	done        chan struct{}
 }
 
 func New(instances InstanceSource, runtime RuntimeProvider, trafficProvider TrafficProvider, playerProvider PlayerProvider, clock Clock) *Sampler {
 	if clock == nil {
 		clock = realClock{}
 	}
-	return &Sampler{instances: instances, runtime: runtime, traffic: trafficProvider, players: playerProvider, clock: clock, latest: map[string]Snapshot{}, history: map[string][]Snapshot{}, previous: map[string]counterSample{}, runs: map[string]string{}, done: make(chan struct{})}
+	return &Sampler{instances: instances, runtime: runtime, traffic: trafficProvider, players: playerProvider, clock: clock, latest: map[string]Snapshot{}, history: map[string][]Snapshot{}, previous: map[string]counterSample{}, runs: map[string]string{}, workerCount: maxConcurrentInstances, done: make(chan struct{})}
 }
 
 func (s *Sampler) Start(ctx context.Context) {
@@ -161,25 +163,34 @@ func (s *Sampler) Sample(ctx context.Context) {
 	for _, instance := range instances {
 		present[instance.ID] = struct{}{}
 	}
-	s.prune(present)
-	sem := make(chan struct{}, maxConcurrentInstances)
+	s.prune(ctx, present)
+	workers := s.workerCount
+	if workers < 1 {
+		workers = 1
+	}
+	jobs := make(chan domain.Instance, workers)
 	var wg sync.WaitGroup
-	for _, instance := range instances {
-		instance := instance
+	for range workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				return
+			for instance := range jobs {
+				instanceCtx, cancel := context.WithTimeout(ctx, instanceTimeout)
+				s.sampleInstance(instanceCtx, instance)
+				cancel()
 			}
-			defer func() { <-sem }()
-			instanceCtx, cancel := context.WithTimeout(ctx, instanceTimeout)
-			defer cancel()
-			s.sampleInstance(instanceCtx, instance)
 		}()
 	}
+	for _, instance := range instances {
+		select {
+		case jobs <- instance:
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return
+		}
+	}
+	close(jobs)
 	wg.Wait()
 }
 
@@ -189,16 +200,21 @@ func (s *Sampler) sampleInstance(ctx context.Context, instance domain.Instance) 
 	runtimeState, err := s.runtime.Runtime(ctx, instance.ContainerID)
 	if err != nil {
 		snapshot.Issues = append(snapshot.Issues, issue("runtime", err))
-		s.stopPrevious(ctx, instance.ID)
-		s.publish(instance.ID, snapshot, counterSample{})
+		snapshot.RunID = s.priorRun(instance.ID)
+		counters := counterSample{timestamp: now, runID: snapshot.RunID}
+		s.sampleStats(ctx, instance.ContainerID, &snapshot, &counters)
+		s.sampleTraffic(ctx, instance.ID, snapshot.RunID, &snapshot, &counters)
+		s.samplePlayers(ctx, instance.ID, &snapshot)
+		s.publish(instance.ID, snapshot, nil)
 		return
 	}
 	if !runtimeState.Running {
+		snapshot.ContainerRunning = boolptr(false)
 		s.stopPrevious(ctx, instance.ID)
-		s.publish(instance.ID, snapshot, counterSample{})
+		s.publish(instance.ID, snapshot, &counterSample{})
 		return
 	}
-	snapshot.ContainerRunning = true
+	snapshot.ContainerRunning = boolptr(true)
 	snapshot.RunID = runtimeState.StartedAt.UTC().Format(time.RFC3339Nano)
 	uptime := now.Sub(runtimeState.StartedAt.UTC())
 	if uptime < 0 {
@@ -214,7 +230,15 @@ func (s *Sampler) sampleInstance(ctx context.Context, instance domain.Instance) 
 	}
 
 	counters := counterSample{timestamp: now, runID: snapshot.RunID}
-	if stats, err := s.runtime.Stats(ctx, instance.ContainerID); err != nil {
+	s.sampleStats(ctx, instance.ContainerID, &snapshot, &counters)
+	s.sampleTraffic(ctx, instance.ID, snapshot.RunID, &snapshot, &counters)
+
+	s.samplePlayers(ctx, instance.ID, &snapshot)
+	s.publish(instance.ID, snapshot, &counters)
+}
+
+func (s *Sampler) sampleStats(ctx context.Context, containerID string, snapshot *Snapshot, counters *counterSample) {
+	if stats, err := s.runtime.Stats(ctx, containerID); err != nil {
 		snapshot.Issues = append(snapshot.Issues, issue("docker_stats", err))
 	} else {
 		snapshot.CPUPercent = float64ptr(stats.CPUPercent)
@@ -229,9 +253,12 @@ func (s *Sampler) sampleInstance(ctx context.Context, instance domain.Instance) 
 		counters.read = uint64ptr(stats.BlockReadBytes)
 		counters.write = uint64ptr(stats.BlockWriteBytes)
 	}
-	if totals, err := s.traffic.Totals(ctx, instance.ID); err != nil {
+}
+
+func (s *Sampler) sampleTraffic(ctx context.Context, instanceID, runID string, snapshot *Snapshot, counters *counterSample) {
+	if totals, err := s.traffic.Totals(ctx, instanceID); err != nil {
 		snapshot.Issues = append(snapshot.Issues, issue("traffic_totals", err))
-	} else if totals.RunID == "" || totals.RunID == snapshot.RunID {
+	} else if totals.RunID == "" || totals.RunID == runID {
 		snapshot.NetworkRXBytes = uint64ptr(totals.RXBytes)
 		snapshot.NetworkTXBytes = uint64ptr(totals.TXBytes)
 		counters.rx = uint64ptr(totals.RXBytes)
@@ -239,9 +266,11 @@ func (s *Sampler) sampleInstance(ctx context.Context, instance domain.Instance) 
 	} else {
 		snapshot.Issues = append(snapshot.Issues, Issue{Source: "traffic_totals", Message: "run ID mismatch"})
 	}
+}
 
+func (s *Sampler) samplePlayers(ctx context.Context, id string, snapshot *Snapshot) {
 	started := s.clock.Now()
-	if summary, err := s.players.Summary(ctx, instance.ID); err != nil {
+	if summary, err := s.players.Summary(ctx, id); err != nil {
 		snapshot.Issues = append(snapshot.Issues, issue("a2s", err))
 	} else {
 		latency := s.clock.Now().Sub(started).Seconds() * 1000
@@ -250,13 +279,12 @@ func (s *Sampler) sampleInstance(ctx context.Context, instance domain.Instance) 
 		snapshot.Players = intptr(summary.Players)
 		snapshot.MaxPlayers = intptr(summary.MaxPlayers)
 	}
-	s.publish(instance.ID, snapshot, counters)
 }
 
-func (s *Sampler) publish(id string, snapshot Snapshot, counters counterSample) {
+func (s *Sampler) publish(id string, snapshot Snapshot, counters *counterSample) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if previous, ok := s.previous[id]; ok && counters.runID != "" {
+	if previous, ok := s.previous[id]; ok && counters != nil && counters.runID != "" {
 		elapsed := counters.timestamp.Sub(previous.timestamp)
 		if previous.runID == counters.runID && elapsed > 0 && elapsed <= MaxRateInterval {
 			seconds := elapsed.Seconds()
@@ -266,12 +294,14 @@ func (s *Sampler) publish(id string, snapshot Snapshot, counters counterSample) 
 			snapshot.BlockWriteBytesPerSecond = rate(previous.write, counters.write, seconds)
 		}
 	}
-	if counters.runID != "" {
-		s.previous[id] = cloneCounters(counters)
-		s.runs[id] = counters.runID
-	} else {
-		delete(s.previous, id)
-		delete(s.runs, id)
+	if counters != nil {
+		if counters.runID != "" {
+			s.previous[id] = cloneCounters(*counters)
+			s.runs[id] = counters.runID
+		} else {
+			delete(s.previous, id)
+			delete(s.runs, id)
+		}
 	}
 	copySnapshot := cloneSnapshot(snapshot)
 	s.latest[id] = copySnapshot
@@ -291,16 +321,35 @@ func (s *Sampler) stopPrevious(ctx context.Context, id string) {
 	}
 }
 
-func (s *Sampler) prune(present map[string]struct{}) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Sampler) priorRun(id string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.runs[id]
+}
+
+func (s *Sampler) prune(ctx context.Context, present map[string]struct{}) {
+	s.mu.RLock()
+	removed := make(map[string]string)
 	for id := range s.latest {
 		if _, ok := present[id]; !ok {
-			delete(s.latest, id)
-			delete(s.history, id)
-			delete(s.previous, id)
-			delete(s.runs, id)
+			removed[id] = s.runs[id]
 		}
+	}
+	s.mu.RUnlock()
+	for id, runID := range removed {
+		if runID != "" {
+			if err := s.traffic.Stop(ctx, id, runID); err != nil {
+				log.Printf("metrics: stop removed instance %s traffic session: %v", id, err)
+			}
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id := range removed {
+		delete(s.latest, id)
+		delete(s.history, id)
+		delete(s.previous, id)
+		delete(s.runs, id)
 	}
 }
 
@@ -323,6 +372,7 @@ func (s *Sampler) History(id string) []Snapshot {
 func issue(source string, err error) Issue { return Issue{Source: source, Message: err.Error()} }
 func uint64ptr(v uint64) *uint64           { return &v }
 func float64ptr(v float64) *float64        { return &v }
+func boolptr(v bool) *bool                 { return &v }
 func intptr(v int) *int                    { return &v }
 func stringptr(v string) *string           { return &v }
 func rate(old, new *uint64, seconds float64) *float64 {
@@ -350,6 +400,12 @@ func cloneFloat64(v *float64) *float64 {
 	}
 	return float64ptr(*v)
 }
+func cloneBool(v *bool) *bool {
+	if v == nil {
+		return nil
+	}
+	return boolptr(*v)
+}
 func cloneInt(v *int) *int {
 	if v == nil {
 		return nil
@@ -363,6 +419,7 @@ func cloneString(v *string) *string {
 	return stringptr(*v)
 }
 func cloneSnapshot(v Snapshot) Snapshot {
+	v.ContainerRunning = cloneBool(v.ContainerRunning)
 	v.CPUPercent = cloneFloat64(v.CPUPercent)
 	v.MemoryBytes = cloneUint64(v.MemoryBytes)
 	v.MemoryLimitBytes = cloneUint64(v.MemoryLimitBytes)

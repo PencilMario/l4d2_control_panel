@@ -30,9 +30,13 @@ type fakeRuntime struct {
 	runtime              map[string]docker.RuntimeState
 	stats                map[string]docker.ResourceStats
 	runtimeErr, statsErr error
+	runtimeFn            func(context.Context, string) (docker.RuntimeState, error)
 }
 
-func (f *fakeRuntime) Runtime(context.Context, string) (docker.RuntimeState, error) {
+func (f *fakeRuntime) Runtime(ctx context.Context, id string) (docker.RuntimeState, error) {
+	if f.runtimeFn != nil {
+		return f.runtimeFn(ctx, id)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, v := range f.runtime {
@@ -151,7 +155,7 @@ func TestStartSamplesImmediatelyTicksAndStops(t *testing.T) {
 	}
 	clock.Advance(5 * time.Second)
 	second := waitLatest(t, s, "one", now.Add(5*time.Second))
-	if !second.ContainerRunning {
+	if second.ContainerRunning == nil || !*second.ContainerRunning {
 		t.Fatal("running=false")
 	}
 	cancel()
@@ -249,7 +253,7 @@ func TestPartialFailuresAndStoppedGap(t *testing.T) {
 	runtime.runtime["container"] = docker.RuntimeState{Running: false}
 	s.Sample(context.Background())
 	gap, _ := s.Latest("one")
-	if gap.ContainerRunning || gap.CPUPercent != nil || len(network.stopped) == 0 || network.stopped[len(network.stopped)-1].RunID != running.RunID {
+	if gap.ContainerRunning == nil || *gap.ContainerRunning || gap.CPUPercent != nil || len(network.stopped) == 0 || network.stopped[len(network.stopped)-1].RunID != running.RunID {
 		t.Fatalf("gap=%+v stops=%+v", gap, network.stopped)
 	}
 	s.Sample(context.Background())
@@ -286,4 +290,173 @@ func TestHistoryRetains720CopiesAndPrunesRemovedInstances(t *testing.T) {
 	if _, ok := s.Latest("one"); ok || len(s.History("one")) != 0 {
 		t.Fatal("removed instance retained")
 	}
+}
+
+func TestRuntimeFailurePublishesUnknownPreservesSessionAndSamplesA2S(t *testing.T) {
+	now := time.Now().UTC()
+	s, _, runtime, network, _, clock := testSampler(now)
+	s.Sample(context.Background())
+	prior, _ := s.Latest("one")
+	runtime.runtimeErr = errors.New("runtime unavailable")
+	clock.mu.Lock()
+	clock.now = clock.now.Add(5 * time.Second)
+	clock.mu.Unlock()
+	s.Sample(context.Background())
+	got, _ := s.Latest("one")
+	if got.ContainerRunning != nil {
+		t.Fatalf("running must be unknown: %v", *got.ContainerRunning)
+	}
+	if got.RunID != prior.RunID || len(network.stopped) != 0 {
+		t.Fatalf("prior session changed: run=%q stops=%+v", got.RunID, network.stopped)
+	}
+	if got.Map == nil || *got.Map != "c1m1_hotel" || got.A2SLatencyMS == nil || *got.A2SLatencyMS != 25 {
+		t.Fatalf("A2S not isolated: %+v", got)
+	}
+	if got.CPUPercent == nil || got.NetworkRXBytes == nil {
+		t.Fatalf("independent Docker/traffic sources were suppressed: %+v", got)
+	}
+	if !hasIssue(got.Issues, "runtime") {
+		t.Fatalf("issues=%+v", got.Issues)
+	}
+}
+
+func TestRemovedInstanceStopsPriorSessionAndPrunesEvenWhenStopFails(t *testing.T) {
+	now := time.Now().UTC()
+	for _, stopErr := range []error{nil, errors.New("stop failed")} {
+		s, instances, _, network, _, _ := testSampler(now)
+		s.Sample(context.Background())
+		prior, _ := s.Latest("one")
+		network.err = stopErr
+		instances.mu.Lock()
+		instances.items = nil
+		instances.mu.Unlock()
+		s.Sample(context.Background())
+		if len(network.stopped) != 1 || network.stopped[0].RunID != prior.RunID {
+			t.Fatalf("stop=%+v", network.stopped)
+		}
+		if _, ok := s.Latest("one"); ok || len(s.History("one")) != 0 {
+			t.Fatal("removed instance retained after stop attempt")
+		}
+	}
+}
+
+func TestSnapshotCopiesMemoryLimitAndNegativeUptime(t *testing.T) {
+	now := time.Now().UTC()
+	s, _, runtime, _, player, _ := testSampler(now)
+	runtime.stats["container"] = docker.ResourceStats{MemoryBytes: 12, MemoryLimitBytes: 0}
+	runtime.runtime["container"] = docker.RuntimeState{Running: true, StartedAt: now.Add(time.Minute)}
+	player.err = errors.New("a2s unavailable")
+	s.Sample(context.Background())
+	got, _ := s.Latest("one")
+	if got.MemoryPercent != nil || got.UptimeSeconds == nil || *got.UptimeSeconds != 0 {
+		t.Fatalf("memory/uptime=%+v", got)
+	}
+	got.Issues[0].Source = "mutated"
+	*got.MemoryBytes = 999
+	*got.ContainerRunning = false
+	fresh, _ := s.Latest("one")
+	if *fresh.MemoryBytes == 999 || !*fresh.ContainerRunning || hasIssue(fresh.Issues, "mutated") {
+		t.Fatalf("Latest aliases internal state: %+v", fresh)
+	}
+}
+
+type workerRuntime struct {
+	mu        sync.Mutex
+	active    int
+	maxActive int
+	started   chan string
+	release   chan struct{}
+	blockedID string
+	calls     int
+}
+
+func (w *workerRuntime) Runtime(ctx context.Context, id string) (docker.RuntimeState, error) {
+	w.mu.Lock()
+	w.active++
+	w.calls++
+	if w.active > w.maxActive {
+		w.maxActive = w.active
+	}
+	w.mu.Unlock()
+	defer func() { w.mu.Lock(); w.active--; w.mu.Unlock() }()
+	w.started <- id
+	if id == w.blockedID {
+		select {
+		case <-w.release:
+		case <-ctx.Done():
+			return docker.RuntimeState{}, ctx.Err()
+		}
+	}
+	return docker.RuntimeState{Running: false}, nil
+}
+
+func TestWorkerPoolProcessesMoreJobsThanWorkers(t *testing.T) {
+	items := make([]domain.Instance, 9)
+	for i := range items {
+		items[i] = domain.Instance{ID: string(rune('a' + i)), ContainerID: string(rune('a' + i))}
+	}
+	runtime := &workerRuntime{started: make(chan string, len(items)), release: make(chan struct{})}
+	s := New(&fakeInstances{items: items}, runtime, &fakeTraffic{}, &fakePlayers{}, newFakeClock(time.Now()))
+	s.workerCount = 3
+	s.Sample(context.Background())
+	runtime.mu.Lock()
+	calls, maxActive := runtime.calls, runtime.maxActive
+	runtime.mu.Unlock()
+	if calls != len(items) || maxActive > 3 {
+		t.Fatalf("calls=%d max active=%d", calls, maxActive)
+	}
+	for _, instance := range items {
+		if _, ok := s.Latest(instance.ID); !ok {
+			t.Fatalf("missing snapshot for %s", instance.ID)
+		}
+	}
+}
+func (*workerRuntime) Stats(context.Context, string) (docker.ResourceStats, error) {
+	return docker.ResourceStats{}, nil
+}
+
+func TestSampleUsesBoundedWorkersAndCancellation(t *testing.T) {
+	items := make([]domain.Instance, 9)
+	for i := range items {
+		items[i] = domain.Instance{ID: string(rune('a' + i)), ContainerID: string(rune('a' + i))}
+	}
+	runtime := &workerRuntime{started: make(chan string, len(items)), release: make(chan struct{}), blockedID: "a"}
+	s := New(&fakeInstances{items: items}, runtime, &fakeTraffic{}, &fakePlayers{}, newFakeClock(time.Now()))
+	s.workerCount = 2
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { s.Sample(ctx); close(done) }()
+	seenOther := false
+	for !seenOther {
+		select {
+		case id := <-runtime.started:
+			seenOther = id != "a"
+		case <-time.After(time.Second):
+			t.Fatal("blocked job prevented another worker")
+		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Sample ignored cancellation")
+	}
+	runtime.mu.Lock()
+	maxActive := runtime.maxActive
+	runtime.mu.Unlock()
+	if maxActive > 2 {
+		t.Fatalf("max active=%d", maxActive)
+	}
+	if _, ok := s.Latest("b"); !ok {
+		t.Fatal("other worker did not publish")
+	}
+}
+
+func hasIssue(issues []Issue, source string) bool {
+	for _, got := range issues {
+		if got.Source == source {
+			return true
+		}
+	}
+	return false
 }
