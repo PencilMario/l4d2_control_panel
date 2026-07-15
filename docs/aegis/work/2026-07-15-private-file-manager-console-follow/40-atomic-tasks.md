@@ -15,9 +15,9 @@
 - [x] Task 5 implementation
 - [x] Task 5 spec compliance review
 - [x] Task 5 code quality review
-- [ ] Task 6 implementation
-- [ ] Task 6 spec compliance review
-- [ ] Task 6 code quality review
+- [x] Task 6 implementation
+- [x] Task 6 spec compliance review
+- [x] Task 6 code quality review
 - [ ] Task 7 implementation
 - [ ] Task 7 spec compliance review
 - [ ] Task 7 code quality review

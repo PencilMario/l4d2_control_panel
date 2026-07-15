@@ -9,12 +9,12 @@ Updated: 2026-07-15 18:10 +08:00
 - [x] Task 3: Resumable uploads and complete HTTP contract
 - [x] Task 4: Independent private-files Tab
 - [x] Task 5: Console follow-latest state machine
-- [ ] Task 6: Browser acceptance
+- [x] Task 6: Browser acceptance
 - [ ] Task 7: Full regression, documentation and retirement audit
 
 ## Active slice
 
-Task 6. Prove the file-manager journey, responsive layout and console scroll intent through desktop/mobile browser acceptance.
+Task 7. Run the complete verification matrix, audit retired owners, and record final documentation/evidence.
 
 ## Completed
 
@@ -39,6 +39,8 @@ Task 6. Prove the file-manager journey, responsive layout and console scroll int
 - Task 4 spec and quality reviews approved after real upload resume, Job completion refresh, content-based editor validation, path history, focus trapping, pending guards, instance isolation, serialized polling and incremental hashing.
 - Task 5 commits `d46dd9a`, `2724573`; target 30/30, full web 51/51 and build passed.
 - Task 5 spec and quality reviews approved after fixing pending-RAF user-scroll cancellation under sustained output.
+- Task 6 commits `828782a`, `da6a3e2`; fixture tests, Vitest, and Playwright desktop/mobile 2/2 passed.
+- Task 6 spec and quality reviews approved after fixture traversal hardening and deterministic delete/snapshot/scroll assertions.
 
 ## Evidence refs
 
@@ -52,7 +54,7 @@ Nothing.
 
 ## ResumeStateHint
 
-Read this checkpoint, the intent, baseline read set, approved spec and plan. Confirm the worktree branch and diff agree with this checkpoint. Resume Task 6 only; do not start Task 7 until Task 6 implementation, spec review and code-quality review all pass.
+Read this checkpoint, the intent, baseline read set, approved spec and plan. Confirm the worktree branch and diff agree with this checkpoint. Resume Task 7 and final review only.
 
 ## DriftCheckDraft
 
@@ -65,4 +67,4 @@ Read this checkpoint, the intent, baseline read set, approved spec and plan. Con
 - Task 2 residual: Windows normal symlinks are covered; junction/reparse subtype reporting remains dependent on Go runtime behavior.
 - Intermittent Windows TempDir cleanup/file-lock noise occurred across unrelated tests; required fresh and repeated focused suites passed.
 - Task 3 residual Minor: per-upload session mutex registry does not evict UUID locks.
-- Decision: continue to Task 6.
+- Decision: continue to Task 7.
