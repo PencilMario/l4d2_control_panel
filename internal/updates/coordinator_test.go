@@ -4,9 +4,23 @@ import (
 	"context"
 	"errors"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
+	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"strings"
 	"testing"
 )
+
+type packageRepo struct {
+	instance domain.Instance
+}
+
+func (r *packageRepo) Instance(context.Context, string) (domain.Instance, error) {
+	return r.instance, nil
+}
+
+func (r *packageRepo) UpdateInstance(_ context.Context, value domain.Instance) error {
+	r.instance = value
+	return nil
+}
 
 type fakeLifecycle struct {
 	events        []string
@@ -58,30 +72,69 @@ func (f fakeDeployer) Begin(context.Context, string, string, string, Mode) (Depl
 }
 func TestFullCoordinatorStopsDeploysAndStarts(t *testing.T) {
 	life := &fakeLifecycle{}
-	coordinator := Coordinator{Lifecycle: life, Deployer: fakeDeployer{life: life}}
-	err := coordinator.ApplyPackage(context.Background(), "abc", content.PackageVersion{ArchivePath: "p.zip", Version: "v1"}, Full)
+	repo := &packageRepo{instance: domain.Instance{ID: "abc", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}}
+	coordinator := Coordinator{Instances: repo, Lifecycle: life, Deployer: fakeDeployer{life: life}}
+	err := coordinator.ApplyPackage(context.Background(), "abc", content.PackageVersion{ID: "pkg-v1", ArchivePath: "p.zip", Version: "v1"}, Full)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.Join(life.events, ","); got != "stop,deploy,start,commit" {
 		t.Fatalf("events=%s", got)
 	}
+	if repo.instance.SelectedPackageID != "pkg-v1" || repo.instance.PackageVersion != "pkg-v1" {
+		t.Fatalf("instance=%#v", repo.instance)
+	}
+}
+
+func TestFullCoordinatorKeepsStoppedInstanceStopped(t *testing.T) {
+	life := &fakeLifecycle{}
+	repo := &packageRepo{instance: domain.Instance{ID: "abc", DesiredState: domain.StateStopped, ActualState: domain.StateStopped, SelectedPackageID: "pkg-v2", PackageVersion: "pkg-v1"}}
+	coordinator := Coordinator{Instances: repo, Lifecycle: life, Deployer: fakeDeployer{life: life}}
+	if err := coordinator.ApplyPackage(context.Background(), "abc", content.PackageVersion{ID: "pkg-v2", ArchivePath: "p.zip", Version: "v2"}, Full); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(life.events, ","); got != "deploy,commit" {
+		t.Fatalf("events=%s", got)
+	}
+	if repo.instance.PackageVersion != "pkg-v2" {
+		t.Fatalf("instance=%#v", repo.instance)
+	}
+}
+
+func TestHotCoordinatorMarksPackageAfterCommit(t *testing.T) {
+	life := &fakeLifecycle{}
+	repo := &packageRepo{instance: domain.Instance{ID: "abc", SelectedPackageID: "pkg-v1", PackageVersion: "pkg-v1"}}
+	coordinator := Coordinator{Instances: repo, Lifecycle: life, Deployer: fakeDeployer{life: life}}
+	if err := coordinator.ApplyPackage(context.Background(), "abc", content.PackageVersion{ID: "pkg-v2", ArchivePath: "p.zip", Version: "v2"}, Hot); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(life.events, ","); got != "deploy,commit" {
+		t.Fatalf("events=%s", got)
+	}
+	if repo.instance.SelectedPackageID != "pkg-v2" || repo.instance.PackageVersion != "pkg-v2" {
+		t.Fatalf("instance=%#v", repo.instance)
+	}
 }
 
 func TestFullCoordinatorRollsBackWhenRestartHealthFails(t *testing.T) {
 	life := &fakeLifecycle{startFailures: 1}
-	coordinator := Coordinator{Lifecycle: life, Deployer: fakeDeployer{life: life}}
-	if err := coordinator.ApplyPackage(context.Background(), "abc", content.PackageVersion{ArchivePath: "p.zip", Version: "v2"}, Full); err == nil {
+	repo := &packageRepo{instance: domain.Instance{ID: "abc", DesiredState: domain.StateRunning, ActualState: domain.StateRunning, SelectedPackageID: "pkg-v2", PackageVersion: "pkg-v1"}}
+	coordinator := Coordinator{Instances: repo, Lifecycle: life, Deployer: fakeDeployer{life: life}}
+	if err := coordinator.ApplyPackage(context.Background(), "abc", content.PackageVersion{ID: "pkg-v2", ArchivePath: "p.zip", Version: "v2"}, Full); err == nil {
 		t.Fatal("expected health failure")
 	}
 	if got := strings.Join(life.events, ","); got != "stop,deploy,start,stop,rollback,start" {
 		t.Fatalf("events=%s", got)
 	}
+	if repo.instance.PackageVersion != "pkg-v1" {
+		t.Fatalf("instance=%#v", repo.instance)
+	}
 }
 func TestFullCoordinatorRollsBackWhenJournalCommitFails(t *testing.T) {
 	life := &fakeLifecycle{}
-	coordinator := Coordinator{Lifecycle: life, Deployer: fakeDeployer{life: life, commitFail: true}}
-	if err := coordinator.ApplyPackage(context.Background(), "abc", content.PackageVersion{ArchivePath: "p.zip", Version: "v2"}, Full); err == nil {
+	repo := &packageRepo{instance: domain.Instance{ID: "abc", DesiredState: domain.StateRunning, ActualState: domain.StateRunning, SelectedPackageID: "pkg-v2", PackageVersion: "pkg-v1"}}
+	coordinator := Coordinator{Instances: repo, Lifecycle: life, Deployer: fakeDeployer{life: life, commitFail: true}}
+	if err := coordinator.ApplyPackage(context.Background(), "abc", content.PackageVersion{ID: "pkg-v2", ArchivePath: "p.zip", Version: "v2"}, Full); err == nil {
 		t.Fatal("expected commit failure")
 	}
 	if got := strings.Join(life.events, ","); got != "stop,deploy,start,commit,stop,rollback,start" {
@@ -90,8 +143,9 @@ func TestFullCoordinatorRollsBackWhenJournalCommitFails(t *testing.T) {
 }
 func TestFailedFullUpdateRestartsRolledBackInstance(t *testing.T) {
 	life := &fakeLifecycle{}
-	coordinator := Coordinator{Lifecycle: life, Deployer: fakeDeployer{life: life, fail: true}}
-	if err := coordinator.ApplyPackage(context.Background(), "abc", content.PackageVersion{ArchivePath: "p.zip", Version: "v1"}, Full); err == nil {
+	repo := &packageRepo{instance: domain.Instance{ID: "abc", DesiredState: domain.StateRunning, ActualState: domain.StateRunning, SelectedPackageID: "pkg-v2", PackageVersion: "pkg-v1"}}
+	coordinator := Coordinator{Instances: repo, Lifecycle: life, Deployer: fakeDeployer{life: life, fail: true}}
+	if err := coordinator.ApplyPackage(context.Background(), "abc", content.PackageVersion{ID: "pkg-v2", ArchivePath: "p.zip", Version: "v2"}, Full); err == nil {
 		t.Fatal("expected failure")
 	}
 	if got := strings.Join(life.events, ","); got != "stop,deploy,start" {

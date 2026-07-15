@@ -194,7 +194,7 @@ func main() {
 	lifecycle := &fixtureLifecycle{db: db, root: root}
 	jobManager := jobs.NewPersistentManager(db)
 	seedJobs(db)
-	packageUpdates := &updates.Coordinator{Lifecycle: lifecycle, Deployer: pipeline}
+	packageUpdates := &updates.Coordinator{Lifecycle: lifecycle, Deployer: pipeline, Instances: db}
 	gameUpdates := &updates.GameCoordinator{Root: root, Instances: db, Lifecycle: lifecycle, Updater: fixtureGameUpdater{}, Private: private}
 	schedules := scheduler.NewService(db, fixtureDispatcher{})
 	defer schedules.Stop()

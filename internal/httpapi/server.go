@@ -644,15 +644,7 @@ func (s *Server) updatePackage(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	job, ok := s.startJob(w, r, id, "package_"+string(input.Mode), func(ctx context.Context, reporter jobs.Reporter) error {
 		reporter.Progress("deploy", 10, "deploying package")
-		if err := s.updateCoordinator.ApplyPackage(ctx, id, item, input.Mode); err != nil {
-			return err
-		}
-		instance, err := s.store.Instance(ctx, id)
-		if err != nil {
-			return err
-		}
-		instance.PackageVersion = item.ID
-		return s.store.UpdateInstance(ctx, instance)
+		return s.updateCoordinator.ApplyPackage(ctx, id, item, input.Mode)
 	})
 	if !ok {
 		return

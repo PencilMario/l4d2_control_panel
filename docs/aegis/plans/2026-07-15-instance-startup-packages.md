@@ -474,7 +474,7 @@ git commit -m "feat(provisioning): deploy package before first srcds start"
 - Hot/full endpoints and Pipeline rollback remain unchanged.
 - `updates.Coordinator` becomes the single owner that records selected/applied package IDs after a successful commit.
 
-**Verification:** `go test -count=1 ./internal/updates ./internal/httpapi ./internal/automation ./cmd/e2e-fixture`
+**Verification:** `go test -count=1 ./internal/updates ./internal/httpapi ./internal/automation` and `go test -count=1 -tags=e2e ./cmd/e2e-fixture`
 
 **Repair Track:**
 - Root cause: full update always stops/starts, and HTTP alone writes `PackageVersion`.
@@ -534,7 +534,7 @@ Remove the duplicate HTTP write and wire `Instances: db` in production and fixtu
 
 - [ ] **Step 4: Run focused tests and verify GREEN**
 
-Run: `go test -count=1 ./internal/updates ./internal/httpapi ./internal/automation ./cmd/e2e-fixture`
+Run: `go test -count=1 ./internal/updates ./internal/httpapi ./internal/automation` and `go test -count=1 -tags=e2e ./cmd/e2e-fixture`
 
 Expected: PASS; stopped instances stay stopped and all deployment callers persist applied state.
 

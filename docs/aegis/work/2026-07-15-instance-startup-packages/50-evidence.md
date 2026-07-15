@@ -19,6 +19,17 @@ Implementation evidence will be appended after each red/green slice.
 - `go test -count=1 ./internal/store ./internal/httpapi`: PASS.
 - `git diff --check`: PASS.
 
+## Task 4: Package Update Intent
+
+- RED: Coordinator tests failed to compile because it had no instance repository and could not own running intent or applied state.
+- GREEN: Coordinator conditionally stops/starts, rolls back only the downtime it caused, and records selected/applied IDs after commit for both hot and full modes.
+- `go test -count=1 ./internal/updates ./internal/httpapi ./internal/automation`: PASS.
+- `go test -count=1 -tags=e2e ./cmd/e2e-fixture`: PASS.
+- The original untagged fixture command was corrected in the plan because all fixture sources are intentionally build-tagged.
+- `go test -count=1 ./...`: PASS.
+- `go vet ./...`: PASS.
+- `git diff --check`: PASS.
+
 ## Task 3: First-Start Provisioning
 
 - RED: focused tests failed because `provisioning.Service`, Docker `InstallGame`, lifecycle `WithProvisioner` and runtime `require_game` did not exist.
