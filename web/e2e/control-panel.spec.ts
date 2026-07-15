@@ -274,6 +274,9 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await expect(card.getByRole("button", { name: `配置 ${instanceName}` })).toBeVisible();
 
   const performance = card.locator(".performance-panel");
+  await expect(performance).toContainText("镜像大小");
+  await expect(performance).toContainText("3 GiB");
+  await expect(performance.getByText("玩家", { exact: true })).toHaveCount(0);
   await expect(performance).toContainText("12.5%");
   await expect(performance).toContainText("768 MiB / 2 GiB (37.5%)");
   await expect(performance).toContainText("128 B/s");
@@ -322,8 +325,10 @@ test("real HTTP administration journey survives refresh and streams recovery sta
     await expect(chartModes.getByRole("button", { name: mode })).toHaveAttribute("aria-pressed", "true");
   }
   await chartModes.getByRole("button", { name: "网络" }).click();
-  await expect(performance.locator(".performance-legend")).toContainText("网络 RX");
-  await expect(performance.locator(".performance-legend")).toContainText("网络 TX");
+  await expect(performance.locator(".performance-legend")).toContainText("下载");
+  await expect(performance.locator(".performance-legend")).toContainText("上传");
+  await expect(performance.locator(".performance-legend")).not.toContainText("网络 RX");
+  await expect(performance.locator(".performance-legend")).not.toContainText("网络 TX");
   await expect(chart).toHaveAttribute("data-series-count", "2");
   await chartModes.getByRole("button", { name: "磁盘" }).click();
   await expect(performance.locator(".performance-legend")).toContainText("磁盘读");
