@@ -41,6 +41,7 @@ export type PerformanceHistoryPoint = {
 
 type Mode = "CPU" | "内存" | "网络" | "磁盘";
 const MODES: Mode[] = ["CPU", "内存", "网络", "磁盘"];
+export const LINE_CONNECTS_NULLS = false;
 const SNAPSHOT_KEYS: ReadonlyArray<keyof PerformanceSnapshot> = [
   "players",
   "cpu_percent",
@@ -108,22 +109,75 @@ const seriesFor = (mode: Mode) => {
   ];
 };
 
-type ChartPoint = { at: string; label: string; cpu: number | null; memory: number | null; rx: number | null; tx: number | null; read: number | null; write: number | null };
+type ChartPoint = { at: string; label: string; runId: string; synthetic?: boolean; cpu: number | null; memory: number | null; rx: number | null; tx: number | null; read: number | null; write: number | null };
 
-export const buildChartData = (history: PerformanceHistoryPoint[]): ChartPoint[] =>
-  history.map((point) => ({
+const chartPoint = (point: PerformanceHistoryPoint): ChartPoint => ({
     at: point.at,
     label: new Date(point.at).toISOString().slice(11, 19),
+    runId: point.run_id,
     cpu: point.cpu_percent,
     memory: point.memory_percent,
     rx: point.network_rx_bytes_per_sec,
     tx: point.network_tx_bytes_per_sec,
     read: point.block_read_bytes_per_sec,
     write: point.block_write_bytes_per_sec,
-  }));
+  });
+
+const isAllSeriesNull = (point: ChartPoint) =>
+  point.cpu === null &&
+  point.memory === null &&
+  point.rx === null &&
+  point.tx === null &&
+  point.read === null &&
+  point.write === null;
+
+const gapPoint = (previous: ChartPoint, next: ChartPoint, index: number): ChartPoint => {
+  const previousTime = Date.parse(previous.at);
+  const nextTime = Date.parse(next.at);
+  const midpoint = Number.isFinite(previousTime) && Number.isFinite(nextTime) && nextTime > previousTime
+    ? new Date(previousTime + (nextTime - previousTime) / 2).toISOString()
+    : `__run_gap_${index}`;
+  return {
+    at: midpoint,
+    label: Number.isFinite(Date.parse(midpoint)) ? new Date(midpoint).toISOString().slice(11, 19) : "",
+    runId: "",
+    synthetic: true,
+    cpu: null,
+    memory: null,
+    rx: null,
+    tx: null,
+    read: null,
+    write: null,
+  };
+};
+
+export const buildChartData = (history: PerformanceHistoryPoint[]): ChartPoint[] => {
+  const data: ChartPoint[] = [];
+  for (const [index, historyPoint] of history.entries()) {
+    const next = chartPoint(historyPoint);
+    const previous = data.at(-1);
+    if (
+      previous &&
+      !previous.synthetic &&
+      previous.runId.trim() !== "" &&
+      next.runId.trim() !== "" &&
+      previous.runId !== next.runId &&
+      !isAllSeriesNull(previous) &&
+      !isAllSeriesNull(next)
+    ) {
+      data.push(gapPoint(previous, next, index));
+    }
+    data.push(next);
+  }
+  return data;
+};
 
 function ChartTooltip({ active, payload, label, mode }: TooltipContentProps<any, any> & { mode: Mode }) {
-  if (!active || !payload?.length) return null;
+  if (
+    !active ||
+    !payload?.length ||
+    payload.some((item) => item.payload?.synthetic)
+  ) return null;
   return (
     <div className="performance-tooltip">
       <b>{String(label)}</b>
@@ -189,7 +243,7 @@ export const PerformancePanel = memo(function PerformancePanel({ snapshot, histo
               <XAxis dataKey="label" tick={{ fontSize: 9 }} minTickGap={28} />
               <YAxis tick={{ fontSize: 9 }} width={48} tickFormatter={(value) => mode === "CPU" || mode === "内存" ? `${trim(value)}%` : formatBytesPerSecond(value)} />
               <Tooltip content={(props) => <ChartTooltip {...props} mode={mode} />} />
-              {series.map((item) => <Line key={item.key} type="linear" dataKey={item.key} name={item.label} stroke={item.color} strokeWidth={1.5} dot={false} connectNulls={false} isAnimationActive={false} />)}
+              {series.map((item) => <Line key={item.key} type="linear" dataKey={item.key} name={item.label} stroke={item.color} strokeWidth={1.5} dot={false} connectNulls={LINE_CONNECTS_NULLS} isAnimationActive={false} />)}
             </LineChart>
           </ResponsiveContainer>
         )}

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   PerformancePanel,
   buildChartData,
+  LINE_CONNECTS_NULLS,
   formatBytes,
   formatBytesPerSecond,
   formatDuration,
@@ -63,6 +64,48 @@ describe("performance formatters", () => {
 });
 
 describe("PerformancePanel", () => {
+  it("inserts one all-series null gap when a nonempty run ID changes", () => {
+    const boundary: PerformanceHistoryPoint[] = [
+      { at: "2026-07-15T12:00:00Z", run_id: "run-1", cpu_percent: 1, memory_percent: 2, network_rx_bytes_per_sec: 3, network_tx_bytes_per_sec: 4, block_read_bytes_per_sec: 5, block_write_bytes_per_sec: 6 },
+      { at: "2026-07-15T12:00:10Z", run_id: "run-2", cpu_percent: 7, memory_percent: 8, network_rx_bytes_per_sec: 9, network_tx_bytes_per_sec: 10, block_read_bytes_per_sec: 11, block_write_bytes_per_sec: 12 },
+    ];
+    const data = buildChartData(boundary);
+    expect(data).toHaveLength(3);
+    expect(data[0]).toMatchObject({ cpu: 1, memory: 2, rx: 3, tx: 4, read: 5, write: 6 });
+    expect(data[1]).toMatchObject({ synthetic: true, cpu: null, memory: null, rx: null, tx: null, read: null, write: null });
+    expect(data[2]).toMatchObject({ cpu: 7, memory: 8, rx: 9, tx: 10, read: 11, write: 12 });
+    expect(Date.parse(data[1].at)).toBe(Date.parse("2026-07-15T12:00:05Z"));
+  });
+
+  it("does not add redundant gaps for same/empty runs or an existing all-null point", () => {
+    const point = (at: string, run_id: string, cpu: number | null) => ({ at, run_id, cpu_percent: cpu, memory_percent: cpu, network_rx_bytes_per_sec: cpu, network_tx_bytes_per_sec: cpu, block_read_bytes_per_sec: cpu, block_write_bytes_per_sec: cpu });
+    expect(buildChartData([point("2026-07-15T12:00:00Z", "same", 1), point("2026-07-15T12:00:05Z", "same", 2)])).toHaveLength(2);
+    expect(buildChartData([point("2026-07-15T12:00:00Z", "", 1), point("2026-07-15T12:00:05Z", "run-2", 2)])).toHaveLength(2);
+    const stopped = buildChartData([
+      point("2026-07-15T12:00:00Z", "run-1", 1),
+      point("2026-07-15T12:00:05Z", "run-1", null),
+      point("2026-07-15T12:00:10Z", "run-2", 2),
+    ]);
+    expect(stopped).toHaveLength(3);
+    expect(stopped.filter((item) => item.synthetic)).toHaveLength(0);
+  });
+
+  it("uses a stable non-interactive fallback when boundary timestamps are equal", () => {
+    const base = { at: "2026-07-15T12:00:00Z", cpu_percent: 1, memory_percent: 1, network_rx_bytes_per_sec: 1, network_tx_bytes_per_sec: 1, block_read_bytes_per_sec: 1, block_write_bytes_per_sec: 1 };
+    const data = buildChartData([{ ...base, run_id: "run-1" }, { ...base, run_id: "run-2" }]);
+    expect(data[1]).toMatchObject({ at: "__run_gap_1", label: "", synthetic: true });
+  });
+
+  it("uses transformed boundary data for every mode without connecting nulls", async () => {
+    const boundary = [history[0], { ...history[1], run_id: "r2", cpu_percent: 1, memory_percent: 2 }];
+    render(<PerformancePanel snapshot={snapshot} history={boundary} />);
+    expect(LINE_CONNECTS_NULLS).toBe(false);
+    expect(screen.getByTestId("performance-chart")).toHaveAttribute("data-point-count", "3");
+    for (const mode of ["内存", "网络", "磁盘", "CPU"]) {
+      await userEvent.click(screen.getByRole("button", { name: mode }));
+      expect(screen.getByTestId("performance-chart")).toHaveAttribute("data-point-count", "3");
+    }
+  });
   it("memoizes by history reference, loading and snapshot scalars", () => {
     const historyReference = history;
     expect(performancePanelPropsEqual(

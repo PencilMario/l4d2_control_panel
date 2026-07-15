@@ -286,14 +286,14 @@ describe("App", () => {
     expect(await screen.findByTestId("performance-chart")).toHaveAttribute("data-point-count", "1");
 
     oldHistory.resolve(new Response(JSON.stringify([{ at: "2026-07-15T12:00:00Z", run_id: "run-old", cpu_percent: 99, memory_percent: null, network_rx_bytes_per_sec: null, network_tx_bytes_per_sec: null, block_read_bytes_per_sec: null, block_write_bytes_per_sec: null }]), { status: 200, headers: { "Content-Type": "application/json" } }));
-    await waitFor(() => expect(screen.getByTestId("performance-chart")).toHaveAttribute("data-point-count", "2"));
+    await waitFor(() => expect(screen.getByTestId("performance-chart")).toHaveAttribute("data-point-count", "3"));
     stalledDeletion.resolve(new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } }));
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
     });
     expect(screen.getByText("深夜战役")).toBeInTheDocument();
-    expect(screen.getByTestId("performance-chart")).toHaveAttribute("data-point-count", "2");
+    expect(screen.getByTestId("performance-chart")).toHaveAttribute("data-point-count", "3");
 
     await act(async () => refresh());
     await waitFor(() => expect(listCalls).toBe(4));
