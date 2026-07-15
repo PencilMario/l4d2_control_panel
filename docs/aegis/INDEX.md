@@ -11,6 +11,7 @@
 
 ## Implementation Plans
 
+- [Instance selective game and plugin package reinstall](plans/2026-07-15-instance-selective-reinstall.md)
 - [Instance startup configuration and package selection](plans/2026-07-15-instance-startup-packages.md)
 - [Private overlay file manager and console follow behavior](plans/2026-07-15-private-file-manager-console-follow.md)
 
