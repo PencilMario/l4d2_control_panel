@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -142,5 +143,36 @@ func TestPrivateApplyReportsTruthfulStages(t *testing.T) {
 	want := []string{"snapshot", "restore-lower", "apply-private", "commit"}
 	if !slices.Equal(stages, want) {
 		t.Fatalf("stages = %v, want %v", stages, want)
+	}
+}
+
+func TestPrivateUploadMetadataCommitStateSurvivesRestart(t *testing.T) {
+	for _, tc := range []struct {
+		stage string
+		want  int64
+	}{{"metadata-rename", 0}, {"metadata-dir-sync", 3}} {
+		t.Run(tc.stage, func(t *testing.T) {
+			root := t.TempDir()
+			manager := NewPrivateUploadManager(root, 1024)
+			s, err := manager.Begin("abc", "file.bin", 3, uploadHash([]byte("abc")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			setPrivateUploadFaultHook(func(stage string) error {
+				if stage == tc.stage {
+					return errors.New("injected")
+				}
+				return nil
+			})
+			_, _ = manager.Write(s.ID, 0, bytes.NewBufferString("abc"))
+			setPrivateUploadFaultHook(nil)
+			recovered, err := NewPrivateUploadManager(root, 1024).Recover(s.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if recovered.Offset != tc.want {
+				t.Fatalf("offset = %d, want %d", recovered.Offset, tc.want)
+			}
+		})
 	}
 }

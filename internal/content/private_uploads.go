@@ -36,6 +36,28 @@ type PrivateUploadManager struct {
 	private  *PrivateManager
 }
 
+type uploadMetadataError struct {
+	err       error
+	committed bool
+}
+
+func (e *uploadMetadataError) Error() string { return e.err.Error() }
+func (e *uploadMetadataError) Unwrap() error { return e.err }
+func metadataWasCommitted(err error) bool {
+	var target *uploadMetadataError
+	return errors.As(err, &target) && target.committed
+}
+
+var privateUploadFaultHook func(string) error
+
+func setPrivateUploadFaultHook(hook func(string) error) { privateUploadFaultHook = hook }
+func runPrivateUploadFaultHook(stage string) error {
+	if privateUploadFaultHook != nil {
+		return privateUploadFaultHook(stage)
+	}
+	return nil
+}
+
 func NewPrivateUploadManager(root string, maxBytes int64) *PrivateUploadManager {
 	return &PrivateUploadManager{root: root, maxBytes: maxBytes, private: NewPrivateManager(root, 1<<20)}
 }
@@ -137,7 +159,11 @@ func (m *PrivateUploadManager) Write(id string, offset int64, reader io.Reader) 
 	}
 	s.Offset += n
 	if err = writeUploadMetadata(meta, s); err != nil {
+		if metadataWasCommitted(err) {
+			return n, err
+		}
 		_ = os.Truncate(part, offset)
+		_ = syncFile(part)
 		return 0, err
 	}
 	return n, nil
@@ -186,11 +212,18 @@ func (m *PrivateUploadManager) Complete(id string) error {
 	if err = rejectSymlinkParents(m.root, target); err != nil {
 		return err
 	}
-	if _, err = os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
-		if err == nil {
-			return errors.New("destination exists")
+	if targetInfo, targetErr := os.Lstat(target); !errors.Is(targetErr, os.ErrNotExist) {
+		if targetErr != nil {
+			return targetErr
 		}
-		return err
+		partInfo, partErr := os.Stat(part)
+		if partErr == nil && os.SameFile(partInfo, targetInfo) {
+			_ = os.Remove(meta)
+			_ = os.Remove(part)
+			_ = syncDirectory(filepath.Dir(meta))
+			return nil
+		}
+		return errors.New("destination exists")
 	}
 	if err = os.MkdirAll(filepath.Dir(target), 0750); err != nil {
 		return err
@@ -210,7 +243,7 @@ func (m *PrivateUploadManager) Complete(id string) error {
 	if err = os.Link(part, target); err != nil {
 		return fmt.Errorf("destination exists or cannot be published: %w", err)
 	}
-	rollback := func(cause error) error { _ = os.Remove(target); return cause }
+	rollback := func(cause error) error { _ = os.Remove(target); _ = syncDirectory(filepath.Dir(target)); return cause }
 	published, err := os.OpenFile(target, os.O_RDWR, 0)
 	if err != nil {
 		return rollback(err)
@@ -333,8 +366,15 @@ func writeUploadMetadata(path string, session PrivateUploadSession) error {
 	}
 	name := tmp.Name()
 	defer os.Remove(name)
+	if err = runPrivateUploadFaultHook("metadata-temp-write"); err != nil {
+		_ = tmp.Close()
+		return &uploadMetadataError{err: err}
+	}
 	if err = tmp.Chmod(0640); err == nil {
 		_, err = tmp.Write(raw)
+	}
+	if err == nil {
+		err = runPrivateUploadFaultHook("metadata-temp-sync")
 	}
 	if err == nil {
 		err = tmp.Sync()
@@ -345,10 +385,19 @@ func writeUploadMetadata(path string, session PrivateUploadSession) error {
 	if err != nil {
 		return err
 	}
-	if err = os.Rename(name, path); err != nil {
-		return err
+	if err = runPrivateUploadFaultHook("metadata-rename"); err != nil {
+		return &uploadMetadataError{err: err}
 	}
-	return syncDirectory(filepath.Dir(path))
+	if err = os.Rename(name, path); err != nil {
+		return &uploadMetadataError{err: err}
+	}
+	if err = runPrivateUploadFaultHook("metadata-dir-sync"); err == nil {
+		err = syncDirectory(filepath.Dir(path))
+	}
+	if err != nil {
+		return &uploadMetadataError{err: err, committed: true}
+	}
+	return nil
 }
 
 func syncDirectory(path string) error {
@@ -398,19 +447,40 @@ func (m *PrivateUploadManager) Cleanup() error {
 			readErr = errors.New("unsafe upload root")
 		}
 		if readErr == nil {
+			ids := map[string]struct{}{}
 			for _, file := range files {
+				if strings.HasPrefix(file.Name(), ".upload-meta-") {
+					if removeErr := os.Remove(filepath.Join(uploadRoot, file.Name())); removeErr != nil {
+						result = errors.Join(result, removeErr)
+					}
+					continue
+				}
 				ext := filepath.Ext(file.Name())
 				id := strings.TrimSuffix(file.Name(), ext)
 				if (ext != ".json" && ext != ".part") || uuid.Validate(id) != nil {
 					continue
 				}
+				ids[id] = struct{}{}
+			}
+			for id := range ids {
 				part, meta := m.sessionPaths(uploadRoot, id)
 				if rejectSymlinkParents(m.root, part) != nil || rejectSymlinkParents(m.root, meta) != nil {
+					if removeErr := os.Remove(part); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+						result = errors.Join(result, removeErr)
+					}
+					if removeErr := os.Remove(meta); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+						result = errors.Join(result, removeErr)
+					}
 					continue
 				}
 				raw, metaErr := os.ReadFile(meta)
 				var s PrivateUploadSession
-				if metaErr != nil || json.Unmarshal(raw, &s) != nil || s.ID != id || s.InstanceID != instance.Name() || time.Now().After(s.ExpiresAt) {
+				_, partErr := os.Stat(part)
+				private, _ := m.private.privateRoot(instance.Name())
+				decodeErr := json.Unmarshal(raw, &s)
+				_, pathErr := safepath.Join(private, s.Path)
+				invalid := metaErr != nil || decodeErr != nil || s.ID != id || s.InstanceID != instance.Name() || time.Now().After(s.ExpiresAt) || partErr != nil || pathErr != nil || s.Size < 0 || s.Size > m.maxBytes
+				if invalid {
 					if removeErr := os.Remove(part); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 						result = errors.Join(result, removeErr)
 					}
@@ -418,6 +488,9 @@ func (m *PrivateUploadManager) Cleanup() error {
 						result = errors.Join(result, removeErr)
 					}
 				}
+			}
+			if syncErr := syncDirectory(uploadRoot); syncErr != nil {
+				result = errors.Join(result, syncErr)
 			}
 		}
 		lock.Unlock()

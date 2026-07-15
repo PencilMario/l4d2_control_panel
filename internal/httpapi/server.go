@@ -131,8 +131,8 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 	r.Get("/api/health", s.health)
 	r.Group(func(r chi.Router) {
 		r.Use(s.requireAuth)
-		r.Use(s.requireExistingPrivateInstance)
 		r.Use(s.auditMutations)
+		r.Use(s.requireExistingPrivateInstance)
 		r.Post("/api/auth/logout", s.logout)
 		r.Get("/api/session", func(w http.ResponseWriter, _ *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]bool{"authenticated": true})

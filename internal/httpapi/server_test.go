@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
@@ -70,6 +71,17 @@ func TestPrivateFileAPIContract(t *testing.T) {
 	}
 	if w := do(http.MethodPost, "/api/instances/missing/private/directories", `{"path":"cfg"}`); w.Code != 404 || !strings.Contains(w.Body.String(), `"code":"instance_not_found"`) {
 		t.Fatalf("missing instance: %d %s", w.Code, w.Body.String())
+	}
+	for _, check := range []struct{ method, path string }{
+		{http.MethodGet, "/api/instances/missing/private/tree"}, {http.MethodGet, "/api/instances/missing/private/diff"},
+		{http.MethodPost, "/api/instances/missing/private/move"}, {http.MethodPost, "/api/instances/missing/private/uploads"},
+		{http.MethodPatch, "/api/instances/missing/private/uploads/" + uuid.NewString()}, {http.MethodPost, "/api/instances/missing/private/uploads/" + uuid.NewString() + "/complete"},
+		{http.MethodGet, "/api/instances/missing/private/snapshots"}, {http.MethodPost, "/api/instances/missing/private/snapshots/bad/restore"},
+		{http.MethodGet, "/api/instances/missing/private/file/a"}, {http.MethodDelete, "/api/instances/missing/private/file/a"}, {http.MethodPost, "/api/instances/missing/private/apply"},
+	} {
+		if w := do(check.method, check.path, `{}`); w.Code != 404 || !strings.Contains(w.Body.String(), `"code":"instance_not_found"`) {
+			t.Fatalf("%s %s: %d %s", check.method, check.path, w.Code, w.Body.String())
+		}
 	}
 	if w := do(http.MethodPost, "/api/instances/abc/private/directories", `{"path":"cfg"}`); w.Code != 201 {
 		t.Fatalf("mkdir: %d %s", w.Code, w.Body.String())
