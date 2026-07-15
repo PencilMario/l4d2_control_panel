@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +16,98 @@ import (
 
 	"github.com/not0721here/l4d2-control-panel/internal/traffic"
 )
+
+func TestSocketActiveListenerIsNotUnlinked(t *testing.T) {
+	path := testSocketPath(t, "active")
+	active, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer active.Close()
+	if _, err := listenUnix(path); err == nil {
+		t.Fatal("expected active socket rejection")
+	}
+	conn, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatalf("active socket was unlinked: %v", err)
+	}
+	_ = conn.Close()
+}
+
+func TestSocketStaleListenerIsRemoved(t *testing.T) {
+	path := testSocketPath(t, "stale")
+	stale, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale.(*net.UnixListener).SetUnlinkOnClose(false)
+	if err := stale.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := listenUnix(path)
+	if err != nil {
+		t.Fatalf("stale socket was not replaced: %v", err)
+	}
+	_ = ln.Close()
+}
+
+func TestSocketAmbiguousDialFailureDoesNotUnlink(t *testing.T) {
+	path := testSocketPath(t, "ambiguous")
+	stale, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale.(*net.UnixListener).SetUnlinkOnClose(false)
+	if err := stale.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareSocketPath(path, func(string) (net.Conn, error) {
+		return nil, errors.New("ambiguous dial failure")
+	}); err == nil {
+		t.Fatal("expected ambiguous dial failure")
+	}
+	if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeSocket == 0 {
+		t.Fatalf("ambiguous socket was removed: mode=%v err=%v", infoMode(info), err)
+	}
+}
+
+func TestSocketDirectoryModePreventsPanelWrites(t *testing.T) {
+	dir := filepath.Join(os.TempDir(), fmt.Sprintf("l4d2-panel-dir-%d", os.Getpid()))
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if err := os.MkdirAll(dir, 0777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0777); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := listenUnix(filepath.Join(dir, "proxy.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0750 {
+		t.Fatalf("directory mode = %o", info.Mode().Perm())
+	}
+}
+
+func testSocketPath(t *testing.T, name string) string {
+	t.Helper()
+	path := filepath.Join(os.TempDir(), fmt.Sprintf("l4d2-%s-%d.sock", name, os.Getpid()))
+	t.Cleanup(func() { _ = os.Remove(path) })
+	_ = os.Remove(path)
+	return path
+}
+
+func infoMode(info os.FileInfo) os.FileMode {
+	if info == nil {
+		return 0
+	}
+	return info.Mode()
+}
 
 func TestSocketListenerRejectsRegularFileAndSetsMode(t *testing.T) {
 	path := filepath.Join(os.TempDir(), fmt.Sprintf("l4d2-panel-%d.sock", os.Getpid()))

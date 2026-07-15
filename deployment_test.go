@@ -63,6 +63,16 @@ func TestControlServicesUseSharedUnixProxyAndPublishOnlyPanel(t *testing.T) {
 	}
 }
 
+func TestSocketProxyImageDoesNotExposeRetiredTCPPort(t *testing.T) {
+	raw, err := os.ReadFile("socket-proxy/Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "EXPOSE") {
+		t.Fatal("socket-proxy image must not advertise a TCP port")
+	}
+}
+
 func serviceBlocks(t *testing.T, compose string) map[string]string {
 	t.Helper()
 	marker := "services:\n"

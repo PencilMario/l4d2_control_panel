@@ -95,36 +95,58 @@ func listenUnix(socketPath string) (net.Listener, error) {
 	if err := os.MkdirAll(parent, 0750); err != nil {
 		return nil, err
 	}
-	if err := chownPanel(parent); err != nil {
+	if err := securePath(parent, 0750, 0, 10001); err != nil {
 		return nil, err
 	}
-	if info, err := os.Lstat(socketPath); err == nil {
-		if info.Mode()&os.ModeSocket == 0 {
-			return nil, fmt.Errorf("socket path exists and is not a socket: %s", socketPath)
-		}
-		if err := os.Remove(socketPath); err != nil {
-			return nil, err
-		}
-	} else if !os.IsNotExist(err) {
+	if err := prepareSocketPath(socketPath, dialUnixSocket); err != nil {
 		return nil, err
 	}
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(socketPath, 0660); err != nil {
-		listener.Close()
-		return nil, err
-	}
-	if err := chownPanel(socketPath); err != nil {
+	if err := securePath(socketPath, 0660, 0, 10001); err != nil {
 		listener.Close()
 		return nil, err
 	}
 	return listener, nil
 }
 
-func chownPanel(path string) error {
-	err := os.Chown(path, 10001, 10001)
+func prepareSocketPath(socketPath string, dial func(string) (net.Conn, error)) error {
+	info, err := os.Lstat(socketPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("socket path exists and is not a socket: %s", socketPath)
+	}
+	conn, err := dial(socketPath)
+	if err == nil {
+		_ = conn.Close()
+		return fmt.Errorf("socket path already has an active listener: %s", socketPath)
+	}
+	if !isConnectionRefused(err) {
+		return fmt.Errorf("cannot safely determine whether socket is stale: %w", err)
+	}
+	return os.Remove(socketPath)
+}
+
+func isConnectionRefused(err error) bool {
+	return errors.Is(err, syscall.ECONNREFUSED) || (runtime.GOOS == "windows" && errors.Is(err, syscall.Errno(10061)))
+}
+
+func dialUnixSocket(socketPath string) (net.Conn, error) {
+	return net.DialTimeout("unix", socketPath, 250*time.Millisecond)
+}
+
+func securePath(path string, mode os.FileMode, uid, gid int) error {
+	if err := os.Chmod(path, mode); err != nil {
+		return err
+	}
+	err := os.Chown(path, uid, gid)
 	if runtime.GOOS == "windows" {
 		return nil
 	}
