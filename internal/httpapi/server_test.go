@@ -8,11 +8,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1018,6 +1020,43 @@ func TestContentReadRoutesAndJobFeed(t *testing.T) {
 	_ = response.Body.Close()
 	if response.StatusCode != http.StatusOK || !strings.Contains(event.String(), "event: jobs") || !strings.Contains(event.String(), "job-1") {
 		t.Fatalf("SSE status=%d event=%q", response.StatusCode, event.String())
+	}
+}
+
+func TestDeleteVPKDecodesEscapedRouteName(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	root := t.TempDir()
+	uploads, err := content.NewUploadManager(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s = New(db, s.auth, WithContent(uploads, nil, nil, nil, nil))
+	cookie := loginCookie(t, s)
+
+	name := "[道具, 电]-Halo UNSC Field Defibrillator.vpk"
+	vpk := []byte("vpk-content")
+	digest := sha256.Sum256(vpk)
+	session, err := uploads.Begin(name, int64(len(vpk)), hex.EncodeToString(digest[:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := uploads.Write(session.ID, 0, bytes.NewReader(vpk)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := uploads.Complete(session.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	r := httptest.NewRequest(http.MethodDelete, "/api/content/vpk/"+url.PathEscape(name)+"?confirm=true", nil)
+	r.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if _, err := uploads.Path(name); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("deleted VPK remains: %v", err)
 	}
 }
 

@@ -247,7 +247,12 @@ func (s *Server) downloadVPK(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "content_unavailable", "content manager unavailable")
 		return
 	}
-	path, err := s.uploads.Path(chi.URLParam(r, "name"))
+	name, err := decodedURLParam(r, "name")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_vpk_name", err.Error())
+		return
+	}
+	path, err := s.uploads.Path(name)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "vpk_not_found", err.Error())
 		return
@@ -1031,7 +1036,12 @@ func (s *Server) renameVPK(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 428, "confirmation_required", "renaming visible VPK requires confirmation")
 		return
 	}
-	item, err := s.uploads.Rename(chi.URLParam(r, "name"), input.Name)
+	name, err := decodedURLParam(r, "name")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_vpk_name", err.Error())
+		return
+	}
+	item, err := s.uploads.Rename(name, input.Name)
 	if err != nil {
 		writeError(w, 422, "rename_failed", err.Error())
 		return
@@ -1043,11 +1053,20 @@ func (s *Server) deleteVPK(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 428, "confirmation_required", "deleting VPK requires confirmation")
 		return
 	}
-	if err := s.uploads.Delete(chi.URLParam(r, "name")); err != nil {
+	name, err := decodedURLParam(r, "name")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_vpk_name", err.Error())
+		return
+	}
+	if err := s.uploads.Delete(name); err != nil {
 		writeError(w, 422, "delete_failed", err.Error())
 		return
 	}
 	w.WriteHeader(204)
+}
+
+func decodedURLParam(r *http.Request, name string) (string, error) {
+	return url.PathUnescape(chi.URLParam(r, name))
 }
 func (s *Server) savePrivate(w http.ResponseWriter, r *http.Request) {
 	if s.private == nil {
