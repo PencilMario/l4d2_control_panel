@@ -6,11 +6,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/not0721here/l4d2-control-panel/internal/safepath"
 )
 
 const privateManifestVersion = 1
@@ -39,6 +44,53 @@ type DiffSummary struct {
 type PrivateDiff struct {
 	Changes []PrivateChange `json:"changes"`
 	Summary DiffSummary     `json:"summary"`
+}
+
+type PrivateSnapshot struct {
+	ID        string      `json:"id"`
+	AppliedAt time.Time   `json:"applied_at"`
+	Summary   DiffSummary `json:"summary"`
+}
+
+type lowerManifest struct {
+	Version int             `json:"version"`
+	Entries map[string]bool `json:"entries"`
+}
+
+type applyJournalEntry struct {
+	Path    string `json:"path"`
+	Kind    string `json:"kind"`
+	Existed bool   `json:"existed"`
+}
+
+type privateApplyJournal struct {
+	Version         int                 `json:"version"`
+	InstanceID      string              `json:"instance_id"`
+	Stage           string              `json:"stage"`
+	ManifestExisted bool                `json:"manifest_existed"`
+	LowerExisted    bool                `json:"lower_existed"`
+	Affected        []applyJournalEntry `json:"affected"`
+}
+
+var privateApplyFailureState struct {
+	sync.RWMutex
+	hook func(int) error
+}
+
+func setPrivateApplyFailureHook(hook func(int) error) {
+	privateApplyFailureState.Lock()
+	privateApplyFailureState.hook = hook
+	privateApplyFailureState.Unlock()
+}
+
+func runPrivateApplyFailureHook(count int) error {
+	privateApplyFailureState.RLock()
+	hook := privateApplyFailureState.hook
+	privateApplyFailureState.RUnlock()
+	if hook != nil {
+		return hook(count)
+	}
+	return nil
 }
 
 type privateManifest struct {
@@ -258,4 +310,525 @@ func (m *PrivateManager) Diff(_ context.Context, instanceID string) (PrivateDiff
 		}
 	}
 	return result, nil
+}
+
+func privateDiff(current map[string]manifestEntry, applied privateManifest) PrivateDiff {
+	result := PrivateDiff{Changes: []PrivateChange{}}
+	paths := make(map[string]struct{}, len(current)+len(applied.Entries))
+	for path := range current {
+		paths[path] = struct{}{}
+	}
+	for path := range applied.Entries {
+		paths[path] = struct{}{}
+	}
+	ordered := make([]string, 0, len(paths))
+	for path := range paths {
+		ordered = append(ordered, path)
+	}
+	sort.Strings(ordered)
+	for _, path := range ordered {
+		a, hasAfter := current[path]
+		b, hasBefore := applied.Entries[path]
+		beforeResource := hasBefore && isDiffResource(path, b, applied.Entries)
+		afterResource := hasAfter && isDiffResource(path, a, current)
+		if !beforeResource && !afterResource {
+			continue
+		}
+		switch {
+		case !hasBefore && hasAfter:
+			result.Changes = append(result.Changes, PrivateChange{Path: path, Kind: "added", AfterHash: a.Hash})
+			result.Summary.Added++
+		case hasBefore && !hasAfter:
+			result.Changes = append(result.Changes, PrivateChange{Path: path, Kind: "deleted", BeforeHash: b.Hash})
+			result.Summary.Deleted++
+		case b.Kind != a.Kind || b.Hash != a.Hash:
+			result.Changes = append(result.Changes, PrivateChange{Path: path, Kind: "modified", BeforeHash: b.Hash, AfterHash: a.Hash})
+			result.Summary.Modified++
+		}
+	}
+	return result
+}
+
+func (m *PrivateManager) ApplyChanges(ctx context.Context, instanceID string) error {
+	return m.applyPrivate(ctx, instanceID, false)
+}
+
+func (m *PrivateManager) RebaseAndApply(ctx context.Context, instanceID string) error {
+	return m.applyPrivate(ctx, instanceID, true)
+}
+
+func (m *PrivateManager) applyPrivate(ctx context.Context, instanceID string, rebase bool) error {
+	lock := m.instanceLock(instanceID)
+	lock.Lock()
+	defer lock.Unlock()
+	if err := validateInstanceID(instanceID); err != nil {
+		return err
+	}
+	base := filepath.Join(m.root, "instances", instanceID)
+	workspace := filepath.Join(base, "private")
+	game := filepath.Join(base, "game", "left4dead2")
+	if err := rejectSymlinkParents(m.root, workspace); err != nil {
+		return err
+	}
+	current, err := scanPrivateTree(workspace)
+	if err != nil {
+		return err
+	}
+	old, err := m.readPrivateManifest(instanceID)
+	if err != nil {
+		return err
+	}
+	manifestPath, _ := m.manifestPath(instanceID)
+	lowerRoot := filepath.Join(base, "backups", "private", "lower")
+	lower, err := readLowerManifest(filepath.Join(lowerRoot, "state.json"))
+	if err != nil {
+		return err
+	}
+	pathsMap := map[string]struct{}{}
+	for path := range current {
+		pathsMap[path] = struct{}{}
+	}
+	for path := range old.Entries {
+		pathsMap[path] = struct{}{}
+	}
+	paths := make([]string, 0, len(pathsMap))
+	for path := range pathsMap {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	work := filepath.Join(base, "backups", "private", "apply-"+uuid.NewString())
+	journal := privateApplyJournal{Version: 1, InstanceID: instanceID, Stage: "prepared"}
+	if _, statErr := os.Stat(manifestPath); statErr == nil {
+		journal.ManifestExisted = true
+		if err = copyFileExact(manifestPath, filepath.Join(work, "manifest.before")); err != nil {
+			return err
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return statErr
+	}
+	if _, statErr := os.Stat(lowerRoot); statErr == nil {
+		journal.LowerExisted = true
+		if err = copyTreeExact(lowerRoot, filepath.Join(work, "lower.before")); err != nil {
+			return err
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return statErr
+	}
+	for _, path := range paths {
+		target, joinErr := safepath.Join(game, path)
+		if joinErr != nil {
+			return joinErr
+		}
+		if err = rejectSymlinkParents(game, target); err != nil {
+			return err
+		}
+		kind := "file"
+		if currentEntry, ok := current[path]; ok {
+			kind = currentEntry.Kind
+		} else if oldEntry, ok := old.Entries[path]; ok {
+			kind = oldEntry.Kind
+		}
+		entry := applyJournalEntry{Path: path, Kind: kind}
+		info, statErr := os.Lstat(target)
+		if statErr == nil {
+			if kind == "directory" {
+				if !info.IsDir() {
+					return errors.New("private directory target is not a directory")
+				}
+			} else if !info.Mode().IsRegular() {
+				return errors.New("private target is not a regular file")
+			}
+			entry.Existed = true
+			if kind == "file" {
+				backup, _ := safepath.Join(filepath.Join(work, "game.before"), path)
+				if err = copyFileExact(target, backup); err != nil {
+					return err
+				}
+			}
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
+		}
+		journal.Affected = append(journal.Affected, entry)
+	}
+	if err = writeJSONAtomic(filepath.Join(work, "journal.json"), journal); err != nil {
+		return err
+	}
+	rollback := func(cause error) error {
+		journal.Stage = "rolling_back"
+		_ = writeJSONAtomic(filepath.Join(work, "journal.json"), journal)
+		return errors.Join(cause, rollbackPrivateApply(work, base, journal))
+	}
+	journal.Stage = "applying"
+	if err = writeJSONAtomic(filepath.Join(work, "journal.json"), journal); err != nil {
+		return rollback(err)
+	}
+	if err = ctx.Err(); err != nil {
+		return rollback(err)
+	}
+	if rebase {
+		lower = lowerManifest{Version: 1, Entries: map[string]bool{}}
+		_ = os.RemoveAll(filepath.Join(lowerRoot, "tree"))
+		for path, entry := range current {
+			if err = captureLower(game, lowerRoot, path, entry.Kind, &lower); err != nil {
+				return rollback(err)
+			}
+		}
+	} else {
+		for path, entry := range current {
+			if _, wasApplied := old.Entries[path]; !wasApplied {
+				if _, known := lower.Entries[path]; !known {
+					if err = captureLower(game, lowerRoot, path, entry.Kind, &lower); err != nil {
+						return rollback(err)
+					}
+				}
+			}
+		}
+	}
+	if err = writeJSONAtomic(filepath.Join(lowerRoot, "state.json"), lower); err != nil {
+		return rollback(err)
+	}
+	mutations := 0
+	for _, path := range paths {
+		entry, nowPrivate := current[path]
+		if nowPrivate && entry.Kind == "directory" {
+			target, _ := safepath.Join(game, path)
+			err = os.MkdirAll(target, 0750)
+		} else if nowPrivate && entry.Kind == "file" {
+			source, _ := safepath.Join(workspace, path)
+			target, _ := safepath.Join(game, path)
+			err = copyFileExact(source, target)
+		} else if oldEntry, wasPrivate := old.Entries[path]; wasPrivate && oldEntry.Kind == "file" {
+			target, _ := safepath.Join(game, path)
+			if lower.Entries[path] {
+				source, _ := safepath.Join(filepath.Join(lowerRoot, "tree"), path)
+				err = copyFileExact(source, target)
+			} else {
+				err = os.Remove(target)
+				if errors.Is(err, os.ErrNotExist) {
+					err = nil
+				}
+			}
+			delete(lower.Entries, path)
+		} else if oldEntry, wasPrivate := old.Entries[path]; wasPrivate && oldEntry.Kind == "directory" {
+			if !lower.Entries[path] {
+				target, _ := safepath.Join(game, path)
+				err = os.Remove(target)
+				if errors.Is(err, os.ErrNotExist) {
+					err = nil
+				}
+			}
+			delete(lower.Entries, path)
+		}
+		if err != nil {
+			return rollback(err)
+		}
+		mutations++
+		if err = runPrivateApplyFailureHook(mutations); err != nil {
+			return rollback(err)
+		}
+	}
+	if err = writeJSONAtomic(filepath.Join(lowerRoot, "state.json"), lower); err != nil {
+		return rollback(err)
+	}
+	now := time.Now().UTC()
+	next := privateManifest{Version: privateManifestVersion, AppliedAt: now, Entries: current}
+	if err = m.writePrivateManifest(instanceID, next); err != nil {
+		return rollback(err)
+	}
+	journal.Stage = "committed"
+	if err = writeJSONAtomic(filepath.Join(work, "journal.json"), journal); err != nil {
+		return rollback(err)
+	}
+	diff := privateDiff(current, old)
+	if err = createPrivateSnapshot(base, workspace, next, diff.Summary); err == nil {
+		_ = prunePrivateSnapshots(base, 20)
+	}
+	_ = os.RemoveAll(work)
+	return nil
+}
+
+func captureLower(game, lowerRoot, path, kind string, lower *lowerManifest) error {
+	target, _ := safepath.Join(game, path)
+	info, err := os.Lstat(target)
+	if errors.Is(err, os.ErrNotExist) {
+		lower.Entries[path] = false
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if kind == "directory" {
+		if !info.IsDir() {
+			return errors.New("lower directory target is not a directory")
+		}
+		lower.Entries[path] = true
+		return nil
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("lower target is not a regular file")
+	}
+	source := target
+	destination, _ := safepath.Join(filepath.Join(lowerRoot, "tree"), path)
+	if err = copyFileExact(source, destination); err != nil {
+		return err
+	}
+	lower.Entries[path] = true
+	return nil
+}
+
+func rollbackPrivateApply(work, base string, journal privateApplyJournal) error {
+	game := filepath.Join(base, "game", "left4dead2")
+	var result error
+	for i := len(journal.Affected) - 1; i >= 0; i-- {
+		entry := journal.Affected[i]
+		target, err := safepath.Join(game, entry.Path)
+		if err != nil {
+			result = errors.Join(result, err)
+			continue
+		}
+		if entry.Kind == "directory" {
+			if !entry.Existed {
+				if err = os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
+					result = errors.Join(result, err)
+				}
+			}
+		} else if entry.Existed {
+			source, _ := safepath.Join(filepath.Join(work, "game.before"), entry.Path)
+			result = errors.Join(result, copyFileExact(source, target))
+		} else if err = os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
+			result = errors.Join(result, err)
+		}
+	}
+	manifestPath := filepath.Join(base, "private-applied.json")
+	if journal.ManifestExisted {
+		result = errors.Join(result, copyFileExact(filepath.Join(work, "manifest.before"), manifestPath))
+	} else if err := os.Remove(manifestPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		result = errors.Join(result, err)
+	}
+	lowerRoot := filepath.Join(base, "backups", "private", "lower")
+	_ = os.RemoveAll(lowerRoot)
+	if journal.LowerExisted {
+		result = errors.Join(result, copyTreeExact(filepath.Join(work, "lower.before"), lowerRoot))
+	}
+	if result == nil {
+		result = os.RemoveAll(work)
+	}
+	return result
+}
+
+func readLowerManifest(path string) (lowerManifest, error) {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return lowerManifest{Version: 1, Entries: map[string]bool{}}, nil
+	}
+	if err != nil {
+		return lowerManifest{}, err
+	}
+	var value lowerManifest
+	if err = json.Unmarshal(raw, &value); err != nil {
+		return value, err
+	}
+	if value.Version != 1 || value.Entries == nil {
+		return value, errors.New("invalid private lower manifest")
+	}
+	for path := range value.Entries {
+		if err = validateManifestEntry(path, manifestEntry{Kind: "file", Hash: strings.Repeat("0", 64)}); err != nil {
+			return value, err
+		}
+	}
+	return value, nil
+}
+
+func writeJSONAtomic(path string, value any) error {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	if err = os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), ".private-state-*")
+	if err != nil {
+		return err
+	}
+	name := temp.Name()
+	defer os.Remove(name)
+	if err = temp.Chmod(0640); err == nil {
+		_, err = temp.Write(raw)
+	}
+	if closeErr := temp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return atomicReplaceFile(name, path)
+}
+
+func copyFileExact(source, target string) error {
+	if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
+		return err
+	}
+	input, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	temp, err := os.CreateTemp(filepath.Dir(target), ".private-copy-*")
+	if err != nil {
+		return err
+	}
+	name := temp.Name()
+	defer os.Remove(name)
+	if err = temp.Chmod(0640); err == nil {
+		_, err = io.Copy(temp, input)
+	}
+	if closeErr := temp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return atomicReplaceFile(name, target)
+}
+
+func copyTreeExact(source, target string) error {
+	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return errors.New("symbolic links are forbidden")
+		}
+		rel, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(target, rel)
+		if entry.IsDir() {
+			return os.MkdirAll(dst, 0750)
+		}
+		if !entry.Type().IsRegular() {
+			return errors.New("only regular files and directories are allowed")
+		}
+		return copyFileExact(path, dst)
+	})
+}
+
+func createPrivateSnapshot(base, workspace string, manifest privateManifest, summary DiffSummary) error {
+	id := time.Now().UTC().Format("20060102T150405.000000000Z") + "-" + uuid.NewString()
+	root := filepath.Join(base, "backups", "private", "snapshots", id)
+	if err := copyTreeExact(workspace, filepath.Join(root, "tree")); err != nil {
+		return err
+	}
+	meta := struct {
+		PrivateSnapshot
+		Manifest privateManifest `json:"manifest"`
+	}{PrivateSnapshot: PrivateSnapshot{ID: id, AppliedAt: manifest.AppliedAt, Summary: summary}, Manifest: manifest}
+	return writeJSONAtomic(filepath.Join(root, "snapshot.json"), meta)
+}
+
+func (m *PrivateManager) Snapshots(_ context.Context, instanceID string) ([]PrivateSnapshot, error) {
+	lock := m.instanceLock(instanceID)
+	lock.RLock()
+	defer lock.RUnlock()
+	if err := validateInstanceID(instanceID); err != nil {
+		return nil, err
+	}
+	root := filepath.Join(m.root, "instances", instanceID, "backups", "private", "snapshots")
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return []PrivateSnapshot{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	result := []PrivateSnapshot{}
+	for _, entry := range entries {
+		if !entry.IsDir() || filepath.Base(entry.Name()) != entry.Name() {
+			continue
+		}
+		var value struct{ PrivateSnapshot }
+		raw, readErr := os.ReadFile(filepath.Join(root, entry.Name(), "snapshot.json"))
+		if readErr != nil {
+			return nil, readErr
+		}
+		if err = json.Unmarshal(raw, &value); err != nil {
+			return nil, err
+		}
+		if value.ID != entry.Name() {
+			return nil, errors.New("invalid private snapshot identity")
+		}
+		result = append(result, value.PrivateSnapshot)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].AppliedAt.After(result[j].AppliedAt) })
+	return result, nil
+}
+
+func (m *PrivateManager) RestoreSnapshot(_ context.Context, instanceID, snapshotID string) error {
+	lock := m.instanceLock(instanceID)
+	lock.Lock()
+	defer lock.Unlock()
+	if err := validateInstanceID(instanceID); err != nil {
+		return err
+	}
+	if snapshotID == "" || filepath.Base(snapshotID) != snapshotID {
+		return errors.New("invalid snapshot id")
+	}
+	base := filepath.Join(m.root, "instances", instanceID)
+	source := filepath.Join(base, "backups", "private", "snapshots", snapshotID, "tree")
+	if err := rejectSymlinkParents(base, source); err != nil {
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(source), "snapshot.json")); err != nil {
+		return err
+	}
+	parent := filepath.Join(base)
+	staging := filepath.Join(parent, ".private-restore-"+uuid.NewString())
+	if err := copyTreeExact(source, staging); err != nil {
+		return err
+	}
+	workspace := filepath.Join(base, "private")
+	backup := filepath.Join(parent, ".private-old-"+uuid.NewString())
+	hadOld := false
+	if _, err := os.Stat(workspace); err == nil {
+		hadOld = true
+		if err = os.Rename(workspace, backup); err != nil {
+			_ = os.RemoveAll(staging)
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Rename(staging, workspace); err != nil {
+		if hadOld {
+			_ = os.Rename(backup, workspace)
+		}
+		return err
+	}
+	_ = os.RemoveAll(backup)
+	return nil
+}
+
+func prunePrivateSnapshots(base string, keep int) error {
+	root := filepath.Join(base, "backups", "private", "snapshots")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	names := []string{}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			names = append(names, entry.Name())
+		}
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(names)))
+	if len(names) <= keep {
+		return nil
+	}
+	var result error
+	for _, name := range names[keep:] {
+		result = errors.Join(result, os.RemoveAll(filepath.Join(root, name)))
+	}
+	return result
 }

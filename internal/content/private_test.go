@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -54,6 +55,163 @@ func TestPrivateWorkspaceCRUDAndDiff(t *testing.T) {
 	}
 	if len(diff.Changes) != 1 || diff.Changes[0].Path != "cfg/sourcemod/server.cfg" || diff.Changes[0].Kind != "added" {
 		t.Fatalf("changes=%#v", diff.Changes)
+	}
+}
+
+func TestPrivateApplyDeleteRestoresCapturedLowerLayer(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateManager(root, 1<<20)
+	game := filepath.Join(root, "instances", "abc", "game", "left4dead2", "cfg", "server.cfg")
+	if err := os.MkdirAll(filepath.Dir(game), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(game, []byte("package"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Save(context.Background(), "abc", "cfg/server.cfg", []byte("private")); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ApplyChanges(context.Background(), "abc"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Delete(context.Background(), "abc", "cfg/server.cfg"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ApplyChanges(context.Background(), "abc"); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(game); err != nil || string(raw) != "package" {
+		t.Fatalf("game=%q err=%v", raw, err)
+	}
+}
+
+func TestPrivateApplyDeleteWithoutLowerRemovesTarget(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateManager(root, 1<<20)
+	if _, err := manager.Save(context.Background(), "abc", "cfg/private.cfg", []byte("private")); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ApplyChanges(context.Background(), "abc"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Delete(context.Background(), "abc", "cfg/private.cfg"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ApplyChanges(context.Background(), "abc"); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "instances", "abc", "game", "left4dead2", "cfg", "private.cfg")
+	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("target remains: %v", err)
+	}
+}
+
+func TestPrivateApplyCopiesEmptyDirectory(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateManager(root, 1<<20)
+	if err := manager.MakeDir(context.Background(), "abc", "cfg/empty"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ApplyChanges(context.Background(), "abc"); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "instances", "abc", "game", "left4dead2", "cfg", "empty")
+	if info, err := os.Stat(target); err != nil || !info.IsDir() {
+		t.Fatalf("empty directory missing: info=%v err=%v", info, err)
+	}
+}
+
+func TestPrivateApplyFailureRollsBackGameAndManifest(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateManager(root, 1<<20)
+	ctx := context.Background()
+	if _, err := manager.Save(ctx, "abc", "cfg/a.cfg", []byte("old-a")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Save(ctx, "abc", "cfg/b.cfg", []byte("old-b")); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ApplyChanges(ctx, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath, _ := manager.manifestPath("abc")
+	oldManifest, _ := os.ReadFile(manifestPath)
+	if _, err := manager.Save(ctx, "abc", "cfg/a.cfg", []byte("new-a")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Save(ctx, "abc", "cfg/b.cfg", []byte("new-b")); err != nil {
+		t.Fatal(err)
+	}
+	setPrivateApplyFailureHook(func(count int) error {
+		if count == 1 {
+			return errors.New("injected")
+		}
+		return nil
+	})
+	t.Cleanup(func() { setPrivateApplyFailureHook(nil) })
+	if err := manager.ApplyChanges(ctx, "abc"); err == nil {
+		t.Fatal("expected failure")
+	}
+	game := filepath.Join(root, "instances", "abc", "game", "left4dead2", "cfg")
+	for name, want := range map[string]string{"a.cfg": "old-a", "b.cfg": "old-b"} {
+		raw, err := os.ReadFile(filepath.Join(game, name))
+		if err != nil || string(raw) != want {
+			t.Fatalf("%s=%q err=%v", name, raw, err)
+		}
+	}
+	if got, _ := os.ReadFile(manifestPath); string(got) != string(oldManifest) {
+		t.Fatal("applied manifest changed")
+	}
+	if diff, err := manager.Diff(ctx, "abc"); err != nil || diff.Summary.Modified != 2 {
+		t.Fatalf("diff=%#v err=%v", diff, err)
+	}
+}
+
+func TestPrivateSnapshotsRetainAndRestoreWorkspace(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateManager(root, 1<<20)
+	ctx := context.Background()
+	if err := manager.MakeDir(ctx, "abc", "cfg/empty"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 21; i++ {
+		if _, err := manager.Save(ctx, "abc", "cfg/value.cfg", []byte(strconv.Itoa(i))); err != nil {
+			t.Fatal(err)
+		}
+		if err := manager.ApplyChanges(ctx, "abc"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshots, err := manager.Snapshots(ctx, "abc")
+	if err != nil || len(snapshots) != 20 {
+		t.Fatalf("snapshots=%d err=%v", len(snapshots), err)
+	}
+	selected := snapshots[len(snapshots)-1]
+	game := filepath.Join(root, "instances", "abc", "game", "left4dead2", "cfg", "value.cfg")
+	beforeGame, _ := os.ReadFile(game)
+	manifestPath, _ := manager.manifestPath("abc")
+	beforeManifest, _ := os.ReadFile(manifestPath)
+	if err := manager.RestoreSnapshot(ctx, "abc", selected.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "instances", "abc", "private", "cfg", "empty")); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := os.ReadFile(game); string(raw) != string(beforeGame) {
+		t.Fatal("restore changed game")
+	}
+	if raw, _ := os.ReadFile(manifestPath); string(raw) != string(beforeManifest) {
+		t.Fatal("restore changed manifest")
+	}
+	if diff, err := manager.Diff(ctx, "abc"); err != nil || diff.Summary.Modified != 1 {
+		t.Fatalf("diff=%#v err=%v", diff, err)
+	}
+	if err := manager.ApplyChanges(ctx, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := manager.Snapshots(ctx, "abc")
+	if after[0].ID == selected.ID {
+		t.Fatal("apply rewrote snapshot history")
 	}
 }
 

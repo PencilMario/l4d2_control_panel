@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/not0721here/l4d2-control-panel/internal/content"
 )
 
 func TestHotUpdateAppliesAllowedFilesAndPrivateLast(t *testing.T) {
@@ -22,6 +24,68 @@ func TestHotUpdateAppliesAllowedFilesAndPrivateLast(t *testing.T) {
 	raw, _ := os.ReadFile(filepath.Join(root, "instances", "abc", "game", "left4dead2", "cfg", "plugin.cfg"))
 	if string(raw) != "private" {
 		t.Fatalf("got %q", raw)
+	}
+}
+
+func TestPackageUpdateRebasesPrivateLowerLayer(t *testing.T) {
+	root := t.TempDir()
+	pipeline := New(root)
+	ctx := context.Background()
+	if err := pipeline.Apply(ctx, "abc", zipFile(t, map[string]string{"cfg/plugin.cfg": "package-v1"}), "v1", Hot); err != nil {
+		t.Fatal(err)
+	}
+	private := content.NewPrivateManager(root, 1<<20)
+	if _, err := private.Save(ctx, "abc", "cfg/plugin.cfg", []byte("private")); err != nil {
+		t.Fatal(err)
+	}
+	if err := private.ApplyChanges(ctx, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pipeline.Apply(ctx, "abc", zipFile(t, map[string]string{"cfg/plugin.cfg": "package-v2"}), "v2", Hot); err != nil {
+		t.Fatal(err)
+	}
+	if err := private.Delete(ctx, "abc", "cfg/plugin.cfg"); err != nil {
+		t.Fatal(err)
+	}
+	if err := private.ApplyChanges(ctx, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "instances", "abc", "game", "left4dead2", "cfg", "plugin.cfg")
+	if raw, err := os.ReadFile(target); err != nil || string(raw) != "package-v2" {
+		t.Fatalf("game=%q err=%v", raw, err)
+	}
+}
+
+func TestPackageRollbackRestoresPrivateLowerLayer(t *testing.T) {
+	root := t.TempDir()
+	pipeline := New(root)
+	ctx := context.Background()
+	if err := pipeline.Apply(ctx, "abc", zipFile(t, map[string]string{"cfg/plugin.cfg": "package-v1"}), "v1", Hot); err != nil {
+		t.Fatal(err)
+	}
+	private := content.NewPrivateManager(root, 1<<20)
+	if _, err := private.Save(ctx, "abc", "cfg/plugin.cfg", []byte("private")); err != nil {
+		t.Fatal(err)
+	}
+	if err := private.ApplyChanges(ctx, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := pipeline.Begin(ctx, "abc", zipFile(t, map[string]string{"cfg/plugin.cfg": "package-v2"}), "v2", Hot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deployment.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := private.Delete(ctx, "abc", "cfg/plugin.cfg"); err != nil {
+		t.Fatal(err)
+	}
+	if err := private.ApplyChanges(ctx, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "instances", "abc", "game", "left4dead2", "cfg", "plugin.cfg")
+	if raw, err := os.ReadFile(target); err != nil || string(raw) != "package-v1" {
+		t.Fatalf("game=%q err=%v", raw, err)
 	}
 }
 func TestUpdateStripsReleaseWrapperDirectory(t *testing.T) {

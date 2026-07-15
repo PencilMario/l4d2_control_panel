@@ -43,13 +43,16 @@ type journalEntry struct {
 }
 
 type updateJournal struct {
-	Version         int            `json:"version"`
-	InstanceID      string         `json:"instance_id"`
-	Mode            Mode           `json:"mode"`
-	Stage           string         `json:"stage"`
-	BackupRoot      string         `json:"backup_root"`
-	Affected        []journalEntry `json:"affected"`
-	ManifestExisted bool           `json:"manifest_existed"`
+	Version                int            `json:"version"`
+	InstanceID             string         `json:"instance_id"`
+	Mode                   Mode           `json:"mode"`
+	Stage                  string         `json:"stage"`
+	BackupRoot             string         `json:"backup_root"`
+	Affected               []journalEntry `json:"affected"`
+	ManifestExisted        bool           `json:"manifest_existed"`
+	PrivateManifestExisted bool           `json:"private_manifest_existed"`
+	PrivateLowerExisted    bool           `json:"private_lower_existed"`
+	PrivateSnapshots       []string       `json:"private_snapshots,omitempty"`
 }
 
 type Deployment interface {
@@ -95,6 +98,8 @@ func (p *Pipeline) Begin(ctx context.Context, instanceID, archivePath, version s
 	backup := filepath.Join(work, "replaced")
 	manifestPath := filepath.Join(base, "package-manifest.json")
 	manifestBackup := filepath.Join(work, "manifest.before")
+	privateManifestPath := filepath.Join(base, "private-applied.json")
+	privateLowerPath := filepath.Join(base, "backups", "private", "lower")
 	if err := os.MkdirAll(staging, 0750); err != nil {
 		return nil, err
 	}
@@ -158,15 +163,40 @@ func (p *Pipeline) Begin(ctx context.Context, instanceID, archivePath, version s
 	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 		return nil, statErr
 	}
+	privateManifestExisted := false
+	if info, statErr := os.Stat(privateManifestPath); statErr == nil && !info.IsDir() {
+		privateManifestExisted = true
+		if err := copyFile(privateManifestPath, filepath.Join(work, "private-manifest.before")); err != nil {
+			return nil, err
+		}
+	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return nil, statErr
+	}
+	privateLowerExisted := false
+	if info, statErr := os.Stat(privateLowerPath); statErr == nil && info.IsDir() {
+		privateLowerExisted = true
+		if err := copyDirectory(privateLowerPath, filepath.Join(work, "private-lower.before")); err != nil {
+			return nil, err
+		}
+	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return nil, statErr
+	}
+	privateSnapshots, err := directoryNames(filepath.Join(base, "backups", "private", "snapshots"))
+	if err != nil {
+		return nil, err
+	}
 
 	value := updateJournal{
-		Version:         1,
-		InstanceID:      instanceID,
-		Mode:            mode,
-		Stage:           "prepared",
-		BackupRoot:      "replaced",
-		Affected:        entries,
-		ManifestExisted: manifestExisted,
+		Version:                1,
+		InstanceID:             instanceID,
+		Mode:                   mode,
+		Stage:                  "prepared",
+		BackupRoot:             "replaced",
+		Affected:               entries,
+		ManifestExisted:        manifestExisted,
+		PrivateManifestExisted: privateManifestExisted,
+		PrivateLowerExisted:    privateLowerExisted,
+		PrivateSnapshots:       privateSnapshots,
 	}
 	journalPath := filepath.Join(work, "journal.json")
 	if err := writeJournal(journalPath, value); err != nil {
@@ -207,7 +237,7 @@ func (p *Pipeline) Begin(ctx context.Context, instanceID, archivePath, version s
 		}
 	}
 	private := content.NewPrivateManager(p.root, 1<<20)
-	if err := private.Apply(ctx, instanceID); err != nil {
+	if err := private.RebaseAndApply(ctx, instanceID); err != nil {
 		return fail(err)
 	}
 	if err := writeManifest(manifestPath, newManifest); err != nil {
@@ -305,7 +335,74 @@ func (p *Pipeline) rollbackJournal(journalPath string, value updateJournal) erro
 	} else if err := os.Remove(manifestPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		result = errors.Join(result, err)
 	}
+	privateManifestPath := filepath.Join(base, "private-applied.json")
+	if value.PrivateManifestExisted {
+		result = errors.Join(result, copyFile(filepath.Join(work, "private-manifest.before"), privateManifestPath))
+	} else if err := os.Remove(privateManifestPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		result = errors.Join(result, err)
+	}
+	privateLowerPath := filepath.Join(base, "backups", "private", "lower")
+	if err := os.RemoveAll(privateLowerPath); err != nil {
+		result = errors.Join(result, err)
+	} else if value.PrivateLowerExisted {
+		result = errors.Join(result, copyDirectory(filepath.Join(work, "private-lower.before"), privateLowerPath))
+	}
+	snapshotRoot := filepath.Join(base, "backups", "private", "snapshots")
+	before := make(map[string]struct{}, len(value.PrivateSnapshots))
+	for _, name := range value.PrivateSnapshots {
+		before[name] = struct{}{}
+	}
+	if names, err := directoryNames(snapshotRoot); err != nil {
+		result = errors.Join(result, err)
+	} else {
+		for _, name := range names {
+			if _, keep := before[name]; !keep {
+				result = errors.Join(result, os.RemoveAll(filepath.Join(snapshotRoot, name)))
+			}
+		}
+	}
 	return result
+}
+
+func directoryNames(root string) ([]string, error) {
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	result := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			result = append(result, entry.Name())
+		}
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func copyDirectory(source, target string) error {
+	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return errors.New("symbolic links are forbidden")
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		destination := filepath.Join(target, relative)
+		if entry.IsDir() {
+			return os.MkdirAll(destination, 0750)
+		}
+		if !entry.Type().IsRegular() {
+			return errors.New("only regular files are allowed")
+		}
+		return copyFile(path, destination)
+	})
 }
 
 func collectFiles(root string, affected map[string]bool) error {
