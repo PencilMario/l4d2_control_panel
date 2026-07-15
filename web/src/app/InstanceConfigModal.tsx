@@ -182,11 +182,14 @@ export function InstanceConfigModal({
                 required
               >
                 {packages.length ? (
-                  packages.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.filename} · {item.version}
-                    </option>
-                  ))
+                  <>
+                    <option value="" disabled>请选择插件包</option>
+                    {packages.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.filename} · {item.version}
+                      </option>
+                    ))}
+                  </>
                 ) : (
                   <option value="">暂无插件包</option>
                 )}

@@ -121,6 +121,21 @@ describe("InstanceConfigModal", () => {
     );
   });
 
+  it("shows an explicit empty selection for an instance without a package", () => {
+    render(
+      <InstanceConfigModal
+        mode="edit"
+        instance={{ ...instance, package_id: "", applied_package_id: "" }}
+        packages={[packageA, packageB]}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("插件包")).toHaveValue("");
+    expect(screen.getByLabelText("插件包")).toHaveDisplayValue("请选择插件包");
+  });
+
   it("disables creation when no package is available", () => {
     render(
       <InstanceConfigModal
