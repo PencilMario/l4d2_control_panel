@@ -8,6 +8,7 @@
 - [Private overlay file manager and console follow behavior](specs/2026-07-15-private-file-manager-console-follow-design.md)
 - [Instance performance information and one-hour history](specs/2026-07-15-instance-performance-history-design.md)
 - [Instance selective game and plugin package reinstall](specs/2026-07-15-instance-selective-reinstall-design.md)
+- [Player match summary and operations view](specs/2026-07-16-player-match-operations-design.md)
 
 ## Implementation Plans
 
