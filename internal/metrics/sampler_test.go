@@ -31,6 +31,7 @@ type fakeRuntime struct {
 	stats                map[string]docker.ResourceStats
 	runtimeErr, statsErr error
 	runtimeFn            func(context.Context, string) (docker.RuntimeState, error)
+	statsDeadlineSeen    bool
 }
 
 func (f *fakeRuntime) Runtime(ctx context.Context, id string) (docker.RuntimeState, error) {
@@ -44,9 +45,10 @@ func (f *fakeRuntime) Runtime(ctx context.Context, id string) (docker.RuntimeSta
 	}
 	return docker.RuntimeState{}, f.runtimeErr
 }
-func (f *fakeRuntime) Stats(context.Context, string) (docker.ResourceStats, error) {
+func (f *fakeRuntime) Stats(ctx context.Context, _ string) (docker.ResourceStats, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	_, f.statsDeadlineSeen = ctx.Deadline()
 	for _, v := range f.stats {
 		return v, f.statsErr
 	}
@@ -54,11 +56,13 @@ func (f *fakeRuntime) Stats(context.Context, string) (docker.ResourceStats, erro
 }
 
 type fakeTraffic struct {
-	mu         sync.Mutex
-	totals     traffic.Totals
-	err        error
-	registered []traffic.Session
-	stopped    []traffic.Session
+	mu             sync.Mutex
+	totals         traffic.Totals
+	err            error
+	registered     []traffic.Session
+	stopped        []traffic.Session
+	respectContext bool
+	deadlineSeen   bool
 }
 
 func (f *fakeTraffic) Register(_ context.Context, s traffic.Session) error {
@@ -73,24 +77,62 @@ func (f *fakeTraffic) Stop(_ context.Context, id, run string) error {
 	f.stopped = append(f.stopped, traffic.Session{InstanceID: id, RunID: run})
 	return f.err
 }
-func (f *fakeTraffic) Totals(context.Context, string) (traffic.Totals, error) {
+func (f *fakeTraffic) Totals(ctx context.Context, _ string) (traffic.Totals, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	_, f.deadlineSeen = ctx.Deadline()
+	if f.respectContext && ctx.Err() != nil {
+		return traffic.Totals{}, ctx.Err()
+	}
 	return f.totals, f.err
 }
 
 type fakePlayers struct {
-	summary players.Summary
-	err     error
-	clock   *fakeClock
-	advance time.Duration
+	summary        players.Summary
+	err            error
+	clock          *fakeClock
+	advance        time.Duration
+	respectContext bool
+	deadlineSeen   bool
 }
 
-func (f *fakePlayers) Summary(context.Context, string) (players.Summary, error) {
+func (f *fakePlayers) Summary(ctx context.Context, _ string) (players.Summary, error) {
+	_, f.deadlineSeen = ctx.Deadline()
+	if f.respectContext && ctx.Err() != nil {
+		return players.Summary{}, ctx.Err()
+	}
 	if f.clock != nil {
 		f.clock.Advance(f.advance)
 	}
 	return f.summary, f.err
+}
+
+func TestRuntimeDeadlineDoesNotConsumeIndependentSourceBudgets(t *testing.T) {
+	now := time.Now().UTC()
+	s, _, runtime, network, player, _ := testSampler(now)
+	player.advance = 5 * time.Millisecond
+	s.Sample(context.Background())
+	prior, _ := s.Latest("one")
+	runtimeDeadlineSeen := false
+	runtime.runtimeFn = func(ctx context.Context, _ string) (docker.RuntimeState, error) {
+		_, runtimeDeadlineSeen = ctx.Deadline()
+		<-ctx.Done()
+		return docker.RuntimeState{}, ctx.Err()
+	}
+	network.respectContext = true
+	player.respectContext = true
+	s.instanceTimeout = 20 * time.Millisecond
+	s.Sample(context.Background())
+	got, _ := s.Latest("one")
+	if got.ContainerRunning != nil || got.RunID != prior.RunID {
+		t.Fatalf("runtime state=%+v run=%q", got.ContainerRunning, got.RunID)
+	}
+	if got.NetworkRXBytes == nil || *got.NetworkRXBytes != network.totals.RXBytes || got.Map == nil || *got.Map != player.summary.Map || got.A2SLatencyMS == nil {
+		t.Fatalf("independent sources lost after runtime deadline: %+v", got)
+	}
+	if !hasIssue(got.Issues, "runtime") || !runtimeDeadlineSeen || !runtime.statsDeadlineSeen || !network.deadlineSeen || !player.deadlineSeen {
+		t.Fatalf("issues=%+v deadlines runtime=%v stats=%v traffic=%v player=%v", got.Issues, runtimeDeadlineSeen, runtime.statsDeadlineSeen, network.deadlineSeen, player.deadlineSeen)
+	}
 }
 
 type fakeTicker struct {

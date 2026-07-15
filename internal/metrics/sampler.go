@@ -97,23 +97,24 @@ type Sampler struct {
 	players   PlayerProvider
 	clock     Clock
 
-	mu          sync.RWMutex
-	latest      map[string]Snapshot
-	history     map[string][]Snapshot
-	previous    map[string]counterSample
-	runs        map[string]string
-	workerCount int
-	startOnce   sync.Once
-	stopOnce    sync.Once
-	cancel      context.CancelFunc
-	done        chan struct{}
+	mu              sync.RWMutex
+	latest          map[string]Snapshot
+	history         map[string][]Snapshot
+	previous        map[string]counterSample
+	runs            map[string]string
+	workerCount     int
+	instanceTimeout time.Duration
+	startOnce       sync.Once
+	stopOnce        sync.Once
+	cancel          context.CancelFunc
+	done            chan struct{}
 }
 
 func New(instances InstanceSource, runtime RuntimeProvider, trafficProvider TrafficProvider, playerProvider PlayerProvider, clock Clock) *Sampler {
 	if clock == nil {
 		clock = realClock{}
 	}
-	return &Sampler{instances: instances, runtime: runtime, traffic: trafficProvider, players: playerProvider, clock: clock, latest: map[string]Snapshot{}, history: map[string][]Snapshot{}, previous: map[string]counterSample{}, runs: map[string]string{}, workerCount: maxConcurrentInstances, done: make(chan struct{})}
+	return &Sampler{instances: instances, runtime: runtime, traffic: trafficProvider, players: playerProvider, clock: clock, latest: map[string]Snapshot{}, history: map[string][]Snapshot{}, previous: map[string]counterSample{}, runs: map[string]string{}, workerCount: maxConcurrentInstances, instanceTimeout: instanceTimeout, done: make(chan struct{})}
 }
 
 func (s *Sampler) Start(ctx context.Context) {
@@ -175,7 +176,7 @@ func (s *Sampler) Sample(ctx context.Context) {
 		go func() {
 			defer wg.Done()
 			for instance := range jobs {
-				instanceCtx, cancel := context.WithTimeout(ctx, instanceTimeout)
+				instanceCtx, cancel := context.WithTimeout(ctx, s.instanceTimeout)
 				s.sampleInstance(instanceCtx, instance)
 				cancel()
 			}
@@ -197,17 +198,50 @@ func (s *Sampler) Sample(ctx context.Context) {
 func (s *Sampler) sampleInstance(ctx context.Context, instance domain.Instance) {
 	now := s.clock.Now().UTC()
 	snapshot := Snapshot{Timestamp: now}
-	runtimeState, err := s.runtime.Runtime(ctx, instance.ContainerID)
+	priorRun := s.priorRun(instance.ID)
+	runtimeResults := make(chan runtimeResult, 1)
+	statsResults := make(chan sourceResult, 1)
+	playerResults := make(chan Snapshot, 1)
+	trafficResults := make(chan sourceResult, 1)
+	go func() {
+		state, err := s.runtime.Runtime(ctx, instance.ContainerID)
+		runtimeResults <- runtimeResult{state: state, err: err}
+	}()
+	go func() {
+		partial := Snapshot{}
+		counters := counterSample{timestamp: now, runID: priorRun}
+		s.sampleStats(ctx, instance.ContainerID, &partial, &counters)
+		statsResults <- sourceResult{snapshot: partial, counters: counters}
+	}()
+	go func() {
+		partial := Snapshot{}
+		s.samplePlayers(ctx, instance.ID, &partial)
+		playerResults <- partial
+	}()
+	go func() {
+		partial := Snapshot{}
+		counters := counterSample{timestamp: now, runID: priorRun}
+		if priorRun != "" {
+			s.sampleTraffic(ctx, instance.ID, priorRun, &partial, &counters)
+		}
+		trafficResults <- sourceResult{snapshot: partial, counters: counters}
+	}()
+
+	runtimeResult := <-runtimeResults
+	statsResult := <-statsResults
+	playerResult := <-playerResults
+	priorTrafficResult := <-trafficResults
+	err := runtimeResult.err
 	if err != nil {
 		snapshot.Issues = append(snapshot.Issues, issue("runtime", err))
-		snapshot.RunID = s.priorRun(instance.ID)
-		counters := counterSample{timestamp: now, runID: snapshot.RunID}
-		s.sampleStats(ctx, instance.ContainerID, &snapshot, &counters)
-		s.sampleTraffic(ctx, instance.ID, snapshot.RunID, &snapshot, &counters)
-		s.samplePlayers(ctx, instance.ID, &snapshot)
+		snapshot.RunID = priorRun
+		mergeSnapshot(&snapshot, statsResult.snapshot)
+		mergeSnapshot(&snapshot, priorTrafficResult.snapshot)
+		mergeSnapshot(&snapshot, playerResult)
 		s.publish(instance.ID, snapshot, nil)
 		return
 	}
+	runtimeState := runtimeResult.state
 	if !runtimeState.Running {
 		snapshot.ContainerRunning = boolptr(false)
 		s.stopPrevious(ctx, instance.ID)
@@ -230,11 +264,65 @@ func (s *Sampler) sampleInstance(ctx context.Context, instance domain.Instance) 
 	}
 
 	counters := counterSample{timestamp: now, runID: snapshot.RunID}
-	s.sampleStats(ctx, instance.ContainerID, &snapshot, &counters)
+	mergeSnapshot(&snapshot, statsResult.snapshot)
+	counters.read = statsResult.counters.read
+	counters.write = statsResult.counters.write
 	s.sampleTraffic(ctx, instance.ID, snapshot.RunID, &snapshot, &counters)
-
-	s.samplePlayers(ctx, instance.ID, &snapshot)
+	mergeSnapshot(&snapshot, playerResult)
 	s.publish(instance.ID, snapshot, &counters)
+}
+
+type runtimeResult struct {
+	state docker.RuntimeState
+	err   error
+}
+
+type sourceResult struct {
+	snapshot Snapshot
+	counters counterSample
+}
+
+func mergeSnapshot(target *Snapshot, source Snapshot) {
+	if source.CPUPercent != nil {
+		target.CPUPercent = source.CPUPercent
+	}
+	if source.MemoryBytes != nil {
+		target.MemoryBytes = source.MemoryBytes
+	}
+	if source.MemoryLimitBytes != nil {
+		target.MemoryLimitBytes = source.MemoryLimitBytes
+	}
+	if source.MemoryPercent != nil {
+		target.MemoryPercent = source.MemoryPercent
+	}
+	if source.NetworkRXBytes != nil {
+		target.NetworkRXBytes = source.NetworkRXBytes
+	}
+	if source.NetworkTXBytes != nil {
+		target.NetworkTXBytes = source.NetworkTXBytes
+	}
+	if source.BlockReadBytes != nil {
+		target.BlockReadBytes = source.BlockReadBytes
+	}
+	if source.BlockWriteBytes != nil {
+		target.BlockWriteBytes = source.BlockWriteBytes
+	}
+	if source.PIDs != nil {
+		target.PIDs = source.PIDs
+	}
+	if source.A2SLatencyMS != nil {
+		target.A2SLatencyMS = source.A2SLatencyMS
+	}
+	if source.Map != nil {
+		target.Map = source.Map
+	}
+	if source.Players != nil {
+		target.Players = source.Players
+	}
+	if source.MaxPlayers != nil {
+		target.MaxPlayers = source.MaxPlayers
+	}
+	target.Issues = append(target.Issues, source.Issues...)
 }
 
 func (s *Sampler) sampleStats(ctx context.Context, containerID string, snapshot *Snapshot, counters *counterSample) {
