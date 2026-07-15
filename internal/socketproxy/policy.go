@@ -14,6 +14,9 @@ var containerDelete = regexp.MustCompile(`^/containers/[^/]+$`)
 
 func Allowed(method, path string) bool {
 	path = versionPrefix.ReplaceAllString(path, "")
+	if strings.HasPrefix(path, "/_panel/") {
+		return false
+	}
 	if path == "/_ping" || path == "/version" {
 		return method == http.MethodGet || method == http.MethodHead
 	}
