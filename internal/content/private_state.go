@@ -110,6 +110,9 @@ func (m *PrivateManager) readPrivateManifest(instanceID string) (privateManifest
 	if err != nil {
 		return privateManifest{}, err
 	}
+	if err := rejectSymlinkParents(m.root, path); err != nil {
+		return privateManifest{}, err
+	}
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return privateManifest{Version: privateManifestVersion, Entries: map[string]manifestEntry{}}, nil
@@ -133,6 +136,9 @@ func (m *PrivateManager) readPrivateManifest(instanceID string) (privateManifest
 func (m *PrivateManager) writePrivateManifest(instanceID string, manifest privateManifest) error {
 	path, err := m.manifestPath(instanceID)
 	if err != nil {
+		return err
+	}
+	if err := rejectSymlinkParents(m.root, path); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
@@ -160,7 +166,7 @@ func (m *PrivateManager) writePrivateManifest(instanceID string, manifest privat
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temporaryName, path)
+	return replacePath(temporaryName, path, true)
 }
 
 func isEmptyDirectory(path string, entries map[string]manifestEntry) bool {

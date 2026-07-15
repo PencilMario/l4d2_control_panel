@@ -133,23 +133,62 @@ func (m *PrivateManager) Move(_ context.Context, instanceID, from, to string, ov
 	if err := rejectSymlinkParents(root, target); err != nil {
 		return err
 	}
-	if _, err := os.Lstat(source); err != nil {
-		return err
+	if source == target {
+		return errors.New("source and destination are the same")
 	}
-	if _, err := os.Lstat(target); err == nil {
-		if !overwrite {
-			return errors.New("destination exists")
-		}
-		if err := os.RemoveAll(target); err != nil {
-			return err
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Lstat(source); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
 		return err
 	}
-	return os.Rename(source, target)
+	return replacePath(source, target, overwrite)
+}
+
+func replacePath(source, target string, overwrite bool) error {
+	_, targetErr := os.Lstat(target)
+	if errors.Is(targetErr, os.ErrNotExist) {
+		return os.Rename(source, target)
+	}
+	if targetErr != nil {
+		return targetErr
+	}
+	if !overwrite {
+		return errors.New("destination exists")
+	}
+
+	placeholder, err := os.CreateTemp(filepath.Dir(target), ".private-replaced-*")
+	if err != nil {
+		return err
+	}
+	backup := placeholder.Name()
+	if err := placeholder.Close(); err != nil {
+		os.Remove(backup)
+		return err
+	}
+	removeBackup := true
+	defer func() {
+		if removeBackup {
+			_ = os.RemoveAll(backup)
+		}
+	}()
+	if err := os.Remove(backup); err != nil {
+		return err
+	}
+	if err := os.Rename(target, backup); err != nil {
+		return err
+	}
+	if err := os.Rename(source, target); err != nil {
+		if rollbackErr := os.Rename(backup, target); rollbackErr != nil {
+			removeBackup = false
+			return errors.Join(err, errors.New("restore destination: "+rollbackErr.Error()))
+		}
+		return err
+	}
+	if err := os.RemoveAll(backup); err != nil {
+		return errors.New("remove replaced destination: " + err.Error())
+	}
+	return nil
 }
 
 func (m *PrivateManager) Tree(_ context.Context, instanceID string) ([]PrivateEntry, error) {

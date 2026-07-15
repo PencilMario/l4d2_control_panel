@@ -2,6 +2,7 @@ package content
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,6 +88,104 @@ func TestPrivatePathRejectsEscapeSymlinkAndOverwrite(t *testing.T) {
 	}
 	if _, err := manager.Tree(ctx, "abc"); err == nil {
 		t.Fatal("tree accepted symlink")
+	}
+}
+
+func TestPrivateMoveOverwriteAndFailurePreservesDestination(t *testing.T) {
+	manager := NewPrivateManager(t.TempDir(), 1<<20)
+	ctx := context.Background()
+	if _, err := manager.Save(ctx, "abc", "cfg/source.cfg", []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Save(ctx, "abc", "cfg/target.cfg", []byte("old")); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Move(ctx, "abc", "cfg/source.cfg", "cfg/target.cfg", true); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := manager.Read(ctx, "abc", "cfg/target.cfg")
+	if err != nil || string(raw) != "new" {
+		t.Fatalf("target=%q err=%v", raw, err)
+	}
+
+	if err := manager.MakeDir(ctx, "abc", "tree/destination"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Save(ctx, "abc", "tree/destination/keep.cfg", []byte("keep")); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Move(ctx, "abc", "tree", "tree/destination", true); err == nil {
+		t.Fatal("moving a directory into itself succeeded")
+	}
+	raw, err = manager.Read(ctx, "abc", "tree/destination/keep.cfg")
+	if err != nil || string(raw) != "keep" {
+		t.Fatalf("failed move did not preserve destination: %q err=%v", raw, err)
+	}
+	matches, err := filepath.Glob(filepath.Join(manager.root, "instances", "abc", "private", "**", ".private-replaced-*"))
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("replacement artifacts=%v err=%v", matches, err)
+	}
+}
+
+func TestPrivateManifestRepeatedWrite(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateManager(root, 1<<20)
+	first := privateManifest{Entries: map[string]manifestEntry{"first.cfg": {Kind: "file", Hash: "first", Size: 1}}}
+	second := privateManifest{Entries: map[string]manifestEntry{"second.cfg": {Kind: "file", Hash: "second", Size: 2}}}
+	if err := manager.writePrivateManifest("abc", first); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.writePrivateManifest("abc", second); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := manager.readPrivateManifest("abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Entries) != 1 || loaded.Entries["second.cfg"].Hash != "second" {
+		t.Fatalf("manifest=%#v", loaded)
+	}
+}
+
+func TestPrivateManifestRejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	manager := NewPrivateManager(root, 1<<20)
+	manifest := privateManifest{Entries: map[string]manifestEntry{"first.cfg": {Kind: "file", Hash: "first", Size: 1}}}
+	outside := filepath.Join(root, "outside-instance")
+	if err := os.MkdirAll(outside, 0750); err != nil {
+		t.Fatal(err)
+	}
+	linked := filepath.Join(root, "instances", "linked")
+	if err := os.Symlink(outside, linked); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := manager.writePrivateManifest("linked", manifest); err == nil {
+		t.Fatal("manifest write accepted symlink instance")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "private-applied.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("manifest escaped instance root: %v", err)
+	}
+
+	manifestInstance := filepath.Join(root, "instances", "manifest-link")
+	if err := os.MkdirAll(manifestInstance, 0750); err != nil {
+		t.Fatal(err)
+	}
+	outsideManifest := filepath.Join(root, "outside-manifest.json")
+	if err := os.WriteFile(outsideManifest, []byte("outside"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideManifest, filepath.Join(manifestInstance, "private-applied.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.writePrivateManifest("manifest-link", manifest); err == nil {
+		t.Fatal("manifest write accepted symlink destination")
+	}
+	if _, err := manager.readPrivateManifest("manifest-link"); err == nil {
+		t.Fatal("manifest read accepted symlink destination")
+	}
+	raw, err := os.ReadFile(outsideManifest)
+	if err != nil || string(raw) != "outside" {
+		t.Fatalf("outside manifest changed: %q err=%v", raw, err)
 	}
 }
 
