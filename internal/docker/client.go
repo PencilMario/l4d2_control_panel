@@ -398,11 +398,13 @@ func (e *Engine) consoleRoundTrip(ctx context.Context, containerID, command stri
 		return "", err
 	}
 	defer stream.Close()
-	marker := "L4D2_PANEL_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	identity := strings.ReplaceAll(uuid.NewString(), "-", "")
+	startMarker := "L4D2_PANEL_START_" + identity
+	endMarker := "L4D2_PANEL_END_" + identity
 	if deadline, ok := stream.(interface{ SetDeadline(time.Time) error }); ok {
 		_ = deadline.SetDeadline(time.Now().Add(4 * time.Second))
 	}
-	if _, err := io.WriteString(stream, command+"\necho "+marker+"\n"); err != nil {
+	if _, err := io.WriteString(stream, "echo "+startMarker+"\n"+command+"\necho "+endMarker+"\n"); err != nil {
 		return "", err
 	}
 	var output bytes.Buffer
@@ -411,8 +413,8 @@ func (e *Engine) consoleRoundTrip(ctx context.Context, containerID, command stri
 		n, readErr := stream.Read(buffer)
 		if n > 0 {
 			output.Write(buffer[:n])
-			if strings.Contains(output.String(), marker) {
-				return output.String(), nil
+			if response, ok := extractConsoleResponse(output.String(), startMarker, endMarker); ok {
+				return response, nil
 			}
 		}
 		if readErr != nil {
@@ -420,6 +422,28 @@ func (e *Engine) consoleRoundTrip(ctx context.Context, containerID, command stri
 		}
 	}
 	return "", errors.New("console response exceeded limit")
+}
+
+func extractConsoleResponse(output, startMarker, endMarker string) (string, bool) {
+	started := false
+	response := []string{}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		switch strings.TrimSpace(line) {
+		case startMarker:
+			started = true
+			response = response[:0]
+		case endMarker:
+			if started {
+				return strings.TrimSpace(strings.Join(response, "\n")), true
+			}
+		default:
+			if started {
+				response = append(response, line)
+			}
+		}
+	}
+	return "", false
 }
 func (e *Engine) ListManaged(ctx context.Context) ([]Container, error) {
 	filters, _ := json.Marshal(map[string][]string{"label": {ManagedLabel + "=true"}})
