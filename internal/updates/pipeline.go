@@ -478,16 +478,17 @@ func validateUpdateJournalPathAndValue(root, journalPath string, value updateJou
 	if filepath.Clean(journalPath) != filepath.Join(work, "journal.json") {
 		return errors.New("invalid update journal path")
 	}
-	if err := validateUpdatePathNoSymlink(backups, work, true); err != nil {
+	trustedRoot := filepath.Clean(root)
+	if err := validateUpdatePathNoSymlink(trustedRoot, work, true); err != nil {
 		return err
 	}
-	if err := validateUpdatePathNoSymlink(backups, journalPath, false); err != nil {
+	if err := validateUpdatePathNoSymlink(trustedRoot, journalPath, false); err != nil {
 		return err
 	}
 	for _, name := range []string{"replaced", "manifest.before", "private-manifest.before", "private-lower.before"} {
 		path := filepath.Join(work, name)
 		if _, err := os.Lstat(path); err == nil {
-			if err = validateUpdatePathNoSymlink(work, path, name == "replaced" || name == "private-lower.before"); err != nil {
+			if err = validateUpdatePathNoSymlink(trustedRoot, path, name == "replaced" || name == "private-lower.before"); err != nil {
 				return err
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
@@ -506,7 +507,7 @@ func validateUpdateJournalPathAndValue(root, journalPath string, value updateJou
 			return errors.New("unexpected update metadata backup")
 		}
 		if statErr == nil {
-			if err := validateUpdatePathNoSymlink(work, backup.path, backup.dir); err != nil {
+			if err := validateUpdatePathNoSymlink(trustedRoot, backup.path, backup.dir); err != nil {
 				return err
 			}
 		} else if !errors.Is(statErr, os.ErrNotExist) {
@@ -550,7 +551,7 @@ func validateUpdateJournalPathAndValue(root, journalPath string, value updateJou
 		}
 		snapshotSeen[id] = true
 		snapshotPath := filepath.Join(base, "backups", "private", "snapshots", id)
-		if err := validateUpdatePathNoSymlink(filepath.Join(base, "backups"), snapshotPath, true); err != nil {
+		if err := validateUpdatePathNoSymlink(trustedRoot, snapshotPath, true); err != nil {
 			return err
 		}
 	}

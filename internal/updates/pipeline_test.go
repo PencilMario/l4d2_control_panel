@@ -458,6 +458,85 @@ func TestRecoverRejectsSymlinkedUpdateJournal(t *testing.T) {
 	}
 }
 
+func TestRecoverRejectsSymlinkedUpdateAncestors(t *testing.T) {
+	for _, ancestor := range []string{"instance", "backups"} {
+		t.Run(ancestor, func(t *testing.T) {
+			root := t.TempDir()
+			outside := filepath.Join(root, "outside")
+			outsideBackups := filepath.Join(outside, "backups")
+			work := filepath.Join(outsideBackups, "update-88888888-8888-8888-8888-888888888888")
+			if err := os.MkdirAll(work, 0750); err != nil {
+				t.Fatal(err)
+			}
+			value := updateJournal{Version: 1, InstanceID: "abc", Mode: Hot, Stage: "committed", BackupRoot: "replaced"}
+			journal := filepath.Join(work, "journal.json")
+			if err := writeJournal(journal, value); err != nil {
+				t.Fatal(err)
+			}
+			sentinel := filepath.Join(outside, "sentinel")
+			if err := os.WriteFile(sentinel, []byte("safe"), 0640); err != nil {
+				t.Fatal(err)
+			}
+			if ancestor == "instance" {
+				if err := os.MkdirAll(filepath.Join(root, "instances"), 0750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, filepath.Join(root, "instances", "abc")); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+			} else {
+				instance := filepath.Join(root, "instances", "abc")
+				if err := os.MkdirAll(instance, 0750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outsideBackups, filepath.Join(instance, "backups")); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+			}
+			before, _ := os.ReadFile(journal)
+			if err := New(root).Recover(context.Background()); err == nil {
+				t.Fatal("symlink ancestor accepted")
+			}
+			after, err := os.ReadFile(journal)
+			if err != nil || string(after) != string(before) {
+				t.Fatalf("journal changed: %q err=%v", after, err)
+			}
+			if raw, err := os.ReadFile(sentinel); err != nil || string(raw) != "safe" {
+				t.Fatalf("outside=%q err=%v", raw, err)
+			}
+		})
+	}
+}
+
+func TestRollbackRejectsSymlinkedUpdateAncestor(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(root, "outside")
+	work := filepath.Join(outside, "backups", "update-99999999-9999-9999-9999-999999999999")
+	if err := os.MkdirAll(work, 0750); err != nil {
+		t.Fatal(err)
+	}
+	journal := filepath.Join(work, "journal.json")
+	value := updateJournal{Version: 1, InstanceID: "abc", Mode: Hot, Stage: "deployed", BackupRoot: "replaced"}
+	if err := writeJournal(journal, value); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "instances"), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "instances", "abc")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	before, _ := os.ReadFile(journal)
+	d := &deployment{pipeline: New(root), journalPath: filepath.Join(root, "instances", "abc", "backups", filepath.Base(work), "journal.json"), journal: value}
+	if err := d.Rollback(); err == nil {
+		t.Fatal("symlink ancestor accepted")
+	}
+	after, err := os.ReadFile(journal)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("journal changed: %q err=%v", after, err)
+	}
+}
+
 func TestValidateUpdateJournalRejectsTraversalWorkPath(t *testing.T) {
 	root := t.TempDir()
 	value := updateJournal{Version: 1, InstanceID: "abc", Mode: Hot, Stage: "committed", BackupRoot: "replaced"}
