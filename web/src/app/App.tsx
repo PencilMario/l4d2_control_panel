@@ -383,9 +383,10 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
   }, []);
   useEffect(() => {
     if (injected) return;
+    let cancelled = false;
     api("/api/session")
       .then(() => {
-        if (!mountedRef.current) return;
+        if (cancelled || !mountedRef.current) return;
         setAuth("yes");
         void Promise.allSettled([
           loadInstances(),
@@ -394,8 +395,11 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
         ]);
       })
       .catch(() => {
-        if (mountedRef.current) setAuth("no");
+        if (!cancelled && mountedRef.current) setAuth("no");
       });
+    return () => {
+      cancelled = true;
+    };
   }, []);
   useEffect(() => {
     if (injected || auth !== "yes") return;
