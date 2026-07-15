@@ -34,6 +34,13 @@ type JobRecord struct {
 	ID, InstanceID, Type, Stage, Message, Status, Error string
 	Percent                                             int
 	CreatedAt, UpdatedAt                                time.Time
+	StartedAt, FinishedAt                               *time.Time
+}
+type JobEvent struct {
+	ID                          int64
+	JobID, Kind, Stage, Message string
+	Percent                     int
+	CreatedAt                   time.Time
 }
 type AuditRecord struct {
 	ID, Action, Target, Result, Metadata string

@@ -36,6 +36,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = migrateJobHistory(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
 }
 
@@ -315,13 +319,13 @@ func (s *Store) DeleteSession(tokenHash []byte) error {
 }
 
 func (s *Store) SaveJob(v domain.JobRecord) error {
-	_, err := s.db.Exec(`INSERT INTO jobs(id,instance_id,type,status,stage,percent,message,error,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,stage=excluded.stage,percent=excluded.percent,message=excluded.message,error=excluded.error,updated_at=excluded.updated_at`, v.ID, v.InstanceID, v.Type, v.Status, v.Stage, v.Percent, v.Message, v.Error, v.CreatedAt.Format(time.RFC3339Nano), v.UpdatedAt.Format(time.RFC3339Nano))
-	return err
+	return saveJob(s.db, v)
 }
 func (s *Store) LoadJob(id string) (domain.JobRecord, bool, error) {
 	var v domain.JobRecord
 	var created, updated string
-	err := s.db.QueryRow(`SELECT id,instance_id,type,status,stage,percent,message,error,created_at,updated_at FROM jobs WHERE id=?`, id).Scan(&v.ID, &v.InstanceID, &v.Type, &v.Status, &v.Stage, &v.Percent, &v.Message, &v.Error, &created, &updated)
+	var started, finished sql.NullString
+	err := s.db.QueryRow(`SELECT id,instance_id,type,status,stage,percent,message,error,created_at,updated_at,started_at,finished_at FROM jobs WHERE id=?`, id).Scan(&v.ID, &v.InstanceID, &v.Type, &v.Status, &v.Stage, &v.Percent, &v.Message, &v.Error, &created, &updated, &started, &finished)
 	if errors.Is(err, sql.ErrNoRows) {
 		return v, false, nil
 	}
@@ -330,17 +334,57 @@ func (s *Store) LoadJob(id string) (domain.JobRecord, bool, error) {
 	}
 	v.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	v.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+	v.StartedAt = parseNullableTime(started)
+	v.FinishedAt = parseNullableTime(finished)
 	return v, true, nil
 }
 func (s *Store) RecoverJobs() error {
-	_, err := s.db.Exec(`UPDATE jobs SET status='interrupted',error='Panel restarted while this job was active; inspect the managed container and retry or roll back',updated_at=? WHERE status IN ('pending','running')`, time.Now().UTC().Format(time.RFC3339Nano))
-	return err
+	const message = "Panel restarted while this job was active; inspect the managed container and retry or roll back"
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query(`SELECT id,stage,percent FROM jobs WHERE status IN ('pending','running') ORDER BY id`)
+	if err != nil {
+		return err
+	}
+	type staleJob struct {
+		id, stage string
+		percent   int
+	}
+	stale := []staleJob{}
+	for rows.Next() {
+		var job staleJob
+		if err := rows.Scan(&job.id, &job.stage, &job.percent); err != nil {
+			rows.Close()
+			return err
+		}
+		stale = append(stale, job)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	finished := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, job := range stale {
+		if _, err := tx.Exec(`UPDATE jobs SET status='interrupted',error=?,updated_at=?,finished_at=? WHERE id=?`, message, finished, finished, job.id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO job_events(job_id,kind,stage,percent,message,created_at) VALUES(?,?,?,?,?,?)`, job.id, "interrupted", job.stage, job.percent, message, finished); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 func (s *Store) Jobs(ctx context.Context, limit int) ([]domain.JobRecord, error) {
 	if limit < 1 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,instance_id,type,status,stage,percent,message,error,created_at,updated_at FROM jobs ORDER BY created_at DESC LIMIT ?`, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,instance_id,type,status,stage,percent,message,error,created_at,updated_at,started_at,finished_at FROM jobs ORDER BY created_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -349,11 +393,14 @@ func (s *Store) Jobs(ctx context.Context, limit int) ([]domain.JobRecord, error)
 	for rows.Next() {
 		var v domain.JobRecord
 		var created, updated string
-		if err := rows.Scan(&v.ID, &v.InstanceID, &v.Type, &v.Status, &v.Stage, &v.Percent, &v.Message, &v.Error, &created, &updated); err != nil {
+		var started, finished sql.NullString
+		if err := rows.Scan(&v.ID, &v.InstanceID, &v.Type, &v.Status, &v.Stage, &v.Percent, &v.Message, &v.Error, &created, &updated, &started, &finished); err != nil {
 			return nil, err
 		}
 		v.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 		v.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+		v.StartedAt = parseNullableTime(started)
+		v.FinishedAt = parseNullableTime(finished)
 		result = append(result, v)
 	}
 	return result, rows.Err()
