@@ -28,6 +28,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
+	"github.com/not0721here/l4d2-control-panel/internal/metrics"
 	"github.com/not0721here/l4d2-control-panel/internal/players"
 	"github.com/not0721here/l4d2-control-panel/internal/scheduler"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
@@ -68,18 +69,29 @@ func (*overviewPlayers) Kick(context.Context, string, int) error     { return ni
 func (*overviewPlayers) Ban(context.Context, string, int, int) error { return nil }
 
 type overviewResources struct {
-	running    bool
-	stats      docker.ResourceStats
-	statsCalls int
+	running      bool
+	stats        docker.ResourceStats
+	runningCalls int
+	statsCalls   int
 }
 
 func (r *overviewResources) Running(context.Context, string) (bool, error) {
+	r.runningCalls++
 	return r.running, nil
 }
 func (r *overviewResources) Stats(context.Context, string) (docker.ResourceStats, error) {
 	r.statsCalls++
 	return r.stats, nil
 }
+
+type overviewPerformance struct {
+	latest  metrics.Snapshot
+	found   bool
+	history []metrics.Snapshot
+}
+
+func (p *overviewPerformance) Latest(string) (metrics.Snapshot, bool) { return p.latest, p.found }
+func (p *overviewPerformance) History(string) []metrics.Snapshot      { return p.history }
 
 type fakeScheduleDispatcher struct{}
 
@@ -478,7 +490,7 @@ func TestCreateAndListInstance(t *testing.T) {
 	}
 }
 
-func TestInstanceOverviewUsesLiveDockerAndA2SObservations(t *testing.T) {
+func TestInstanceOverviewUsesSamplerObservations(t *testing.T) {
 	t.Run("running", func(t *testing.T) {
 		s, db := testServer(t)
 		defer db.Close()
@@ -486,31 +498,67 @@ func TestInstanceOverviewUsesLiveDockerAndA2SObservations(t *testing.T) {
 		if err := db.CreateInstance(context.Background(), instance); err != nil {
 			t.Fatal(err)
 		}
-		playerSource := &overviewPlayers{summary: players.Summary{Map: "c5m1_waterfront", Players: 3, MaxPlayers: 12}}
-		resourceSource := &overviewResources{running: true, stats: docker.ResourceStats{CPUPercent: 37.5, MemoryBytes: 1610612736}}
-		s = New(db, s.auth, WithPlayers(playerSource), WithResources(resourceSource))
+		playerSource := &overviewPlayers{}
+		resourceSource := &overviewResources{}
+		running := true
+		zeroFloat := 0.0
+		zeroUint := uint64(0)
+		playersOnline := 0
+		maxPlayers := 8
+		gameMap := "c5m1_waterfront"
+		sampledAt := time.Date(2026, 7, 15, 12, 30, 45, 123456789, time.FixedZone("fixture", 8*60*60))
+		performance := &overviewPerformance{found: true, latest: metrics.Snapshot{
+			Timestamp: sampledAt, RunID: "run-7", ContainerRunning: &running,
+			CPUPercent: &zeroFloat, MemoryBytes: &zeroUint, MemoryLimitBytes: uint64TestPointer(2 << 30), MemoryPercent: float64TestPointer(0),
+			NetworkRXBytesPerSecond: float64TestPointer(12.5), NetworkTXBytesPerSecond: &zeroFloat, NetworkRXBytes: uint64TestPointer(100), NetworkTXBytes: &zeroUint,
+			BlockReadBytesPerSecond: &zeroFloat, BlockWriteBytesPerSecond: float64TestPointer(1.5), BlockReadBytes: &zeroUint, BlockWriteBytes: uint64TestPointer(200),
+			PIDs: &zeroUint, UptimeSeconds: uint64TestPointer(90), A2SLatencyMS: &zeroFloat, Map: &gameMap, Players: &playersOnline, MaxPlayers: &maxPlayers,
+			Issues: []metrics.Issue{{Source: "traffic_totals", Message: "temporarily unavailable"}},
+		}}
+		s = New(db, s.auth, WithPlayers(playerSource), WithResources(resourceSource), WithPerformance(performance))
 
 		response := authenticatedJSON(t, s, loginCookie(t, s), http.MethodGet, "/api/instances/live/overview", "")
 		if response.Code != http.StatusOK {
 			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 		}
+		var body map[string]any
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body["actual_state"] != string(domain.StateRunning) || body["container_running"] != true || body["container_running_known"] != true || body["sampled_at"] != sampledAt.UTC().Format(time.RFC3339Nano) || body["run_id"] != "run-7" || body["map"] != "c5m1_waterfront" || body["players"] != float64(0) || body["max_players"] != float64(8) || body["cpu_percent"] != float64(0) || body["memory_bytes"] != float64(0) || body["memory_limit_bytes"] != float64(2<<30) || body["memory_percent"] != float64(0) || body["network_rx_bytes_per_sec"] != 12.5 || body["network_tx_bytes_per_sec"] != float64(0) || body["network_rx_bytes"] != float64(100) || body["network_tx_bytes"] != float64(0) || body["block_read_bytes_per_sec"] != float64(0) || body["block_write_bytes_per_sec"] != 1.5 || body["block_read_bytes"] != float64(0) || body["block_write_bytes"] != float64(200) || body["pids"] != float64(0) || body["uptime_seconds"] != float64(90) || body["a2s_latency_ms"] != float64(0) {
+			t.Fatalf("overview=%s", response.Body.String())
+		}
+		if _, ok := body["network_rx_bytes_per_second"]; ok {
+			t.Fatalf("legacy sampler field name leaked: %s", response.Body.String())
+		}
+		if playerSource.calls != 0 || resourceSource.runningCalls != 0 || resourceSource.statsCalls != 0 {
+			t.Fatalf("overview performed live fan-out: playerCalls=%d runningCalls=%d statsCalls=%d", playerSource.calls, resourceSource.runningCalls, resourceSource.statsCalls)
+		}
+		if got := performance.latest.Issues[0].Message; got != "temporarily unavailable" {
+			t.Fatalf("provider snapshot mutated: %q", got)
+		}
+	})
+
+	t.Run("running container with a2s issue is unhealthy", func(t *testing.T) {
+		s, db := testServer(t)
+		defer db.Close()
+		instance := domain.Instance{ID: "unhealthy", NodeID: "local", Name: "Unhealthy", ContainerID: "container-unhealthy", GamePort: 27021, StartMap: "configured", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}
+		if err := db.CreateInstance(context.Background(), instance); err != nil {
+			t.Fatal(err)
+		}
+		running := true
+		performance := &overviewPerformance{found: true, latest: metrics.Snapshot{Timestamp: time.Now(), ContainerRunning: &running, Issues: []metrics.Issue{{Source: "a2s", Message: "query timed out"}}}}
+		s = New(db, s.auth, WithPerformance(performance))
+		response := authenticatedJSON(t, s, loginCookie(t, s), http.MethodGet, "/api/instances/unhealthy/overview", "")
 		var body struct {
-			ActualState      domain.InstanceState `json:"actual_state"`
-			ContainerRunning bool                 `json:"container_running"`
-			Map              string               `json:"map"`
-			Players          *int                 `json:"players"`
-			MaxPlayers       *int                 `json:"max_players"`
-			CPUPercent       *float64             `json:"cpu_percent"`
-			MemoryBytes      *uint64              `json:"memory_bytes"`
+			ActualState domain.InstanceState `json:"actual_state"`
+			Issues      []string             `json:"issues"`
 		}
 		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 			t.Fatal(err)
 		}
-		if body.ActualState != domain.StateRunning || !body.ContainerRunning || body.Map != "c5m1_waterfront" || body.Players == nil || *body.Players != 3 || body.MaxPlayers == nil || *body.MaxPlayers != 12 || body.CPUPercent == nil || *body.CPUPercent != 37.5 || body.MemoryBytes == nil || *body.MemoryBytes != 1610612736 {
+		if response.Code != http.StatusOK || body.ActualState != domain.StateFaulted || len(body.Issues) != 1 || body.Issues[0] != "a2s: query timed out" {
 			t.Fatalf("overview=%s", response.Body.String())
-		}
-		if playerSource.calls != 1 || resourceSource.statsCalls != 1 {
-			t.Fatalf("playerCalls=%d statsCalls=%d", playerSource.calls, resourceSource.statsCalls)
 		}
 	})
 
@@ -521,9 +569,9 @@ func TestInstanceOverviewUsesLiveDockerAndA2SObservations(t *testing.T) {
 		if err := db.CreateInstance(context.Background(), instance); err != nil {
 			t.Fatal(err)
 		}
-		playerSource := &overviewPlayers{}
-		resourceSource := &overviewResources{running: false}
-		s = New(db, s.auth, WithPlayers(playerSource), WithResources(resourceSource))
+		stopped := false
+		performance := &overviewPerformance{found: true, latest: metrics.Snapshot{Timestamp: time.Date(2026, 7, 15, 1, 2, 3, 0, time.UTC), ContainerRunning: &stopped}}
+		s = New(db, s.auth, WithPerformance(performance))
 
 		response := authenticatedJSON(t, s, loginCookie(t, s), http.MethodGet, "/api/instances/stale/overview", "")
 		if response.Code != http.StatusOK {
@@ -537,8 +585,67 @@ func TestInstanceOverviewUsesLiveDockerAndA2SObservations(t *testing.T) {
 		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 			t.Fatal(err)
 		}
-		if body.ActualState != domain.StateStopped || body.ContainerRunning || body.Players != nil || playerSource.calls != 0 || resourceSource.statsCalls != 0 {
-			t.Fatalf("overview=%s playerCalls=%d statsCalls=%d", response.Body.String(), playerSource.calls, resourceSource.statsCalls)
+		if body.ActualState != domain.StateStopped || body.ContainerRunning || body.Players != nil {
+			t.Fatalf("overview=%s", response.Body.String())
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil {
+			t.Fatal(err)
+		}
+		if _, exists := fields["map"]; exists {
+			t.Fatalf("unavailable map must be omitted: %s", response.Body.String())
+		}
+	})
+
+	t.Run("valid empty map follows legacy omission", func(t *testing.T) {
+		s, db := testServer(t)
+		defer db.Close()
+		instance := domain.Instance{ID: "empty-map", NodeID: "local", Name: "Empty Map", ContainerID: "container-empty-map", GamePort: 27022, StartMap: "configured", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}
+		if err := db.CreateInstance(context.Background(), instance); err != nil {
+			t.Fatal(err)
+		}
+		running := true
+		gameMap := ""
+		playersOnline, maxPlayers := 0, 8
+		performance := &overviewPerformance{found: true, latest: metrics.Snapshot{Timestamp: time.Now(), ContainerRunning: &running, Map: &gameMap, Players: &playersOnline, MaxPlayers: &maxPlayers}}
+		s = New(db, s.auth, WithPerformance(performance))
+		response := authenticatedJSON(t, s, loginCookie(t, s), http.MethodGet, "/api/instances/empty-map/overview", "")
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil {
+			t.Fatal(err)
+		}
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+		if _, exists := fields["map"]; exists {
+			t.Fatalf("empty map must follow legacy omission: %s", response.Body.String())
+		}
+		if string(fields["players"]) != "0" || string(fields["cpu_percent"]) != "null" {
+			t.Fatalf("other null and zero semantics changed: %s", response.Body.String())
+		}
+	})
+
+	t.Run("runtime unknown preserves state and reports issues", func(t *testing.T) {
+		s, db := testServer(t)
+		defer db.Close()
+		instance := domain.Instance{ID: "unknown", NodeID: "local", Name: "Unknown", ContainerID: "container-unknown", GamePort: 27018, StartMap: "configured", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateStarting}
+		if err := db.CreateInstance(context.Background(), instance); err != nil {
+			t.Fatal(err)
+		}
+		performance := &overviewPerformance{found: true, latest: metrics.Snapshot{Timestamp: time.Now(), Issues: []metrics.Issue{{Source: "runtime", Message: "timeout"}}}}
+		s = New(db, s.auth, WithPerformance(performance))
+		response := authenticatedJSON(t, s, loginCookie(t, s), http.MethodGet, "/api/instances/unknown/overview", "")
+		var body struct {
+			ActualState           domain.InstanceState `json:"actual_state"`
+			ContainerRunning      bool                 `json:"container_running"`
+			ContainerRunningKnown bool                 `json:"container_running_known"`
+			Issues                []string             `json:"issues"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if response.Code != http.StatusOK || body.ActualState != domain.StateStarting || body.ContainerRunning || body.ContainerRunningKnown || len(body.Issues) != 1 || body.Issues[0] != "runtime: timeout" {
+			t.Fatalf("overview=%s", response.Body.String())
 		}
 	})
 
@@ -549,7 +656,7 @@ func TestInstanceOverviewUsesLiveDockerAndA2SObservations(t *testing.T) {
 		if err := db.CreateInstance(context.Background(), instance); err != nil {
 			t.Fatal(err)
 		}
-		s = New(db, s.auth)
+		s = New(db, s.auth, WithPerformance(&overviewPerformance{}))
 
 		response := authenticatedJSON(t, s, loginCookie(t, s), http.MethodGet, "/api/instances/missing/overview", "")
 		if response.Code != http.StatusOK {
@@ -565,7 +672,90 @@ func TestInstanceOverviewUsesLiveDockerAndA2SObservations(t *testing.T) {
 			t.Fatalf("overview=%s", response.Body.String())
 		}
 	})
+
+	t.Run("missing provider is unavailable", func(t *testing.T) {
+		s, db := testServer(t)
+		defer db.Close()
+		instance := domain.Instance{ID: "unwired", NodeID: "local", Name: "Unwired", ContainerID: "container", GamePort: 27019, StartMap: "configured", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", ActualState: domain.StateRunning}
+		if err := db.CreateInstance(context.Background(), instance); err != nil {
+			t.Fatal(err)
+		}
+		response := authenticatedJSON(t, s, loginCookie(t, s), http.MethodGet, "/api/instances/unwired/overview", "")
+		if response.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+	})
 }
+
+func TestInstancePerformanceHistory(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	instance := domain.Instance{ID: "history", NodeID: "local", Name: "History", ContainerID: "container-history", GamePort: 27020, StartMap: "configured", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", ActualState: domain.StateRunning}
+	if err := db.CreateInstance(context.Background(), instance); err != nil {
+		t.Fatal(err)
+	}
+
+	unauthorized := httptest.NewRecorder()
+	s.Handler().ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/instances/history/performance-history", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d", unauthorized.Code)
+	}
+
+	provider := &overviewPerformance{history: []metrics.Snapshot{}}
+	s = New(db, s.auth, WithPerformance(provider))
+	cookie := loginCookie(t, s)
+	empty := authenticatedJSON(t, s, cookie, http.MethodGet, "/api/instances/history/performance-history", "")
+	if empty.Code != http.StatusOK || strings.TrimSpace(empty.Body.String()) != "[]" {
+		t.Fatalf("empty status=%d body=%s", empty.Code, empty.Body.String())
+	}
+	missing := authenticatedJSON(t, s, cookie, http.MethodGet, "/api/instances/missing/performance-history", "")
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing status=%d body=%s", missing.Code, missing.Body.String())
+	}
+
+	zero := 0.0
+	start := time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC)
+	provider.history = []metrics.Snapshot{
+		{Timestamp: start.Add(721 * time.Second), RunID: "run-721", CPUPercent: &zero, NetworkRXBytesPerSecond: &zero},
+		{Timestamp: start.Add(500 * time.Second), RunID: "equal-first", CPUPercent: &zero},
+		{Timestamp: start, RunID: "run-0", CPUPercent: &zero},
+	}
+	for i := 1; i <= 720; i++ {
+		provider.history = append(provider.history, metrics.Snapshot{Timestamp: start.Add(time.Duration(i) * time.Second), RunID: fmt.Sprintf("run-%d", i), CPUPercent: &zero})
+	}
+	provider.history[0].MemoryPercent = nil
+	provider.history[0].Issues = []metrics.Issue{{Source: "secret", Message: "must not leak"}}
+	providerBefore, err := json.Marshal(provider.history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := authenticatedJSON(t, s, cookie, http.MethodGet, "/api/instances/history/performance-history", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var points []map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &points); err != nil {
+		t.Fatal(err)
+	}
+	if len(points) != 720 || points[0]["at"] != start.Add(3*time.Second).Format(time.RFC3339) || points[0]["run_id"] != "run-3" || points[497]["run_id"] != "equal-first" || points[498]["run_id"] != "run-500" || points[719]["at"] != start.Add(721*time.Second).Format(time.RFC3339) || points[719]["run_id"] != "run-721" || points[719]["cpu_percent"] != float64(0) || points[719]["network_rx_bytes_per_sec"] != float64(0) || points[719]["memory_percent"] != nil {
+		t.Fatalf("history len=%d first=%v last=%v", len(points), points[0], points[len(points)-1])
+	}
+	for _, forbidden := range []string{"network_rx_bytes", "network_tx_bytes", "block_read_bytes", "block_write_bytes", "issues", "error", "errors", "map", "players", "container_running", "address", "packet"} {
+		if _, ok := points[719][forbidden]; ok {
+			t.Fatalf("history leaked %s: %s", forbidden, response.Body.String())
+		}
+	}
+	providerAfter, err := json.Marshal(provider.history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(providerAfter, providerBefore) {
+		t.Fatal("provider history order or content mutated")
+	}
+}
+
+func uint64TestPointer(value uint64) *uint64    { return &value }
+func float64TestPointer(value float64) *float64 { return &value }
 
 func TestCreateRejectsInvalidPort(t *testing.T) {
 	s, db := testServer(t)

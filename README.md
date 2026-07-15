@@ -2,7 +2,7 @@
 
 Single-host, single-administrator control plane for persistent Left 4 Dead 2 dedicated servers. A Go API owns SQLite state, jobs, content deployment, A2S and a fixed native-console bridge; a React SPA provides instance, player, update, content and Cron operations.
 
-The Panel never mounts `/var/run/docker.sock`. A repository-owned socket proxy exposes only the Docker API paths required for labeled game and maintenance containers. Game instances run unprivileged with host networking and persistent bind mounts.
+The Panel never mounts `/var/run/docker.sock`. A repository-owned socket proxy exposes only the Docker API paths required for labeled game and maintenance containers through a mode `0660` Unix socket in a named volume. Game instances run unprivileged with host networking and persistent bind mounts.
 
 ## Requirements
 
@@ -22,10 +22,14 @@ docker compose --env-file .env --profile images build runtime-image
 docker compose --env-file .env up -d --build
 ```
 
-Both control services use host networking but bind loopback only:
+The Panel remains on the Compose network and publishes only its configured HTTP port. The restricted proxy uses host networking so its packet capture sees game traffic, but exposes no TCP listener:
 
 - Panel: `0.0.0.0:${L4D2_PANEL_HTTP_PORT:-18081}` (published from container port `8080`)
-- restricted Docker proxy: `socket-proxy:23750` on the private Compose network only
+- restricted Docker proxy: `/run/l4d2-panel/proxy.sock` in the `panel-proxy-run` named volume shared with the Panel
+
+The proxy drops all capabilities and adds only `NET_RAW`, runs with a read-only root filesystem and `no-new-privileges`, and owns the shared socket as UID/GID 10001. The Panel receives only that restricted filesystem capability; it does not receive the Docker Engine socket.
+
+The overview samples each instance every five seconds and keeps the latest 720 observations in Panel memory (about one hour). CPU, memory, block I/O, process count and uptime come from Docker; A2S supplies map, players and query latency; the restricted proxy counts RX/TX bytes only for the instance's declared game, SourceTV and plugin ports. History is intentionally reset when the Panel restarts and network values become unavailable if packet capture cannot run; other metrics continue independently.
 
 For direct HTTP access, set `L4D2_PANEL_SECURE_COOKIE=false`. Keep the default
 `true` when the Panel is served through HTTPS.
@@ -106,7 +110,14 @@ Before exposing a new host, verify:
 ```sh
 docker compose --env-file .env ps
 curl --fail http://127.0.0.1:${L4D2_PANEL_HTTP_PORT:-18081}/api/health
-docker compose ps
+docker compose exec panel test -S /run/l4d2-panel/proxy.sock
+docker compose exec panel test ! -e /var/run/docker.sock
+docker compose exec socket-proxy sh -c 'test "$(stat -c %U:%G /run/l4d2-panel)" = root:10001'
+docker compose exec socket-proxy sh -c 'test "$(stat -c %a /run/l4d2-panel)" = 750'
+docker compose exec socket-proxy sh -c 'test "$(stat -c %U:%G /run/l4d2-panel/proxy.sock)" = root:10001'
+docker compose exec socket-proxy sh -c 'test "$(stat -c %a /run/l4d2-panel/proxy.sock)" = 660'
+test "$(docker inspect -f '{{json .HostConfig.CapAdd}}' "$(docker compose ps -q socket-proxy)")" = '["NET_RAW"]'
+docker compose exec socket-proxy sh -c '! grep -q ":5CC6" /proc/net/tcp /proc/net/tcp6'
 ```
 
 Then create an instance from the UI and confirm:
@@ -116,6 +127,8 @@ Then create an instance from the UI and confirm:
 - the container user is UID/GID 10001 and has no Docker socket or privileged mode;
 - `l4d2-supervisor attach`, `status --json` and `stop` work, while other operations are rejected;
 - A2S, players, console reconnect/replay, stop/start and container rebuild work without data loss.
+- overview RX/TX totals increase only when traffic crosses declared ports; rates freeze while stopped, restart resets the runtime `StartedAt` boundary, and metric gaps render as unavailable rather than zero;
+- the socket proxy has only `CAP_NET_RAW`, has no TCP listener on legacy port 23750, and removing the stack leaves no capture process or shared socket behind.
 
 ## Development and verification
 

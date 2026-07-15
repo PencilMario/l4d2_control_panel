@@ -127,6 +127,8 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await page.getByRole("button", { name: "总览" }).click();
   await page.getByRole("button", { name: "创建实例" }).click();
   await page.getByLabel("名称").fill(instanceName);
+  await page.getByRole("combobox", { name: "模式" }).selectOption("coop");
+  await page.getByLabel("最大玩家").fill("8");
   await page.getByLabel("游戏端口").fill(String(port));
   await page.getByLabel("SourceTV 端口").fill(String(port + 5));
   await page.getByLabel("插件端口").fill(`${port + 6}, ${port + 7}`);
@@ -220,6 +222,8 @@ test("real HTTP administration journey survives refresh and streams recovery sta
 
   await page.getByRole("button", { name: "创建实例" }).click();
   await page.getByLabel("名称").fill(secondInstanceName);
+  await page.getByRole("combobox", { name: "模式" }).selectOption("coop");
+  await page.getByLabel("最大玩家").fill("8");
   await page.getByLabel("游戏端口").fill(String(secondPort));
   await page.getByLabel("SourceTV 端口").fill(String(secondPort + 5));
   await page.getByLabel("插件端口").fill(String(secondPort + 6));
@@ -261,6 +265,141 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await expect(card).toContainText("运行中");
   await expect(card).toContainText(packageAName);
   await expect(card).not.toContainText("待应用");
+  await expect(card).toContainText("当前地图");
+  await expect(card).toContainText("c2m1_highway");
+  await expect(card.locator(".player-capacity")).toContainText("1 / 8");
+  await expect(card.getByRole("button", { name: `停止 ${instanceName}` })).toBeVisible();
+  await expect(card.getByRole("button", { name: "控制台" })).toBeVisible();
+  await expect(card.getByRole("button", { name: "玩家" })).toBeVisible();
+  await expect(card.getByRole("button", { name: `配置 ${instanceName}` })).toBeVisible();
+
+  const performance = card.locator(".performance-panel");
+  await expect(performance).toContainText("12.5%");
+  await expect(performance).toContainText("768 MiB / 2 GiB (37.5%)");
+  await expect(performance).toContainText("128 B/s");
+  await expect(performance).toContainText("累计 4 KiB");
+  await expect(performance).toContainText("64 B/s");
+  await expect(performance).toContainText("累计 2 KiB");
+  await expect(performance).toContainText("32 B/s");
+  await expect(performance).toContainText("累计 1 KiB");
+  await expect(performance).toContainText("16 B/s");
+  await expect(performance).toContainText("累计 512 B");
+  await expect(performance).toContainText("24");
+  await expect(performance).toContainText("1h 0s");
+  await expect(performance).toContainText("2.5 ms");
+
+  const chart = performance.getByTestId("performance-chart");
+  const chartModes = performance.getByRole("group", { name: "性能图表指标" });
+  await expect(chart).toHaveAttribute("data-point-count", "2");
+  await expect(chart).toHaveAttribute("data-series-count", "1");
+  const historyBoundary = await page.evaluate(async (name) => {
+    const instances = await (await fetch("/api/instances")).json();
+    const item = instances.find((candidate: any) => (candidate.name ?? candidate.Name) === name);
+    const id = item.id ?? item.ID;
+    const response = await fetch(`/api/instances/${id}/performance-history`);
+    if (!response.ok) throw new Error(`history request failed with HTTP ${response.status}`);
+    const points = await response.json();
+    return {
+      firstNetworkRX: points[0].network_rx_bytes_per_sec,
+      firstDiskRead: points[0].block_read_bytes_per_sec,
+      secondNetworkRX: points[1].network_rx_bytes_per_sec,
+      secondNetworkTX: points[1].network_tx_bytes_per_sec,
+      secondDiskRead: points[1].block_read_bytes_per_sec,
+      secondDiskWrite: points[1].block_write_bytes_per_sec,
+    };
+  }, instanceName);
+  expect(historyBoundary).toEqual({
+    firstNetworkRX: null,
+    firstDiskRead: null,
+    secondNetworkRX: 0,
+    secondNetworkTX: 0,
+    secondDiskRead: 0,
+    secondDiskWrite: 0,
+  });
+  await expect(chartModes.getByRole("button", { name: "CPU" })).toHaveAttribute("aria-pressed", "true");
+  for (const mode of ["内存", "网络", "磁盘", "CPU"]) {
+    await chartModes.getByRole("button", { name: mode }).click();
+    await expect(chartModes.getByRole("button", { name: mode })).toHaveAttribute("aria-pressed", "true");
+  }
+  await chartModes.getByRole("button", { name: "网络" }).click();
+  await expect(performance.locator(".performance-legend")).toContainText("网络 RX");
+  await expect(performance.locator(".performance-legend")).toContainText("网络 TX");
+  await expect(chart).toHaveAttribute("data-series-count", "2");
+  await chartModes.getByRole("button", { name: "磁盘" }).click();
+  await expect(performance.locator(".performance-legend")).toContainText("磁盘读");
+  await expect(performance.locator(".performance-legend")).toContainText("磁盘写");
+  await expect(chart).toHaveAttribute("data-series-count", "2");
+
+  const cardLayout = await card.evaluate((element) => {
+    const bounds = (node: Element) => {
+      const box = node.getBoundingClientRect();
+      return { left: box.left, top: box.top, right: box.right, bottom: box.bottom };
+    };
+    const cardBox = element.getBoundingClientRect();
+    const performanceBox = element.querySelector(".performance-panel")!.getBoundingClientRect();
+    const chartBox = element.querySelector(".performance-chart")!.getBoundingClientRect();
+    const modesBox = element.querySelector(".performance-modes")!.getBoundingClientRect();
+    const actionsBox = element.querySelector(".actions")!.getBoundingClientRect();
+    return {
+      cardLeft: cardBox.left,
+      cardRight: cardBox.right,
+      performanceLeft: performanceBox.left,
+      performanceRight: performanceBox.right,
+      chartLeft: chartBox.left,
+      chartRight: chartBox.right,
+      chartHeight: chartBox.height,
+      modesLeft: modesBox.left,
+      modesRight: modesBox.right,
+      actionsLeft: actionsBox.left,
+      actionsRight: actionsBox.right,
+      modeButtons: Array.from(element.querySelectorAll(".performance-modes button")).map(
+        (button) => ({ ...bounds(button), textFits: button.scrollWidth <= button.clientWidth }),
+      ),
+      actionButtons: Array.from(element.querySelectorAll(".actions button")).map(
+        (button) => ({ ...bounds(button), textFits: button.scrollWidth <= button.clientWidth }),
+      ),
+    };
+  });
+  const overviewOverflow = await page.evaluate(() => ({
+    documentScrollWidth: document.documentElement.scrollWidth,
+    documentClientWidth: document.documentElement.clientWidth,
+    bodyScrollWidth: document.body.scrollWidth,
+    bodyClientWidth: document.body.clientWidth,
+  }));
+  const viewport = page.viewportSize()!;
+  const assertInsideCardAndViewport = (box: {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+    textFits: boolean;
+  }) => {
+    expect.soft(box.left).toBeGreaterThanOrEqual(cardLayout.cardLeft - 1);
+    expect.soft(box.right).toBeLessThanOrEqual(cardLayout.cardRight + 1);
+    expect.soft(box.left).toBeGreaterThanOrEqual(-1);
+    expect.soft(box.right).toBeLessThanOrEqual(viewport.width + 1);
+    expect.soft(box.top).toBeGreaterThanOrEqual(-1);
+    expect.soft(box.bottom).toBeLessThanOrEqual(viewport.height + 1);
+    expect.soft(box.textFits).toBe(true);
+  };
+  expect.soft(cardLayout.cardLeft).toBeGreaterThanOrEqual(0);
+  expect.soft(cardLayout.cardRight).toBeLessThanOrEqual(viewport.width);
+  expect.soft(cardLayout.performanceLeft).toBeGreaterThanOrEqual(cardLayout.cardLeft);
+  expect.soft(cardLayout.performanceRight).toBeLessThanOrEqual(cardLayout.cardRight);
+  expect.soft(cardLayout.chartLeft).toBeGreaterThanOrEqual(cardLayout.cardLeft);
+  expect.soft(cardLayout.chartRight).toBeLessThanOrEqual(cardLayout.cardRight);
+  expect.soft(cardLayout.chartHeight).toBe(mobile ? 190 : 210);
+  expect.soft(cardLayout.modesLeft).toBeGreaterThanOrEqual(cardLayout.cardLeft);
+  expect.soft(cardLayout.modesRight).toBeLessThanOrEqual(cardLayout.cardRight);
+  expect.soft(cardLayout.actionsLeft).toBeGreaterThanOrEqual(cardLayout.cardLeft);
+  expect.soft(cardLayout.actionsRight).toBeLessThanOrEqual(cardLayout.cardRight);
+  expect.soft(cardLayout.modeButtons).toHaveLength(4);
+  expect.soft(cardLayout.actionButtons.length).toBeGreaterThan(0);
+  for (const button of [...cardLayout.modeButtons, ...cardLayout.actionButtons]) {
+    assertInsideCardAndViewport(button);
+  }
+  expect.soft(overviewOverflow.documentScrollWidth).toBeLessThanOrEqual(overviewOverflow.documentClientWidth);
+  expect.soft(overviewOverflow.bodyScrollWidth).toBeLessThanOrEqual(overviewOverflow.bodyClientWidth);
 
   const savedAssignments = await page.evaluate(async ({ firstName, secondName }) => {
     const [instancesResponse, packagesResponse] = await Promise.all([

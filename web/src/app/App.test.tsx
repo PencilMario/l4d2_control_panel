@@ -6,9 +6,10 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import { StrictMode } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { App, type Instance } from "./App";
+import { App, mergePerformanceHistory, prunePerformanceHistory, type Instance } from "./App";
 const instance: Instance = {
   id: "1",
   name: "深夜战役",
@@ -68,6 +69,13 @@ const runningZeroOverview = {
   memory_bytes: 0,
   issues: [],
 };
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -134,6 +142,361 @@ describe("App", () => {
     expect(output).toHaveTextContent("[500]");
     expect(scrollTop).toBe(600);
   });
+
+  it("deduplicates, sorts and caps performance history", () => {
+    const points = Array.from({ length: 721 }, (_, index) => ({
+      at: new Date(Date.UTC(2026, 6, 15, 0, 0, index)).toISOString(),
+      run_id: "run-1",
+      cpu_percent: index,
+      memory_percent: null,
+      network_rx_bytes_per_sec: null,
+      network_tx_bytes_per_sec: null,
+      block_read_bytes_per_sec: null,
+      block_write_bytes_per_sec: null,
+    }));
+    const merged = mergePerformanceHistory(points, [{ ...points[720], cpu_percent: 999 }]);
+    expect(merged).toHaveLength(720);
+    expect(merged[0].cpu_percent).toBe(1);
+    expect(merged[719].cpu_percent).toBe(999);
+  });
+  it("orders history by instant, keeps stable ties, ignores invalid timestamps and caps newest points", () => {
+    const point = (at: string, run_id: string, cpu_percent: number) => ({
+      at,
+      run_id,
+      cpu_percent,
+      memory_percent: null,
+      network_rx_bytes_per_sec: null,
+      network_tx_bytes_per_sec: null,
+      block_read_bytes_per_sec: null,
+      block_write_bytes_per_sec: null,
+    });
+    const offsets = mergePerformanceHistory([], [
+      point("2026-07-15T12:00:00Z", "tie-first", 1),
+      point("2026-07-15T13:00:00+01:00", "tie-second", 2),
+      point("2026-07-15T13:00:00+02:00", "earlier", 3),
+      point("not-a-timestamp", "invalid", 4),
+    ]);
+    expect(offsets.map((item) => item.run_id)).toEqual([
+      "earlier",
+      "tie-first",
+      "tie-second",
+    ]);
+
+    const many = Array.from({ length: 721 }, (_, index) =>
+      point(new Date(Date.UTC(2026, 6, 15, 0, 0, index)).toISOString(), `run-${index}`, index),
+    ).reverse();
+    const capped = mergePerformanceHistory([], many);
+    expect(capped).toHaveLength(720);
+    expect(capped[0].cpu_percent).toBe(1);
+    expect(capped[719].cpu_percent).toBe(720);
+  });
+  it("removes histories for deleted instances", () => {
+    const point = { at: "2026-07-15T12:00:00Z", run_id: "run-1", cpu_percent: null, memory_percent: null, network_rx_bytes_per_sec: null, network_tx_bytes_per_sec: null, block_read_bytes_per_sec: null, block_write_bytes_per_sec: null };
+    expect(prunePerformanceHistory({ present: [point], deleted: [point] }, new Set(["present"]))).toEqual({ present: [point] });
+  });
+
+  it("fetches history once and appends overview samples on the existing poll", async () => {
+    const intervalSpy = vi.spyOn(window, "setInterval");
+    const initialHistory = deferred<Response>();
+    let overviewIndex = 0;
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      calls.push(path);
+      const value = path === "/api/session" ? { authenticated: true }
+        : path === "/api/instances" ? [apiInstance]
+        : path === "/api/instances/1/performance-history" ? null
+        : path === "/api/instances/1/overview" ? { ...runningZeroOverview, sampled_at: overviewIndex++ === 0 ? "2026-07-15T12:00:05Z" : "2026-07-15T12:00:10Z", run_id: "run-1", container_running_known: true, memory_limit_bytes: 1024, memory_percent: 0, network_rx_bytes_per_sec: 0, network_tx_bytes_per_sec: 0, network_rx_bytes: 0, network_tx_bytes: 0, block_read_bytes_per_sec: 0, block_write_bytes_per_sec: 0, block_read_bytes: 0, block_write_bytes: 0, pids: 0, uptime_seconds: 0, a2s_latency_ms: 0 }
+        : path === "/api/packages" ? [] : { ok: true };
+      if (path === "/api/instances/1/performance-history") return initialHistory.promise;
+      return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+
+    render(<App />);
+    await waitFor(() => expect(intervalSpy.mock.calls.some(([, timeout]) => timeout === 5_000)).toBe(true));
+    const refresh = intervalSpy.mock.calls.find(([, timeout]) => timeout === 5_000)![0] as () => void;
+    initialHistory.resolve(new Response(JSON.stringify([{ at: "2026-07-15T12:00:00Z", run_id: "run-1", cpu_percent: 1, memory_percent: 2, network_rx_bytes_per_sec: null, network_tx_bytes_per_sec: null, block_read_bytes_per_sec: null, block_write_bytes_per_sec: null }]), { status: 200, headers: { "Content-Type": "application/json" } }));
+    expect(await screen.findByTestId("performance-chart")).toHaveAttribute("data-point-count", "2");
+    await act(async () => refresh());
+    await waitFor(() => expect(screen.getByTestId("performance-chart")).toHaveAttribute("data-point-count", "3"));
+    expect(calls.filter((path) => path.endsWith("/performance-history"))).toHaveLength(1);
+  });
+  it("keeps live overview updates flowing while one history bootstrap is hung", async () => {
+    const intervalSpy = vi.spyOn(window, "setInterval");
+    const historyResponse = deferred<Response>();
+    let historyCalls = 0;
+    let overviewCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/session") return new Response('{"authenticated":true}', { status: 200, headers: { "Content-Type": "application/json" } });
+      if (path === "/api/instances") return new Response(JSON.stringify([apiInstance]), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (path.endsWith("/performance-history")) {
+        historyCalls += 1;
+        return historyResponse.promise;
+      }
+      if (path.endsWith("/overview")) {
+        overviewCalls += 1;
+        return new Response(JSON.stringify({ ...runningZeroOverview, cpu_percent: overviewCalls * 10, sampled_at: `2026-07-15T12:00:${String(overviewCalls * 5).padStart(2, "0")}Z`, run_id: "run-1", container_running_known: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      const value = path === "/api/packages" ? [] : { ok: true };
+      return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+
+    render(<App />);
+    expect(await screen.findByText("10%")).toBeInTheDocument();
+    await waitFor(() => expect(intervalSpy.mock.calls.some(([, timeout]) => timeout === 5_000)).toBe(true));
+    const refresh = intervalSpy.mock.calls.find(([, timeout]) => timeout === 5_000)![0] as () => void;
+    await act(async () => refresh());
+    expect(await screen.findByText("20%")).toBeInTheDocument();
+    await act(async () => refresh());
+    expect(await screen.findByText("30%")).toBeInTheDocument();
+    expect(historyCalls).toBe(1);
+    expect(screen.getByTestId("performance-chart")).toHaveAttribute("data-point-count", "3");
+
+    historyResponse.resolve(new Response(JSON.stringify([{ at: "2026-07-15T12:00:00Z", run_id: "run-1", cpu_percent: 5, memory_percent: null, network_rx_bytes_per_sec: null, network_tx_bytes_per_sec: null, block_read_bytes_per_sec: null, block_write_bytes_per_sec: null }]), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await waitFor(() => expect(screen.getByTestId("performance-chart")).toHaveAttribute("data-point-count", "4"));
+  });
+  it("does not let an older poll restore deleted instances or stale history ownership", async () => {
+    const intervalSpy = vi.spyOn(window, "setInterval");
+    const oldOverview = deferred<Response>();
+    const oldHistory = deferred<Response>();
+    let instanceLists = 0;
+    let historyCalls = 0;
+    let oldHistorySignal: AbortSignal | null | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/session") return new Response('{"authenticated":true}', { status: 200, headers: { "Content-Type": "application/json" } });
+      if (path === "/api/instances") {
+        instanceLists += 1;
+        return new Response(JSON.stringify(instanceLists === 2 ? [] : [apiInstance]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (path === "/api/instances/1/overview") {
+        if (instanceLists === 1) return oldOverview.promise;
+        return new Response(JSON.stringify({ ...runningZeroOverview, sampled_at: "2026-07-15T12:00:20Z", run_id: "run-new", container_running_known: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (path === "/api/instances/1/performance-history") {
+        historyCalls += 1;
+        if (historyCalls === 1) {
+          oldHistorySignal = init?.signal;
+          return oldHistory.promise;
+        }
+        return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      const value = path === "/api/packages" ? [] : { ok: true };
+      return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+
+    render(<App />);
+    await waitFor(() => expect(historyCalls).toBe(1));
+    await screen.findByRole("heading", { name: "服务器作战室" });
+    await waitFor(() => expect(intervalSpy.mock.calls.some(([, timeout]) => timeout === 5_000)).toBe(true));
+    const refresh = intervalSpy.mock.calls.find(([, timeout]) => timeout === 5_000)![0] as () => void;
+    await act(async () => refresh());
+    expect(await screen.findByText("尚无实例。创建第一个 Host 网络服务器。")).toBeInTheDocument();
+    expect(oldHistorySignal?.aborted).toBe(true);
+
+    oldOverview.resolve(new Response(JSON.stringify({ ...runningZeroOverview, sampled_at: "2026-07-15T12:00:05Z", run_id: "run-old", container_running_known: true }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    oldHistory.resolve(new Response(JSON.stringify([{ at: "2026-07-15T12:00:00Z", run_id: "run-old", cpu_percent: 99, memory_percent: null, network_rx_bytes_per_sec: null, network_tx_bytes_per_sec: null, block_read_bytes_per_sec: null, block_write_bytes_per_sec: null }]), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(screen.queryByText("深夜战役")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByTestId("performance-chart")).not.toBeInTheDocument());
+
+    await act(async () => refresh());
+    await waitFor(() => expect(instanceLists).toBe(3));
+    await waitFor(() => expect(historyCalls).toBe(2));
+    expect(await screen.findByText("深夜战役")).toBeInTheDocument();
+    expect(await screen.findByTestId("performance-chart")).toHaveAttribute("data-point-count", "1");
+  });
+  it("keeps one history bootstrap across poll generations without stale deletion poisoning", async () => {
+    const intervalSpy = vi.spyOn(window, "setInterval");
+    const oldHistory = deferred<Response>();
+    const stalledDeletion = deferred<Response>();
+    let listCalls = 0;
+    let historyCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/session") return new Response('{"authenticated":true}', { status: 200, headers: { "Content-Type": "application/json" } });
+      if (path === "/api/instances") {
+        listCalls += 1;
+        if (listCalls === 2) return stalledDeletion.promise;
+        return new Response(JSON.stringify([apiInstance]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (path === "/api/instances/1/performance-history") {
+        historyCalls += 1;
+        if (historyCalls === 1) return oldHistory.promise;
+        return new Response(JSON.stringify([{ at: "2026-07-15T12:00:10Z", run_id: "run-new", cpu_percent: 22, memory_percent: null, network_rx_bytes_per_sec: null, network_tx_bytes_per_sec: null, block_read_bytes_per_sec: null, block_write_bytes_per_sec: null }]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (path === "/api/instances/1/overview") return new Response(JSON.stringify({ ...runningZeroOverview, sampled_at: "2026-07-15T12:00:15Z", run_id: "run-new", container_running_known: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+      const value = path === "/api/packages" ? [] : { ok: true };
+      return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+
+    render(<App />);
+    await waitFor(() => expect(historyCalls).toBe(1));
+    await screen.findByRole("heading", { name: "服务器作战室" });
+    await waitFor(() => expect(intervalSpy.mock.calls.some(([, timeout]) => timeout === 5_000)).toBe(true));
+    const refresh = intervalSpy.mock.calls.find(([, timeout]) => timeout === 5_000)![0] as () => void;
+    await act(async () => refresh());
+    await waitFor(() => expect(listCalls).toBe(2));
+    await act(async () => refresh());
+    await waitFor(() => expect(listCalls).toBe(3));
+    expect(historyCalls).toBe(1);
+    expect(await screen.findByTestId("performance-chart")).toHaveAttribute("data-point-count", "1");
+
+    oldHistory.resolve(new Response(JSON.stringify([{ at: "2026-07-15T12:00:00Z", run_id: "run-old", cpu_percent: 99, memory_percent: null, network_rx_bytes_per_sec: null, network_tx_bytes_per_sec: null, block_read_bytes_per_sec: null, block_write_bytes_per_sec: null }]), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await waitFor(() => expect(screen.getByTestId("performance-chart")).toHaveAttribute("data-point-count", "3"));
+    stalledDeletion.resolve(new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText("深夜战役")).toBeInTheDocument();
+    expect(screen.getByTestId("performance-chart")).toHaveAttribute("data-point-count", "3");
+
+    await act(async () => refresh());
+    await waitFor(() => expect(listCalls).toBe(4));
+    expect(historyCalls).toBe(1);
+  });
+
+  it("does not continue session loading after unmount", async () => {
+    const session = deferred<Response>();
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      if (String(input) === "/api/session") return session.promise;
+      return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    const view = render(<App />);
+    expect(calls).toEqual(["/api/session"]);
+    view.unmount();
+    session.resolve(new Response('{"authenticated":true}', { status: 200, headers: { "Content-Type": "application/json" } }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(calls).toEqual(["/api/session"]);
+  });
+
+  it("ignores the replayed StrictMode session effect and runs one current load path", async () => {
+    const firstSession = deferred<Response>();
+    const secondSession = deferred<Response>();
+    const calls: string[] = [];
+    let sessionCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      calls.push(path);
+      if (path === "/api/session") {
+        sessionCalls += 1;
+        return sessionCalls === 1 ? firstSession.promise : secondSession.promise;
+      }
+      const value = path === "/api/instances" ? [apiInstance]
+        : path === "/api/instances/1/overview" ? { ...runningZeroOverview, sampled_at: "2026-07-15T12:00:05Z", run_id: "run-1", container_running_known: true }
+        : path === "/api/instances/1/performance-history" ? []
+        : path === "/api/packages" ? [] : { ok: true };
+      return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+
+    render(<StrictMode><App /></StrictMode>);
+    await waitFor(() => expect(sessionCalls).toBe(2));
+    firstSession.resolve(new Response('{"authenticated":true}', { status: 200, headers: { "Content-Type": "application/json" } }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(calls).toEqual(["/api/session", "/api/session"]);
+
+    secondSession.resolve(new Response('{"authenticated":true}', { status: 200, headers: { "Content-Type": "application/json" } }));
+    await waitFor(() => expect(calls.filter((path) => path === "/api/instances")).toHaveLength(1));
+    await waitFor(() => expect(calls.filter((path) => path.endsWith("/performance-history"))).toHaveLength(1));
+    expect(calls.filter((path) => path === "/api/packages")).toHaveLength(1);
+    expect(calls.filter((path) => path === "/api/health")).toHaveLength(1);
+    expect(calls.filter((path) => path.endsWith("/overview"))).toHaveLength(1);
+  });
+
+  it("keeps overview samples when the initial history request fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/performance-history")) {
+        return new Response('{"error":{"message":"history unavailable"}}', { status: 503, headers: { "Content-Type": "application/json" } });
+      }
+      const value = path === "/api/session" ? { authenticated: true }
+        : path === "/api/instances" ? [apiInstance]
+        : path.endsWith("/overview") ? { ...runningZeroOverview, sampled_at: "2026-07-15T12:00:05Z", run_id: "run-1", container_running_known: true, memory_limit_bytes: null, memory_percent: null, network_rx_bytes_per_sec: null, network_tx_bytes_per_sec: null, network_rx_bytes: null, network_tx_bytes: null, block_read_bytes_per_sec: null, block_write_bytes_per_sec: null, block_read_bytes: null, block_write_bytes: null, pids: null, uptime_seconds: null, a2s_latency_ms: null }
+        : path === "/api/packages" ? [] : { ok: true };
+      return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    render(<App />);
+    expect(await screen.findByTestId("performance-chart")).toHaveAttribute("data-point-count", "1");
+  });
+  it("retries a failed history bootstrap on the next poll without clearing live samples", async () => {
+    const intervalSpy = vi.spyOn(window, "setInterval");
+    const failedHistory = deferred<Response>();
+    let historyCalls = 0;
+    let overviewCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/session") return new Response('{"authenticated":true}', { status: 200, headers: { "Content-Type": "application/json" } });
+      if (path === "/api/instances") return new Response(JSON.stringify([apiInstance]), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (path.endsWith("/performance-history")) {
+        historyCalls += 1;
+        if (historyCalls === 1) return failedHistory.promise;
+        return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (path.endsWith("/overview")) {
+        overviewCalls += 1;
+        return new Response(JSON.stringify({ ...runningZeroOverview, sampled_at: `2026-07-15T12:00:${overviewCalls === 1 ? "05" : "10"}Z`, run_id: "run-1", container_running_known: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      const value = path === "/api/packages" ? [] : { ok: true };
+      return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+
+    render(<App />);
+    expect(await screen.findByTestId("performance-chart")).toHaveAttribute("data-point-count", "1");
+    failedHistory.resolve(new Response('{"error":{"message":"unavailable"}}', { status: 503, headers: { "Content-Type": "application/json" } }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(intervalSpy.mock.calls.some(([, timeout]) => timeout === 5_000)).toBe(true));
+    const refresh = intervalSpy.mock.calls.find(([, timeout]) => timeout === 5_000)![0] as () => void;
+    await act(async () => refresh());
+    await waitFor(() => expect(historyCalls).toBe(2));
+    expect(await screen.findByTestId("performance-chart")).toHaveAttribute("data-point-count", "2");
+  });
+
+  it("removes the performance surface when an instance is deleted", async () => {
+    const intervalSpy = vi.spyOn(window, "setInterval");
+    let listCall = 0;
+    let overviewCall = 0;
+    let historyCalls = 0;
+    const initialHistory = deferred<Response>();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      let value: unknown;
+      if (path === "/api/session") value = { authenticated: true };
+      else if (path === "/api/instances") value = listCall++ === 1 ? [] : [apiInstance];
+      else if (path.endsWith("/performance-history")) {
+        historyCalls += 1;
+        if (historyCalls === 1) return initialHistory.promise;
+        value = [];
+      } else if (path.endsWith("/overview")) {
+        overviewCall += 1;
+        value = { ...runningZeroOverview, sampled_at: overviewCall === 1 ? "2026-07-15T12:00:05Z" : "2026-07-15T12:00:20Z", run_id: "run-1", container_running_known: true, memory_limit_bytes: null, memory_percent: null, network_rx_bytes_per_sec: null, network_tx_bytes_per_sec: null, network_rx_bytes: null, network_tx_bytes: null, block_read_bytes_per_sec: null, block_write_bytes_per_sec: null, block_read_bytes: null, block_write_bytes: null, pids: null, uptime_seconds: null, a2s_latency_ms: null };
+      } else value = path === "/api/packages" ? [] : { ok: true };
+      return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    render(<App />);
+    await waitFor(() => expect(intervalSpy.mock.calls.some(([, timeout]) => timeout === 5_000)).toBe(true));
+    const refresh = intervalSpy.mock.calls.find(([, timeout]) => timeout === 5_000)![0] as () => void;
+    initialHistory.resolve(new Response(JSON.stringify([{ at: "2026-07-15T12:00:00Z", run_id: "run-1", cpu_percent: 1, memory_percent: null, network_rx_bytes_per_sec: null, network_tx_bytes_per_sec: null, block_read_bytes_per_sec: null, block_write_bytes_per_sec: null }]), { status: 200, headers: { "Content-Type": "application/json" } }));
+    expect(await screen.findByTestId("performance-chart")).toHaveAttribute("data-point-count", "2");
+    await act(async () => refresh());
+    await waitFor(() => expect(screen.queryByTestId("performance-chart")).not.toBeInTheDocument());
+    expect(historyCalls).toBe(1);
+  });
   it("shows operational instance data", () => {
     render(
       <App
@@ -187,7 +550,7 @@ describe("App", () => {
     expect(card).not.toBeNull();
     expect(await within(card!).findByText("已停止")).toBeInTheDocument();
     expect(within(card!).getByText("-- / --")).toBeInTheDocument();
-    expect(within(card!).getAllByText("--")).toHaveLength(2);
+    expect(within(card!).getAllByText("--").length).toBeGreaterThanOrEqual(2);
     expect(card).toHaveClass("stopped");
     const playerTotal = screen.getByText("在线玩家").closest("article");
     expect(playerTotal).not.toBeNull();
@@ -198,11 +561,7 @@ describe("App", () => {
     expect(calls).not.toContain("/api/instances/1/resources");
   });
   it("polls overview observations and preserves legitimate zero metrics", async () => {
-    let refresh: (() => void) | undefined;
-    vi.spyOn(window, "setInterval").mockImplementation((handler: TimerHandler) => {
-      refresh = handler as () => void;
-      return 1;
-    });
+    const intervalSpy = vi.spyOn(window, "setInterval");
     const observations = [stoppedOverview, runningZeroOverview];
     vi.stubGlobal(
       "fetch",
@@ -227,15 +586,16 @@ describe("App", () => {
 
     render(<App />);
     expect(await screen.findByText("-- / --")).toBeInTheDocument();
-    expect(refresh).toBeTypeOf("function");
+    await waitFor(() => expect(intervalSpy.mock.calls.some(([, timeout]) => timeout === 5_000)).toBe(true));
+    const refresh = intervalSpy.mock.calls.find(([, timeout]) => timeout === 5_000)![0] as () => void;
 
     await act(async () => {
-      refresh!();
+      refresh();
     });
 
     expect(await screen.findByText("0 / 8")).toBeInTheDocument();
-    expect(screen.getByText("0.0%")).toBeInTheDocument();
-    expect(screen.getByText("0.00 GB")).toBeInTheDocument();
+    expect(screen.getByText("0%")).toBeInTheDocument();
+    expect(screen.getByText("0 B / -- (--)")).toBeInTheDocument();
     expect(screen.getByText("运行中")).toBeInTheDocument();
   });
   it("opens the existing instance configuration from its card", async () => {

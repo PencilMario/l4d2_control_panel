@@ -9,7 +9,7 @@ func TestPolicyAllowsRequiredDockerEndpointsOnly(t *testing.T) {
 			t.Fatalf("required endpoint denied: %v", item)
 		}
 	}
-	denied := [][2]string{{"GET", "/v1.44/volumes"}, {"POST", "/v1.44/containers/abc/archive"}, {"POST", "/v1.44/networks/create"}, {"DELETE", "/v1.44/images/base"}, {"GET", "/v1.44/system/df"}}
+	denied := [][2]string{{"GET", "/v1.44/volumes"}, {"POST", "/v1.44/containers/abc/archive"}, {"POST", "/v1.44/networks/create"}, {"DELETE", "/v1.44/images/base"}, {"GET", "/v1.44/system/df"}, {"GET", "/_panel/traffic/instance-1"}, {"PUT", "/_panel/traffic/instance-1"}, {"DELETE", "/_panel/traffic/instance-1"}}
 	for _, item := range denied {
 		if Allowed(item[0], item[1]) {
 			t.Fatalf("dangerous endpoint allowed: %v", item)

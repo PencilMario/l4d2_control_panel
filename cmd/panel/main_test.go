@@ -22,13 +22,20 @@ func (f fakeJobWaiter) Wait(context.Context) error {
 	return nil
 }
 
+type fakeSamplerStopper struct{ events *[]string }
+
+func (f fakeSamplerStopper) Stop(context.Context) error {
+	*f.events = append(*f.events, "sampler")
+	return nil
+}
+
 func TestShutdownPanelStopsHTTPThenSchedulerThenDrainsJobs(t *testing.T) {
 	events := []string{}
-	err := shutdownPanel(context.Background(), fakeShutdowner{events: &events}, func() { events = append(events, "scheduler") }, fakeJobWaiter{events: &events})
+	err := shutdownPanel(context.Background(), fakeShutdowner{events: &events}, func() { events = append(events, "scheduler") }, fakeSamplerStopper{events: &events}, fakeJobWaiter{events: &events})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(events, ","); got != "http,scheduler,jobs" {
+	if got := strings.Join(events, ","); got != "http,scheduler,sampler,jobs" {
 		t.Fatalf("events=%s", got)
 	}
 }
@@ -39,7 +46,7 @@ func (f failingJobWaiter) Wait(context.Context) error { return f.err }
 
 func TestShutdownPanelReturnsDrainFailure(t *testing.T) {
 	want := errors.New("drain timed out")
-	if err := shutdownPanel(context.Background(), fakeShutdowner{events: &[]string{}}, func() {}, failingJobWaiter{err: want}); !errors.Is(err, want) {
+	if err := shutdownPanel(context.Background(), fakeShutdowner{events: &[]string{}}, func() {}, fakeSamplerStopper{events: &[]string{}}, failingJobWaiter{err: want}); !errors.Is(err, want) {
 		t.Fatalf("shutdown error=%v", err)
 	}
 }
@@ -50,7 +57,7 @@ func TestShutdownPanelBoundsSchedulerStop(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- shutdownPanel(ctx, fakeShutdowner{events: &[]string{}}, func() { <-release }, fakeJobWaiter{events: &[]string{}})
+		done <- shutdownPanel(ctx, fakeShutdowner{events: &[]string{}}, func() { <-release }, fakeSamplerStopper{events: &[]string{}}, fakeJobWaiter{events: &[]string{}})
 	}()
 	select {
 	case err := <-done:

@@ -4,13 +4,20 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/not0721here/l4d2-control-panel/internal/auth"
+	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/httpapi"
+	"github.com/not0721here/l4d2-control-panel/internal/store"
 	"github.com/not0721here/l4d2-control-panel/internal/updates"
 )
 
@@ -32,6 +39,50 @@ func TestPrivateLowerDiagnosticRejectsInstanceTraversal(t *testing.T) {
 	}
 	if raw, err := os.ReadFile(outside); err != nil || string(raw) != "outside sentinel" {
 		t.Fatalf("outside=%q err=%v", raw, err)
+	}
+}
+
+func TestFixturePerformanceEndpointsExposeDeterministicHTTPContract(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	sessions := auth.NewService()
+	if err := sessions.Bootstrap(fixturePassword); err != nil {
+		t.Fatal(err)
+	}
+	instance := domain.Instance{ID: "fixture-instance", NodeID: "local", Name: "Fixture", ContainerID: "fixture-container", GamePort: 27015, StartMap: "c2m1_highway", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateStopped}
+	if err := db.CreateInstance(context.Background(), instance); err != nil {
+		t.Fatal(err)
+	}
+	server := httpapi.New(db, sessions, httpapi.WithPerformance(fixturePerformance{}))
+
+	login := httptest.NewRecorder()
+	server.Handler().ServeHTTP(login, httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"password":"correct horse battery staple"}`)))
+	if login.Code != http.StatusOK {
+		t.Fatalf("login status=%d body=%s", login.Code, login.Body.String())
+	}
+	cookie := login.Result().Cookies()[0]
+
+	overview := httptest.NewRecorder()
+	overviewRequest := httptest.NewRequest(http.MethodGet, "/api/instances/fixture-instance/overview", nil)
+	overviewRequest.AddCookie(cookie)
+	server.Handler().ServeHTTP(overview, overviewRequest)
+	if overview.Code != http.StatusOK || !strings.Contains(overview.Body.String(), `"sampled_at":"2026-07-15T12:00:10Z"`) || !strings.Contains(overview.Body.String(), `"network_rx_bytes_per_sec":128`) || !strings.Contains(overview.Body.String(), `"map":"c2m1_highway"`) {
+		t.Fatalf("overview status=%d body=%s", overview.Code, overview.Body.String())
+	}
+
+	history := httptest.NewRecorder()
+	historyRequest := httptest.NewRequest(http.MethodGet, "/api/instances/fixture-instance/performance-history", nil)
+	historyRequest.AddCookie(cookie)
+	server.Handler().ServeHTTP(history, historyRequest)
+	var points []map[string]any
+	if err := json.Unmarshal(history.Body.Bytes(), &points); err != nil {
+		t.Fatal(err)
+	}
+	if history.Code != http.StatusOK || len(points) != 2 || points[0]["network_rx_bytes_per_sec"] != nil || points[1]["network_rx_bytes_per_sec"] != float64(0) {
+		t.Fatalf("history status=%d body=%s", history.Code, history.Body.String())
 	}
 }
 

@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -25,6 +25,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
+	"github.com/not0721here/l4d2-control-panel/internal/metrics"
 	"github.com/not0721here/l4d2-control-panel/internal/players"
 	"github.com/not0721here/l4d2-control-panel/internal/releases"
 	"github.com/not0721here/l4d2-control-panel/internal/scheduler"
@@ -55,6 +56,7 @@ type Server struct {
 	schedules         *scheduler.Service
 	secrets           *secrets.Service
 	resources         ResourceProvider
+	performance       PerformanceProvider
 	system            SystemProvider
 	secureCookie      bool
 }
@@ -117,6 +119,15 @@ func WithResources(provider ResourceProvider) Option {
 	return func(s *Server) { s.resources = provider }
 }
 
+type PerformanceProvider interface {
+	Latest(string) (metrics.Snapshot, bool)
+	History(string) []metrics.Snapshot
+}
+
+func WithPerformance(provider PerformanceProvider) Option {
+	return func(s *Server) { s.performance = provider }
+}
+
 type SystemProvider interface {
 	Info(context.Context) (docker.Info, error)
 }
@@ -143,6 +154,7 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		})
 		r.Get("/api/instances", s.listInstances)
 		r.Get("/api/instances/{id}/overview", s.instanceOverview)
+		r.Get("/api/instances/{id}/performance-history", s.instancePerformanceHistory)
 		r.Post("/api/instances", s.createInstance)
 		r.Put("/api/instances/{id}", s.updateInstance)
 		r.Delete("/api/instances/{id}", s.deleteInstance)
@@ -410,14 +422,30 @@ func (s *Server) instanceResources(w http.ResponseWriter, r *http.Request) {
 }
 
 type instanceOverview struct {
-	ActualState      domain.InstanceState `json:"actual_state"`
-	ContainerRunning bool                 `json:"container_running"`
-	Map              string               `json:"map,omitempty"`
-	Players          *int                 `json:"players"`
-	MaxPlayers       *int                 `json:"max_players"`
-	CPUPercent       *float64             `json:"cpu_percent"`
-	MemoryBytes      *uint64              `json:"memory_bytes"`
-	Issues           []string             `json:"issues,omitempty"`
+	ActualState           domain.InstanceState `json:"actual_state"`
+	ContainerRunning      bool                 `json:"container_running"`
+	ContainerRunningKnown bool                 `json:"container_running_known"`
+	SampledAt             *time.Time           `json:"sampled_at"`
+	RunID                 *string              `json:"run_id"`
+	Map                   string               `json:"map,omitempty"`
+	Players               *int                 `json:"players"`
+	MaxPlayers            *int                 `json:"max_players"`
+	CPUPercent            *float64             `json:"cpu_percent"`
+	MemoryBytes           *uint64              `json:"memory_bytes"`
+	MemoryLimitBytes      *uint64              `json:"memory_limit_bytes"`
+	MemoryPercent         *float64             `json:"memory_percent"`
+	NetworkRXBytesPerSec  *float64             `json:"network_rx_bytes_per_sec"`
+	NetworkTXBytesPerSec  *float64             `json:"network_tx_bytes_per_sec"`
+	NetworkRXBytes        *uint64              `json:"network_rx_bytes"`
+	NetworkTXBytes        *uint64              `json:"network_tx_bytes"`
+	BlockReadBytesPerSec  *float64             `json:"block_read_bytes_per_sec"`
+	BlockWriteBytesPerSec *float64             `json:"block_write_bytes_per_sec"`
+	BlockReadBytes        *uint64              `json:"block_read_bytes"`
+	BlockWriteBytes       *uint64              `json:"block_write_bytes"`
+	PIDs                  *uint64              `json:"pids"`
+	UptimeSeconds         *uint64              `json:"uptime_seconds"`
+	A2SLatencyMS          *float64             `json:"a2s_latency_ms"`
+	Issues                []string             `json:"issues,omitempty"`
 }
 
 func (s *Server) instanceOverview(w http.ResponseWriter, r *http.Request) {
@@ -434,57 +462,102 @@ func (s *Server) instanceOverview(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, result)
 		return
 	}
-	if s.resources == nil {
-		writeError(w, http.StatusServiceUnavailable, "resources_unavailable", "resource provider unavailable")
+	if s.performance == nil {
+		writeError(w, http.StatusServiceUnavailable, "performance_unavailable", "performance provider unavailable")
 		return
 	}
-	running, err := s.resources.Running(r.Context(), instance.ContainerID)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "runtime_probe_failed", err.Error())
-		return
-	}
-	result.ContainerRunning = running
-	if !running {
-		result.ActualState = stoppedObservationState(instance.ActualState)
+	snapshot, ok := s.performance.Latest(instance.ID)
+	if !ok {
 		writeJSON(w, http.StatusOK, result)
 		return
 	}
-
-	var stats docker.ResourceStats
-	var summary players.Summary
-	var statsErr, summaryErr error
-	var wait sync.WaitGroup
-	wait.Add(2)
-	go func() {
-		defer wait.Done()
-		stats, statsErr = s.resources.Stats(r.Context(), instance.ContainerID)
-	}()
-	go func() {
-		defer wait.Done()
-		if s.players == nil {
-			summaryErr = errors.New("player provider unavailable")
-			return
-		}
-		summary, summaryErr = s.players.Summary(r.Context(), instance.ID)
-	}()
-	wait.Wait()
-
-	if statsErr == nil {
-		result.CPUPercent = &stats.CPUPercent
-		result.MemoryBytes = &stats.MemoryBytes
-	} else {
-		result.Issues = append(result.Issues, "resources: "+statsErr.Error())
-	}
-	if summaryErr == nil {
+	result = overviewFromSnapshot(instance.ActualState, snapshot)
+	if snapshot.ContainerRunning == nil {
+		result.ActualState = instance.ActualState
+	} else if !*snapshot.ContainerRunning {
+		result.ActualState = stoppedObservationState(instance.ActualState)
+	} else if a2sAvailable(snapshot) {
 		result.ActualState = domain.StateRunning
-		result.Map = summary.Map
-		result.Players = &summary.Players
-		result.MaxPlayers = &summary.MaxPlayers
 	} else {
 		result.ActualState = unhealthyObservationState(instance.ActualState)
-		result.Issues = append(result.Issues, "a2s: "+summaryErr.Error())
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func overviewFromSnapshot(actualState domain.InstanceState, snapshot metrics.Snapshot) instanceOverview {
+	result := instanceOverview{
+		ActualState: actualState, Players: snapshot.Players, MaxPlayers: snapshot.MaxPlayers,
+		CPUPercent: snapshot.CPUPercent, MemoryBytes: snapshot.MemoryBytes, MemoryLimitBytes: snapshot.MemoryLimitBytes, MemoryPercent: snapshot.MemoryPercent,
+		NetworkRXBytesPerSec: snapshot.NetworkRXBytesPerSecond, NetworkTXBytesPerSec: snapshot.NetworkTXBytesPerSecond, NetworkRXBytes: snapshot.NetworkRXBytes, NetworkTXBytes: snapshot.NetworkTXBytes,
+		BlockReadBytesPerSec: snapshot.BlockReadBytesPerSecond, BlockWriteBytesPerSec: snapshot.BlockWriteBytesPerSecond, BlockReadBytes: snapshot.BlockReadBytes, BlockWriteBytes: snapshot.BlockWriteBytes,
+		PIDs: snapshot.PIDs, UptimeSeconds: snapshot.UptimeSeconds, A2SLatencyMS: snapshot.A2SLatencyMS,
+	}
+	if !snapshot.Timestamp.IsZero() {
+		at := snapshot.Timestamp.UTC()
+		result.SampledAt = &at
+	}
+	if snapshot.RunID != "" {
+		runID := snapshot.RunID
+		result.RunID = &runID
+	}
+	if snapshot.ContainerRunning != nil {
+		result.ContainerRunning = *snapshot.ContainerRunning
+		result.ContainerRunningKnown = true
+	}
+	if snapshot.Map != nil {
+		result.Map = *snapshot.Map
+	}
+	for _, issue := range snapshot.Issues {
+		result.Issues = append(result.Issues, issue.Source+": "+issue.Message)
+	}
+	return result
+}
+
+func a2sAvailable(snapshot metrics.Snapshot) bool {
+	for _, issue := range snapshot.Issues {
+		if issue.Source == "a2s" {
+			return false
+		}
+	}
+	return snapshot.Map != nil && snapshot.Players != nil && snapshot.MaxPlayers != nil
+}
+
+type performanceHistoryPoint struct {
+	At                    time.Time `json:"at"`
+	RunID                 string    `json:"run_id"`
+	CPUPercent            *float64  `json:"cpu_percent"`
+	MemoryPercent         *float64  `json:"memory_percent"`
+	NetworkRXBytesPerSec  *float64  `json:"network_rx_bytes_per_sec"`
+	NetworkTXBytesPerSec  *float64  `json:"network_tx_bytes_per_sec"`
+	BlockReadBytesPerSec  *float64  `json:"block_read_bytes_per_sec"`
+	BlockWriteBytesPerSec *float64  `json:"block_write_bytes_per_sec"`
+}
+
+func (s *Server) instancePerformanceHistory(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.store.Instance(r.Context(), chi.URLParam(r, "id")); err != nil {
+		writeError(w, http.StatusNotFound, "instance_not_found", "instance not found")
+		return
+	}
+	if s.performance == nil {
+		writeError(w, http.StatusServiceUnavailable, "performance_unavailable", "performance provider unavailable")
+		return
+	}
+	snapshots := slices.Clone(s.performance.History(chi.URLParam(r, "id")))
+	sort.SliceStable(snapshots, func(i, j int) bool {
+		return snapshots[i].Timestamp.Before(snapshots[j].Timestamp)
+	})
+	if len(snapshots) > 720 {
+		snapshots = snapshots[len(snapshots)-720:]
+	}
+	points := make([]performanceHistoryPoint, len(snapshots))
+	for i, snapshot := range snapshots {
+		points[i] = performanceHistoryPoint{
+			At: snapshot.Timestamp.UTC(), RunID: snapshot.RunID, CPUPercent: snapshot.CPUPercent, MemoryPercent: snapshot.MemoryPercent,
+			NetworkRXBytesPerSec: snapshot.NetworkRXBytesPerSecond, NetworkTXBytesPerSec: snapshot.NetworkTXBytesPerSecond,
+			BlockReadBytesPerSec: snapshot.BlockReadBytesPerSecond, BlockWriteBytesPerSec: snapshot.BlockWriteBytesPerSecond,
+		}
+	}
+	writeJSON(w, http.StatusOK, points)
 }
 
 func stoppedObservationState(current domain.InstanceState) domain.InstanceState {

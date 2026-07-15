@@ -38,6 +38,10 @@ import {
 } from "./InstanceConfigModal";
 import { PrivateFilesPage } from "./PrivateFilesPage";
 import { useConsoleFollow } from "./useConsoleFollow";
+import {
+  PerformancePanel,
+  type PerformanceHistoryPoint,
+} from "./PerformancePanel";
 import "../styles/app.css";
 export type Instance = ConfigurableInstance & {
   players: number | null;
@@ -47,15 +51,48 @@ export type Instance = ConfigurableInstance & {
   container_running?: boolean;
   observed_max_players?: number | null;
   current_map?: string;
+  sampled_at?: string | null;
+  run_id?: string | null;
+  container_running_known?: boolean;
+  memory_bytes?: number | null;
+  memory_limit_bytes?: number | null;
+  memory_percent?: number | null;
+  network_rx_bytes_per_sec?: number | null;
+  network_tx_bytes_per_sec?: number | null;
+  network_rx_bytes?: number | null;
+  network_tx_bytes?: number | null;
+  block_read_bytes_per_sec?: number | null;
+  block_write_bytes_per_sec?: number | null;
+  block_read_bytes?: number | null;
+  block_write_bytes?: number | null;
+  pids?: number | null;
+  uptime_seconds?: number | null;
+  a2s_latency_ms?: number | null;
 };
-type InstanceOverview = {
+export type InstanceOverview = {
   actual_state: string;
   container_running: boolean;
+  container_running_known: boolean;
+  sampled_at: string | null;
+  run_id: string | null;
   map: string;
   players: number | null;
   max_players: number | null;
   cpu_percent: number | null;
   memory_bytes: number | null;
+  memory_limit_bytes: number | null;
+  memory_percent: number | null;
+  network_rx_bytes_per_sec: number | null;
+  network_tx_bytes_per_sec: number | null;
+  network_rx_bytes: number | null;
+  network_tx_bytes: number | null;
+  block_read_bytes_per_sec: number | null;
+  block_write_bytes_per_sec: number | null;
+  block_read_bytes: number | null;
+  block_write_bytes: number | null;
+  pids: number | null;
+  uptime_seconds: number | null;
+  a2s_latency_ms: number | null;
   issues?: string[];
 };
 type Props = {
@@ -109,6 +146,75 @@ type GitHubSource = {
 
 const errorMessage = (reason: unknown) =>
   reason instanceof Error ? reason.message : String(reason);
+const EMPTY_PERFORMANCE_HISTORY: PerformanceHistoryPoint[] = [];
+
+type HistoryBootstrap = {
+  token: number;
+  controller: AbortController;
+  promise: Promise<PerformanceHistoryPoint[]>;
+};
+
+export function mergePerformanceHistory(
+  existing: PerformanceHistoryPoint[],
+  incoming: PerformanceHistoryPoint[],
+): PerformanceHistoryPoint[] {
+  const points = new globalThis.Map<
+    string,
+    { point: PerformanceHistoryPoint; timestamp: number; index: number }
+  >();
+  for (const [index, point] of [...existing, ...incoming].entries()) {
+    const timestamp = Date.parse(point.at);
+    if (!Number.isFinite(timestamp)) continue;
+    const key = `${point.at}\u0000${point.run_id}`;
+    const previous = points.get(key);
+    points.set(key, {
+      point,
+      timestamp,
+      index: previous?.index ?? index,
+    });
+  }
+  return [...points.values()]
+    .sort((a, b) => a.timestamp - b.timestamp || a.index - b.index)
+    .slice(-720)
+    .map(({ point }) => point);
+}
+
+export function prunePerformanceHistory(
+  current: Record<string, PerformanceHistoryPoint[]>,
+  liveIDs: Set<string>,
+): Record<string, PerformanceHistoryPoint[]> {
+  const next: Record<string, PerformanceHistoryPoint[]> = {};
+  for (const [id, points] of Object.entries(current)) {
+    if (liveIDs.has(id)) next[id] = points;
+  }
+  return next;
+}
+
+const historyPointFromOverview = (
+  overview: Pick<
+    Instance,
+    | "sampled_at"
+    | "run_id"
+    | "cpu"
+    | "memory_percent"
+    | "network_rx_bytes_per_sec"
+    | "network_tx_bytes_per_sec"
+    | "block_read_bytes_per_sec"
+    | "block_write_bytes_per_sec"
+  >,
+): PerformanceHistoryPoint | null =>
+  overview.sampled_at
+    ? {
+        at: overview.sampled_at,
+        run_id: overview.run_id || "",
+        cpu_percent: overview.cpu,
+        memory_percent: overview.memory_percent ?? null,
+        network_rx_bytes_per_sec: overview.network_rx_bytes_per_sec ?? null,
+        network_tx_bytes_per_sec: overview.network_tx_bytes_per_sec ?? null,
+        block_read_bytes_per_sec: overview.block_read_bytes_per_sec ?? null,
+        block_write_bytes_per_sec: overview.block_write_bytes_per_sec ?? null,
+      }
+    : null;
 
 export function App({ initialInstances, initialPackages, onAction }: Props) {
   const injected = initialInstances !== undefined;
@@ -119,6 +225,17 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
   const [packages, setPackages] = useState<PackageVersion[]>(
     initialPackages || [],
   );
+  const [performanceHistory, setPerformanceHistory] = useState<
+    Record<string, PerformanceHistoryPoint[]>
+  >({});
+  const historyLoaded = useRef(new Set<string>());
+  const historyInFlight = useRef(
+    new globalThis.Map<string, HistoryBootstrap>(),
+  );
+  const historyToken = useRef(0);
+  const liveInstanceIDs = useRef(new Set<string>());
+  const loadGeneration = useRef(0);
+  const mountedRef = useRef(true);
   const [pending, setPending] = useState<Instance | null>(null);
   const [page, setPage] = useState<Page>("overview");
   const [terminal, setTerminal] = useState<Instance | null>(null);
@@ -139,9 +256,67 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
     pollTimers.current.clear();
   }, []);
   const loadInstances = useCallback(async () => {
+    if (!mountedRef.current) return;
+    const generation = ++loadGeneration.current;
+    const isCurrent = () =>
+      mountedRef.current && generation === loadGeneration.current;
     const base = (await api<any[]>("/api/instances")).map(normalizeInstance);
-    const enriched = await Promise.all(
-      base.map(async (instance) => {
+    if (!isCurrent()) return;
+    const liveIDs = new Set(base.map((instance) => instance.id));
+    liveInstanceIDs.current = liveIDs;
+    for (const id of historyLoaded.current) {
+      if (!liveIDs.has(id)) historyLoaded.current.delete(id);
+    }
+    for (const [id, bootstrap] of historyInFlight.current) {
+      if (!liveIDs.has(id)) {
+        bootstrap.controller.abort();
+        historyInFlight.current.delete(id);
+      }
+    }
+    for (const instance of base) {
+      if (
+        historyLoaded.current.has(instance.id) ||
+        historyInFlight.current.has(instance.id)
+      ) {
+        continue;
+      }
+      const token = ++historyToken.current;
+      const controller = new AbortController();
+      const promise = api<PerformanceHistoryPoint[]>(
+        `/api/instances/${instance.id}/performance-history`,
+        { signal: controller.signal },
+      );
+      const bootstrap = { token, controller, promise };
+      historyInFlight.current.set(instance.id, bootstrap);
+      void promise
+        .then((history) => {
+          const owner = historyInFlight.current.get(instance.id);
+          if (
+            !mountedRef.current ||
+            owner?.token !== token ||
+            !liveInstanceIDs.current.has(instance.id)
+          ) {
+            return;
+          }
+          historyInFlight.current.delete(instance.id);
+          historyLoaded.current.add(instance.id);
+          setPerformanceHistory((current) => ({
+            ...current,
+            [instance.id]: mergePerformanceHistory(
+              current[instance.id] || EMPTY_PERFORMANCE_HISTORY,
+              Array.isArray(history) ? history : EMPTY_PERFORMANCE_HISTORY,
+            ),
+          }));
+        })
+        .catch(() => {
+          const owner = historyInFlight.current.get(instance.id);
+          if (mountedRef.current && owner?.token === token) {
+            historyInFlight.current.delete(instance.id);
+          }
+        });
+    }
+    const enrichedPromise = Promise.all(
+      base.map(async (instance): Promise<Instance> => {
         try {
           const overview = await api<InstanceOverview>(
             `/api/instances/${instance.id}/overview`,
@@ -150,9 +325,26 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
             ...instance,
             observed_state: overview.actual_state,
             container_running: overview.container_running,
+            container_running_known: overview.container_running_known,
+            sampled_at: overview.sampled_at ?? null,
+            run_id: overview.run_id ?? null,
             observed_max_players: overview.max_players,
             current_map: overview.map || undefined,
             cpu: overview.cpu_percent,
+            memory_bytes: overview.memory_bytes ?? null,
+            memory_limit_bytes: overview.memory_limit_bytes ?? null,
+            memory_percent: overview.memory_percent ?? null,
+            network_rx_bytes_per_sec: overview.network_rx_bytes_per_sec ?? null,
+            network_tx_bytes_per_sec: overview.network_tx_bytes_per_sec ?? null,
+            network_rx_bytes: overview.network_rx_bytes ?? null,
+            network_tx_bytes: overview.network_tx_bytes ?? null,
+            block_read_bytes_per_sec: overview.block_read_bytes_per_sec ?? null,
+            block_write_bytes_per_sec: overview.block_write_bytes_per_sec ?? null,
+            block_read_bytes: overview.block_read_bytes ?? null,
+            block_write_bytes: overview.block_write_bytes ?? null,
+            pids: overview.pids ?? null,
+            uptime_seconds: overview.uptime_seconds ?? null,
+            a2s_latency_ms: overview.a2s_latency_ms ?? null,
             memory:
               overview.memory_bytes === null
                 ? null
@@ -163,31 +355,81 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
           return {
             ...instance,
             observed_state: "unknown",
+            container_running: false,
+            container_running_known: false,
+            sampled_at: null,
+            run_id: null,
             observed_max_players: null,
             players: null,
             cpu: null,
             memory: null,
+            memory_bytes: null,
+            memory_limit_bytes: null,
+            memory_percent: null,
+            network_rx_bytes_per_sec: null,
+            network_tx_bytes_per_sec: null,
+            network_rx_bytes: null,
+            network_tx_bytes: null,
+            block_read_bytes_per_sec: null,
+            block_write_bytes_per_sec: null,
+            block_read_bytes: null,
+            block_write_bytes: null,
+            pids: null,
+            uptime_seconds: null,
+            a2s_latency_ms: null,
           };
         }
       }),
     );
-    setInstances(enriched);
+    const enriched = await enrichedPromise;
+    if (!isCurrent()) return;
+    setPerformanceHistory((current) => {
+      if (!isCurrent()) return current;
+      const next = prunePerformanceHistory(current, liveIDs);
+      for (const instance of enriched) {
+        if (!instance.sampled_at) continue;
+        const point = historyPointFromOverview(instance);
+        if (point) next[instance.id] = mergePerformanceHistory(next[instance.id] || [], [point]);
+      }
+      return next;
+    });
+    setInstances((current) => (isCurrent() ? enriched : current));
   }, []);
   const loadPackages = async () => {
-    setPackages(await api<PackageVersion[]>("/api/packages"));
+    const next = await api<PackageVersion[]>("/api/packages");
+    if (mountedRef.current) setPackages(next);
   };
   const loadHealth = async () => {
     try {
       await api("/api/health");
-      setHealth({ status: "online", message: "Docker API 正常" });
+      if (mountedRef.current) {
+        setHealth({ status: "online", message: "Docker API 正常" });
+      }
     } catch (reason) {
-      setHealth({ status: "error", message: errorMessage(reason) });
+      if (mountedRef.current) {
+        setHealth({ status: "error", message: errorMessage(reason) });
+      }
     }
   };
   useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      loadGeneration.current += 1;
+      historyLoaded.current.clear();
+      for (const bootstrap of historyInFlight.current.values()) {
+        bootstrap.controller.abort();
+      }
+      historyInFlight.current.clear();
+      liveInstanceIDs.current.clear();
+    };
+  }, []);
+  useEffect(() => {
     if (injected) return;
+    let cancelled = false;
     api("/api/session")
       .then(() => {
+        if (cancelled || !mountedRef.current) return;
         setAuth("yes");
         void Promise.allSettled([
           loadInstances(),
@@ -195,12 +437,27 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
           loadHealth(),
         ]);
       })
-      .catch(() => setAuth("no"));
+      .catch(() => {
+        if (!cancelled && mountedRef.current) setAuth("no");
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
   useEffect(() => {
     if (injected || auth !== "yes") return;
     const timer = window.setInterval(() => void loadInstances(), 5_000);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      if (!mountedRef.current) return;
+      loadGeneration.current += 1;
+      historyLoaded.current.clear();
+      for (const bootstrap of historyInFlight.current.values()) {
+        bootstrap.controller.abort();
+      }
+      historyInFlight.current.clear();
+      liveInstanceIDs.current.clear();
+    };
   }, [auth, injected, loadInstances]);
   const queue = async (path: string, body: any) => {
     const created = await api<Job>(path, {
@@ -396,6 +653,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
             instances={instances}
             packages={packages}
             running={running}
+            performanceHistory={performanceHistory}
             setPending={setPending}
             action={action}
             setTerminal={setTerminal}
@@ -509,6 +767,7 @@ function Overview({
   instances,
   packages,
   running,
+  performanceHistory,
   setPending,
   action,
   setTerminal,
@@ -520,6 +779,7 @@ function Overview({
   instances: Instance[];
   packages: PackageVersion[];
   running: number;
+  performanceHistory: Record<string, PerformanceHistoryPoint[]>;
   setPending: (v: Instance) => void;
   action: (id: string, a: string) => void;
   setTerminal: (v: Instance) => void;
@@ -649,26 +909,31 @@ function Overview({
                   </span>
                   <em>{x.game_mode.toUpperCase()}</em>
                 </div>
-                <div className="stats">
-                  <span>
-                    <small>玩家</small>
-                    <b>
-                      {x.players === null ? "--" : x.players}
-                      {" / "}
-                      {observedCapacity === null ? "--" : observedCapacity}
-                    </b>
-                  </span>
-                  <span>
-                    <small>CPU</small>
-                    <b>{x.cpu === null ? "--" : `${x.cpu.toFixed(1)}%`}</b>
-                  </span>
-                  <span>
-                    <small>内存</small>
-                    <b>
-                      {x.memory === null ? "--" : `${x.memory.toFixed(2)} GB`}
-                    </b>
-                  </span>
+                <div className="player-capacity">
+                  <small>玩家</small>
+                  <b>{x.players === null ? "--" : x.players} / {observedCapacity === null ? "--" : observedCapacity}</b>
                 </div>
+                <PerformancePanel
+                  snapshot={{
+                    players: x.players,
+                    cpu_percent: x.cpu,
+                    memory_bytes: x.memory_bytes ?? (x.memory === null ? null : x.memory * (1 << 30)),
+                    memory_limit_bytes: x.memory_limit_bytes ?? null,
+                    memory_percent: x.memory_percent ?? null,
+                    network_rx_bytes_per_sec: x.network_rx_bytes_per_sec ?? null,
+                    network_tx_bytes_per_sec: x.network_tx_bytes_per_sec ?? null,
+                    network_rx_bytes: x.network_rx_bytes ?? null,
+                    network_tx_bytes: x.network_tx_bytes ?? null,
+                    block_read_bytes_per_sec: x.block_read_bytes_per_sec ?? null,
+                    block_write_bytes_per_sec: x.block_write_bytes_per_sec ?? null,
+                    block_read_bytes: x.block_read_bytes ?? null,
+                    block_write_bytes: x.block_write_bytes ?? null,
+                    pids: x.pids ?? null,
+                    uptime_seconds: x.uptime_seconds ?? null,
+                    a2s_latency_ms: x.a2s_latency_ms ?? null,
+                  }}
+                  history={performanceHistory[x.id] || EMPTY_PERFORMANCE_HISTORY}
+                />
                 <div className="bar">
                   <i
                     style={{
