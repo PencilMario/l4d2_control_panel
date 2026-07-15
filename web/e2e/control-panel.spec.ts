@@ -4,6 +4,10 @@ const packageZip = Buffer.from(
   "UEsDBBQAAAAIAIQg71zL9TlxGQAAABEAAAAOAAAAY2ZnL3BsdWdpbi5jZmcqzo1PLkssUkjLrCgpLUpVMAQAAAD//wMAUEsBAhQAFAAAAAgAhCDvXMv1OXEZAAAAEQAAAA4AAAAAAAAAAAAAAAAAAAAAAGNmZy9wbHVnaW4uY2ZnUEsFBgAAAAABAAEAPAAAAEUAAAAAAA==",
   "base64",
 );
+const privateReplacementZip = Buffer.from(
+  "UEsDBBQAAAAIAEgX8Fz3sBxbHQAAABUAAAAQAAAAaW1wb3J0ZWQvbmV3LmNmZ8rMLcgvKklNUShKLchJTE7NTc0r4QIAAAD//wMAUEsBAhQAFAAAAAgASBfwXPewHFsdAAAAFQAAABAAAAAAAAAAAAAAAAAAAAAAAGltcG9ydGVkL25ldy5jZmdQSwUGAAAAAAEAAQA+AAAASwAAAAAA",
+  "base64",
+);
 
 type FixtureJob = {
   ID: string;
@@ -611,6 +615,65 @@ test("real HTTP administration journey survives refresh and streams recovery sta
     page.getByRole("button", { name: "应用更改" }).click(),
   );
   await waitForJob(page, restorePrivateApply.ID);
+
+  const archiveDownloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出 ZIP" }).click();
+  const archiveDownload = await archiveDownloadPromise;
+  expect(archiveDownload.suggestedFilename()).toBe(
+    `private-files-${initiallySaved.id}.zip`,
+  );
+  const exportedArchive = await archiveDownload.createReadStream().then(
+    async (stream) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+      return Buffer.concat(chunks);
+    },
+  );
+  expect(exportedArchive.byteLength).toBeGreaterThan(0);
+  expect(exportedArchive.subarray(0, 2).toString("ascii")).toBe("PK");
+
+  const importDialogPromise = page.waitForEvent("dialog");
+  const importAction = page.getByLabel("导入 ZIP").setInputFiles({
+    name: "replacement.zip",
+    mimeType: "application/zip",
+    buffer: privateReplacementZip,
+  });
+  const importDialog = await importDialogPromise;
+  expect(importDialog.message()).toContain(
+    "ZIP 中不存在的现有文件和未应用更改将被删除，不会保留",
+  );
+  expect(importDialog.message()).toContain("历史应用快照不受影响");
+  expect(importDialog.message()).toContain("不会自动应用到游戏目录");
+  await importDialog.accept();
+  await importAction;
+  await expect(page.getByRole("status")).toContainText(
+    "工作区已完全替换，请检查差异后应用更改。",
+  );
+  await expect(page.getByLabel("暂存更改状态")).toContainText("3 项更改未应用");
+  tree = await privateTree(page, mobile);
+  await expect(tree.getByRole("treeitem", { name: "cfg", exact: true })).toHaveCount(0);
+  await expect(tree.getByRole("treeitem", { name: "seeded.cfg" })).toHaveCount(0);
+  await expect(tree.getByRole("treeitem", { name: "binary.bin" })).toHaveCount(0);
+  await tree.getByRole("treeitem", { name: "imported", exact: true }).click();
+  await expect(tree.getByRole("treeitem", { name: "new.cfg" })).toBeVisible();
+  await closePrivateTree(page, mobile);
+  const stagedImportLower = await page.evaluate(async (id) => {
+    const request = async (path: string) => {
+      const response = await fetch(
+        `/__e2e/private-lower?id=${encodeURIComponent(id)}&path=${encodeURIComponent(path)}`,
+      );
+      return { status: response.status, body: await response.text() };
+    };
+    return {
+      previouslyApplied: await request("cfg/seeded.cfg"),
+      stagedOnly: await request("imported/new.cfg"),
+    };
+  }, initiallySaved.id);
+  expect(stagedImportLower.previouslyApplied).toEqual({
+    status: 200,
+    body: "private override\n",
+  });
+  expect(stagedImportLower.stagedOnly.status).toBe(404);
 
   const privateLayout = await page.locator(".private-files-page").evaluate((root) => {
     const layout = root.querySelector(".private-files-layout")!.getBoundingClientRect();
