@@ -210,4 +210,107 @@ describe("PrivateFilesPage", () => {
       "true",
     );
   });
+
+  it("recovers a failed upload offset and completes with the same file", async () => {
+    const { calls } = mockPrivateAPI();
+    let patches = 0;
+    const base = globalThis.fetch as ReturnType<typeof vi.fn>;
+    base.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input); calls.push({ path, init });
+      if (path.endsWith("/private/tree")) return json([]);
+      if (path.endsWith("/private/diff")) return json({ changes: [], summary: { added: 0, modified: 0, deleted: 0 } });
+      if (path.endsWith("/private/snapshots")) return json([]);
+      if (path.endsWith("/private/uploads") && init?.method === "POST") return json({ id: "resume-1", offset: 0 }, 201);
+      if (path.endsWith("/private/uploads/resume-1") && !init?.method) return json({ offset: 2 });
+      if (init?.method === "PATCH") {
+        patches++;
+        return patches === 1 ? json({}, 409) : new Response(null, { status: 204, headers: { "Upload-Offset": "4" } });
+      }
+      return new Response(null, { status: 204 });
+    });
+    render(<PrivateFilesPage instances={[instance]} queue={vi.fn()} />);
+    const file = new File([new Uint8Array([1, 2, 3, 4])], "resume.bin");
+    fireEvent.change(screen.getByLabelText("上传文件"), { target: { files: [file] } });
+    expect(await screen.findByRole("button", { name: "恢复上传" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "恢复上传" }));
+    expect(await screen.findByText("上传完成 · 100%")).toBeVisible();
+    expect(calls.some((call) => call.path.endsWith("/private/uploads/resume-1") && !call.init?.method)).toBe(true);
+    expect(calls.some((call) => call.init?.method === "PATCH" && (call.init.headers as Record<string, string>)["Upload-Offset"] === "2")).toBe(true);
+    expect(calls.some((call) => call.path.endsWith("/complete"))).toBe(true);
+  });
+
+  it("rejects binary bytes even with a text extension", async () => {
+    mockPrivateAPI();
+    const base = globalThis.fetch as ReturnType<typeof vi.fn>;
+    const original = base.getMockImplementation() as any;
+    base.mockImplementation(async (input, init) => String(input).includes("/private/file/cfg/server.cfg")
+      ? new Response(new Uint8Array([65, 0, 66]))
+      : original(input, init));
+    render(<PrivateFilesPage instances={[instance]} queue={vi.fn()} />);
+    await userEvent.click(await screen.findByRole("treeitem", { name: "cfg" }));
+    await userEvent.click(screen.getByRole("button", { name: "编辑 server.cfg" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("不是可编辑的 UTF-8 文本");
+    expect(screen.queryByLabelText("文件内容")).not.toBeInTheDocument();
+  });
+
+  it("edits valid UTF-8 files without an extension", async () => {
+    mockPrivateAPI();
+    const base = globalThis.fetch as ReturnType<typeof vi.fn>;
+    const original = base.getMockImplementation() as any;
+    base.mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path.endsWith("/private/tree")) return json([{ path: "README", kind: "file", size: 6, updated_at: "now" }]);
+      if (path.includes("/private/file/README")) return new Response(new TextEncoder().encode("说明"));
+      return original(input, init);
+    });
+    render(<PrivateFilesPage instances={[instance]} queue={vi.fn()} />);
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 README" }));
+    expect(await screen.findByLabelText("文件内容")).toHaveValue("说明");
+  });
+
+  it("loads path-specific file history", async () => {
+    const { fetchMock } = mockPrivateAPI();
+    const base = globalThis.fetch as ReturnType<typeof vi.fn>;
+    const original = base.getMockImplementation() as any;
+    base.mockImplementation(async (input, init) => String(input).includes("/private/history/cfg/server.cfg")
+      ? json([{ path: "cfg/server.cfg.1", size: 10, hash: "old" }])
+      : original(input, init));
+    render(<PrivateFilesPage instances={[instance]} queue={vi.fn()} />);
+    await userEvent.click(await screen.findByRole("treeitem", { name: "cfg" }));
+    await userEvent.click(screen.getByRole("treeitem", { name: "server.cfg" }));
+    await userEvent.click(screen.getByRole("button", { name: "历史 server.cfg" }));
+    expect(await screen.findByRole("dialog", { name: /文件历史/ })).toHaveTextContent("cfg/server.cfg.1");
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/private/history/cfg/server.cfg"))).toBe(true);
+  });
+
+  it("waits for apply completion, refreshes counts, and prevents duplicate apply", async () => {
+    let changed = true;
+    const { fetchMock } = mockPrivateAPI();
+    const original = fetchMock.getMockImplementation() as any;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input).endsWith("/private/diff")) return json(changed ? { changes: [{ path: "a", kind: "added" }], summary: { added: 1, modified: 0, deleted: 0 } } : { changes: [], summary: { added: 0, modified: 0, deleted: 0 } });
+      return original(input, init);
+    });
+    let finish!: (job: unknown) => void;
+    const queueAndWait = vi.fn(() => new Promise<any>((resolve) => { finish = resolve; }));
+    render(<PrivateFilesPage instances={[instance]} queue={vi.fn()} queueAndWait={queueAndWait} />);
+    const apply = await screen.findByRole("button", { name: "应用更改" });
+    await userEvent.click(apply);
+    await userEvent.click(apply);
+    expect(queueAndWait).toHaveBeenCalledTimes(1);
+    changed = false;
+    finish({ Status: "succeeded" });
+    expect(await screen.findByText("工作区与已应用版本一致")).toBeVisible();
+  });
+
+  it("traps drawer focus, closes on Escape, and returns focus", async () => {
+    mockPrivateAPI();
+    render(<PrivateFilesPage instances={[instance]} queue={vi.fn()} />);
+    const trigger = screen.getByRole("button", { name: "打开文件树" });
+    await userEvent.click(trigger);
+    const close = screen.getByRole("button", { name: "关闭文件树" });
+    expect(close).toHaveFocus();
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
 });

@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type RefObject,
 } from "react";
 import { sha256 } from "@noble/hashes/sha2.js";
 import {
@@ -26,7 +27,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { api, apiText } from "../api/client";
+import { api, type Job } from "../api/client";
 import type { Instance } from "./App";
 
 export type PrivateEntry = {
@@ -51,13 +52,17 @@ type PrivateSnapshot = {
 type Props = {
   instances: Instance[];
   queue: (path: string, body: unknown) => Promise<void>;
+  queueAndWait?: (path: string, body: unknown) => Promise<Job>;
 };
+type PrivateVersion = { path: string; size: number; hash?: string; updated_at?: string };
+type ActiveUpload = { id: string; path: string; size: number; offset: number; fingerprint: string; file?: File };
 
 const EMPTY_DIFF: PrivateDiff = {
   changes: [],
   summary: { added: 0, modified: 0, deleted: 0 },
 };
 const UPLOAD_CHUNK_SIZE = 4 * 1024 * 1024;
+const EDITOR_LIMIT = 1 << 20;
 const TEXT_EXTENSIONS = new Set([
   "cfg",
   "txt",
@@ -108,7 +113,7 @@ function buildChildren(entries: PrivateEntry[]) {
   return children;
 }
 
-export function PrivateFilesPage({ instances, queue }: Props) {
+export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
   const [instanceID, setInstanceID] = useState(instances[0]?.id ?? "");
   const [entries, setEntries] = useState<PrivateEntry[]>([]);
   const [diff, setDiff] = useState<PrivateDiff>(EMPTY_DIFF);
@@ -124,8 +129,15 @@ export function PrivateFilesPage({ instances, queue }: Props) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [snapshotsOpen, setSnapshotsOpen] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [activeUpload, setActiveUpload] = useState<ActiveUpload | null>(null);
+  const [history, setHistory] = useState<{ path: string; versions: PrivateVersion[] } | null>(null);
   const drawerRef = useRef<HTMLDivElement>(null);
   const drawerTriggerRef = useRef<HTMLButtonElement>(null);
+  const snapshotsRef = useRef<HTMLElement>(null);
+  const snapshotsTriggerRef = useRef<HTMLButtonElement>(null);
+  const historyRef = useRef<HTMLElement>(null);
+  const historyTriggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!instances.some((item) => item.id === instanceID)) {
@@ -167,31 +179,39 @@ export function PrivateFilesPage({ instances, queue }: Props) {
   }, [reload]);
 
   useEffect(() => {
-    if (!drawerOpen) return;
-    const drawer = drawerRef.current;
-    const focusable = drawer?.querySelector<HTMLElement>(
-      "button:not([disabled]), [href], [tabindex]:not([tabindex='-1'])",
-    );
-    focusable?.focus();
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setDrawerOpen(false);
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-      drawerTriggerRef.current?.focus();
-    };
-  }, [drawerOpen]);
+    if (!instanceID) return;
+    const stored = localStorage.getItem(`private-upload:${instanceID}`);
+    if (stored) {
+      try { setActiveUpload(JSON.parse(stored)); setUploadStatus("上传等待恢复 · 请重新选择原文件"); } catch {}
+    }
+  }, [instanceID]);
+  useEffect(() => {
+    if (!instanceID) return;
+    if (activeUpload) {
+      const { file: _file, ...metadata } = activeUpload;
+      localStorage.setItem(`private-upload:${instanceID}`, JSON.stringify(metadata));
+    } else {
+      localStorage.removeItem(`private-upload:${instanceID}`);
+    }
+  }, [activeUpload, instanceID]);
+
+  useModalFocus(drawerOpen, drawerRef, drawerTriggerRef, () => setDrawerOpen(false));
+  useModalFocus(snapshotsOpen, snapshotsRef, snapshotsTriggerRef, () => setSnapshotsOpen(false));
+  useModalFocus(Boolean(history), historyRef, historyTriggerRef, () => setHistory(null));
 
   const run = useCallback(async (operation: () => Promise<void>) => {
+    if (busy) return;
+    setBusy(true);
     setError("");
     setStatus("");
     try {
       await operation();
     } catch (reason) {
       setError(errorMessage(reason));
+    } finally {
+      setBusy(false);
     }
-  }, []);
+  }, [busy]);
 
   const selectEntry = useCallback(
     (entry: PrivateEntry) => {
@@ -210,13 +230,23 @@ export function PrivateFilesPage({ instances, queue }: Props) {
   );
 
   const editFile = async (path: string) => {
-    const text = await apiText(
-      `/api/instances/${instanceID}/private/file/${encodeRelativePath(path)}`,
-    );
+    const response = await fetch(`/api/instances/${instanceID}/private/file/${encodeRelativePath(path)}`, { credentials: "same-origin" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > EDITOR_LIMIT) throw new Error("文件超过文本编辑大小限制");
+    if (bytes.includes(0)) throw new Error("该文件不是可编辑的 UTF-8 文本");
+    let text: string;
+    try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+    catch { throw new Error("该文件不是可编辑的 UTF-8 文本"); }
     setSelectedPath(path);
     setEditor(text);
     setEditing(true);
     setDrawerOpen(false);
+  };
+
+  const showFileHistory = async (path: string) => {
+    const versions = await api<PrivateVersion[]>(`/api/instances/${instanceID}/private/history/${encodeRelativePath(path)}`);
+    setHistory({ path, versions });
   };
 
   const saveText = async () => {
@@ -290,6 +320,12 @@ export function PrivateFilesPage({ instances, queue }: Props) {
       const target = selectedDirectory ? `${selectedDirectory}/${file.name}` : file.name;
       const digest = sha256(new Uint8Array(await file.arrayBuffer()));
       const hash = [...digest].map((value) => value.toString(16).padStart(2, "0")).join("");
+      const fingerprint = `${file.name}:${file.size}:${file.lastModified}:${hash}`;
+      if (activeUpload && activeUpload.fingerprint === fingerprint) {
+        setActiveUpload({ ...activeUpload, file });
+        await resumeUpload({ ...activeUpload, file });
+        return;
+      }
       setUploadStatus("准备上传 · 0%");
       const session = await api<{ id: string; offset: number }>(
         `/api/instances/${instanceID}/private/uploads`,
@@ -298,11 +334,23 @@ export function PrivateFilesPage({ instances, queue }: Props) {
           body: JSON.stringify({ path: target, size: file.size, sha256: hash }),
         },
       );
-      let offset = session.offset || 0;
+      const upload = { id: session.id, path: target, size: file.size, offset: session.offset || 0, fingerprint, file };
+      setActiveUpload(upload);
+      await continueUpload(upload);
+    });
+  };
+
+  const continueUpload = async (upload: ActiveUpload) => {
+      const file = upload.file;
+      if (!file) {
+        setUploadStatus("上传等待恢复 · 请重新选择原文件");
+        return;
+      }
+      let offset = upload.offset;
       while (offset < file.size) {
         const end = Math.min(offset + UPLOAD_CHUNK_SIZE, file.size);
         const response = await fetch(
-          `/api/instances/${instanceID}/private/uploads/${session.id}`,
+          `/api/instances/${instanceID}/private/uploads/${upload.id}`,
           {
             method: "PATCH",
             credentials: "same-origin",
@@ -314,19 +362,28 @@ export function PrivateFilesPage({ instances, queue }: Props) {
           },
         );
         if (!response.ok) {
-          setUploadStatus(`上传可恢复 · ${offset}/${file.size} B · 会话 ${session.id}`);
+          setActiveUpload({ ...upload, offset });
+          setUploadStatus(`上传可恢复 · ${offset}/${file.size} B · 会话 ${upload.id}`);
           throw new Error(`上传中断 · HTTP ${response.status}`);
         }
         offset = Number(response.headers.get("Upload-Offset") || end);
         setUploadStatus(`正在上传 · ${Math.round((offset / file.size) * 100)}%`);
       }
       await api(
-        `/api/instances/${instanceID}/private/uploads/${session.id}/complete`,
+        `/api/instances/${instanceID}/private/uploads/${upload.id}/complete`,
         { method: "POST", body: "{}" },
       );
       setUploadStatus("上传完成 · 100%");
+      setActiveUpload(null);
       await reload();
-    });
+  };
+
+  const resumeUpload = async (upload = activeUpload) => {
+    if (!upload) return;
+    const recovered = await api<{ offset: number }>(`/api/instances/${instanceID}/private/uploads/${upload.id}`);
+    const next = { ...upload, offset: recovered.offset };
+    setActiveUpload(next);
+    await continueUpload(next);
   };
 
   const restoreSnapshot = async (snapshot: PrivateSnapshot) => {
@@ -350,6 +407,7 @@ export function PrivateFilesPage({ instances, queue }: Props) {
       children={children}
       expanded={expanded}
       selectedPath={selectedPath}
+      disabled={busy}
       onSelect={selectEntry}
       onEdit={(path) => void run(() => editFile(path))}
       onMove={(path) => void run(() => moveEntry(path))}
@@ -378,12 +436,12 @@ export function PrivateFilesPage({ instances, queue }: Props) {
         <label className="private-icon-button" title="上传文件">
           <Upload aria-hidden="true" />
           <span>上传</span>
-          <input aria-label="上传文件" type="file" onChange={uploadFile} disabled={!instanceID} />
+          <input aria-label="上传文件" type="file" onChange={uploadFile} disabled={!instanceID || busy} />
         </label>
-        <button title="新建文件" onClick={() => void run(makeFile)} disabled={!instanceID}><FilePlus2 />新建文件</button>
-        <button title="新建目录" onClick={() => void run(makeDirectory)} disabled={!instanceID}><FolderPlus />新建目录</button>
+        <button title="新建文件" onClick={() => void run(makeFile)} disabled={!instanceID || busy}><FilePlus2 />新建文件</button>
+        <button title="新建目录" onClick={() => void run(makeDirectory)} disabled={!instanceID || busy}><FolderPlus />新建目录</button>
         <button title="刷新" onClick={() => void reload()} disabled={!instanceID || loading}><RefreshCw />刷新</button>
-        <button title="历史快照" onClick={() => setSnapshotsOpen(true)} disabled={!instanceID}><History />历史快照</button>
+        <button ref={snapshotsTriggerRef} title="历史快照" onClick={() => setSnapshotsOpen(true)} disabled={!instanceID || busy}><History />历史快照</button>
         <button
           ref={drawerTriggerRef}
           className="private-tree-trigger"
@@ -397,6 +455,7 @@ export function PrivateFilesPage({ instances, queue }: Props) {
       {error ? <div className="error" role="alert">{error}<button onClick={() => void reload()}>重试</button></div> : null}
       {status ? <div className="operation-status" role="status">{status}</div> : null}
       {uploadStatus ? <div className="operation-status" role="status">{uploadStatus}</div> : null}
+      {activeUpload ? <button className="private-resume-upload" disabled={busy || !activeUpload.file} onClick={() => void run(() => resumeUpload())}>恢复上传</button> : null}
 
       <div className="private-files-layout">
         <aside className="private-tree-pane" aria-label="私有文件目录">{tree}</aside>
@@ -410,9 +469,9 @@ export function PrivateFilesPage({ instances, queue }: Props) {
               <div className="private-file-actions">
                 <a title="下载" aria-label={`下载 ${basename(selected.path)}`} href={`/api/instances/${instanceID}/private/file/${encodeRelativePath(selected.path)}`} download><Download /></a>
                 {isTextFile(selected.path) ? <button title="编辑" aria-label={`编辑 ${basename(selected.path)}`} onClick={() => void run(() => editFile(selected.path))}><Edit3 /></button> : null}
-                <button title="历史" aria-label={`历史 ${basename(selected.path)}`} onClick={() => setSnapshotsOpen(true)}><History /></button>
-                <button title="移动" aria-label={`移动 ${basename(selected.path)}`} onClick={() => void run(() => moveEntry(selected.path))}><Move /></button>
-                <button title="删除" aria-label={`删除 ${basename(selected.path)}`} className="danger" onClick={() => void run(() => deleteEntry(selected))}><Trash2 /></button>
+                <button ref={historyTriggerRef} title="历史" aria-label={`历史 ${basename(selected.path)}`} disabled={busy} onClick={() => void run(() => showFileHistory(selected.path))}><History /></button>
+                <button title="移动" aria-label={`移动 ${basename(selected.path)}`} disabled={busy} onClick={() => void run(() => moveEntry(selected.path))}><Move /></button>
+                <button title="删除" aria-label={`删除 ${basename(selected.path)}`} disabled={busy} className="danger" onClick={() => void run(() => deleteEntry(selected))}><Trash2 /></button>
               </div>
             </div>
           ) : null}
@@ -421,7 +480,7 @@ export function PrivateFilesPage({ instances, queue }: Props) {
               <div className="private-editor-head"><b>{selectedPath}</b><span>UTF-8</span></div>
               <label htmlFor="private-editor-content">文件内容</label>
               <textarea id="private-editor-content" value={editor} onChange={(event) => setEditor(event.target.value)} spellCheck={false} />
-              <button className="create" onClick={() => void run(saveText)}><Save />保存到暂存区</button>
+              <button className="create" disabled={busy} onClick={() => void run(saveText)}><Save />保存到暂存区</button>
             </div>
           ) : null}
           {!selected && entries.length > 0 ? <div className="empty">选择目录或文件</div> : null}
@@ -443,15 +502,25 @@ export function PrivateFilesPage({ instances, queue }: Props) {
 
       {snapshotsOpen ? (
         <div className="private-snapshot-backdrop" role="presentation">
-          <section className="private-snapshot-dialog" role="dialog" aria-modal="true" aria-labelledby="private-snapshot-title">
+          <section ref={snapshotsRef} className="private-snapshot-dialog" role="dialog" aria-modal="true" aria-labelledby="private-snapshot-title">
             <div className="private-drawer-head"><h3 id="private-snapshot-title">历史快照</h3><button aria-label="关闭历史快照" onClick={() => setSnapshotsOpen(false)}><X /></button></div>
             {snapshots.map((snapshot) => (
               <div className="private-snapshot-row" key={snapshot.id}>
                 <div><b>{new Date(snapshot.applied_at).toLocaleString("zh-CN")}</b><small>+{snapshot.summary.added} / ~{snapshot.summary.modified} / -{snapshot.summary.deleted}</small></div>
-                <button aria-label={`恢复 ${new Date(snapshot.applied_at).toLocaleDateString("zh-CN")}`} onClick={() => void run(() => restoreSnapshot(snapshot))}><ArchiveRestore />恢复</button>
+                <button disabled={busy} aria-label={`恢复 ${new Date(snapshot.applied_at).toLocaleDateString("zh-CN")}`} onClick={() => void run(() => restoreSnapshot(snapshot))}><ArchiveRestore />恢复</button>
               </div>
             ))}
             {!snapshots.length ? <div className="empty">暂无应用快照</div> : null}
+          </section>
+        </div>
+      ) : null}
+
+      {history ? (
+        <div className="private-snapshot-backdrop" role="presentation">
+          <section ref={historyRef} className="private-snapshot-dialog" role="dialog" aria-modal="true" aria-labelledby="private-history-title">
+            <div className="private-drawer-head"><h3 id="private-history-title">文件历史 · {history.path}</h3><button aria-label="关闭文件历史" onClick={() => setHistory(null)}><X /></button></div>
+            {history.versions.map((version, index) => <div className="private-snapshot-row" key={`${version.path}-${index}`}><div><b>{version.path}</b><small>{formatBytes(version.size)} · {(version.hash || "").slice(0, 12)}</small></div></div>)}
+            {!history.versions.length ? <div className="empty">暂无文件历史</div> : null}
           </section>
         </div>
       ) : null}
@@ -470,7 +539,17 @@ export function PrivateFilesPage({ instances, queue }: Props) {
             : "工作区与已应用版本一致"}
         </button>
         <div className="private-change-counts"><span>新增 {diff.summary.added}</span><span>修改 {diff.summary.modified}</span><span>删除 {diff.summary.deleted}</span></div>
-        <button className="create" disabled={!hasChanges || !instanceID} onClick={() => void run(async () => { await queue(`/api/instances/${instanceID}/private/apply`, {}); setStatus("应用任务已加入队列"); })}>应用更改</button>
+        <button className="create" disabled={!hasChanges || !instanceID || busy} onClick={() => void run(async () => {
+          if (queueAndWait) {
+            const terminal = await queueAndWait(`/api/instances/${instanceID}/private/apply`, {});
+            if (terminal.Status !== "succeeded") throw new Error(terminal.Error || "应用任务失败");
+            await reload();
+            setStatus("私有文件已应用");
+          } else {
+            await queue(`/api/instances/${instanceID}/private/apply`, {});
+            setStatus("应用任务已加入队列");
+          }
+        })}>应用更改</button>
       </footer>
     </section>
   );
@@ -480,6 +559,7 @@ function PrivateTree({
   children,
   expanded,
   selectedPath,
+  disabled,
   onSelect,
   onEdit,
   onMove,
@@ -488,6 +568,7 @@ function PrivateTree({
   children: Map<string, PrivateEntry[]>;
   expanded: Set<string>;
   selectedPath: string;
+  disabled: boolean;
   onSelect: (entry: PrivateEntry) => void;
   onEdit: (path: string) => void;
   onMove: (path: string) => void;
@@ -507,9 +588,9 @@ function PrivateTree({
               <span>{name}</span>
             </button>
             <span className="private-tree-actions">
-              {!directory && isTextFile(entry.path) ? <button title="编辑" aria-label={`编辑 ${name}`} onClick={() => onEdit(entry.path)}><Edit3 /></button> : null}
-              <button title="移动" aria-label={`移动 ${name}`} onClick={() => onMove(entry.path)}><Move /></button>
-              <button title="删除" aria-label={`删除 ${name}`} onClick={() => onDelete(entry)}><Trash2 /></button>
+              {!directory && isTextFile(entry.path) ? <button disabled={disabled} title="编辑" aria-label={`编辑 ${name}`} onClick={() => onEdit(entry.path)}><Edit3 /></button> : null}
+              <button disabled={disabled} title="移动" aria-label={`移动 ${name}`} onClick={() => onMove(entry.path)}><Move /></button>
+              <button disabled={disabled} title="删除" aria-label={`删除 ${name}`} onClick={() => onDelete(entry)}><Trash2 /></button>
             </span>
           </div>
           {directory && open ? <div role="group">{renderLevel(entry.path, level + 1)}{(children.get(entry.path) || []).length === 0 ? <div className="private-tree-empty">空目录</div> : null}</div> : null}
@@ -517,4 +598,29 @@ function PrivateTree({
       );
     });
   return <div className="private-tree" role="tree" aria-label="私有文件树">{renderLevel("", 1)}</div>;
+}
+
+function useModalFocus(
+  open: boolean,
+  containerRef: RefObject<HTMLElement | null>,
+  triggerRef: RefObject<HTMLElement | null>,
+  close: () => void,
+) {
+  useEffect(() => {
+    if (!open) return;
+    const focusables = () => Array.from(containerRef.current?.querySelectorAll<HTMLElement>("button:not([disabled]), [href], input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])") || []);
+    focusables()[0]?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); close(); return; }
+      if (event.key !== "Tab") return;
+      const items = focusables();
+      if (!items.length) return;
+      const first = items[0];
+      const last = items.at(-1)!;
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => { document.removeEventListener("keydown", onKeyDown); triggerRef.current?.focus(); };
+  }, [close, containerRef, open, triggerRef]);
 }

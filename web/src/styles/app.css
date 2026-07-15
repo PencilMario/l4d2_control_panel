@@ -1353,6 +1353,13 @@ textarea:focus-visible {
   width: 58px;
   color: var(--amber);
 }
+.private-resume-upload {
+  margin-top: 8px;
+  border: 1px solid var(--amber);
+  background: #211a0d;
+  color: #ffd17a;
+  padding: 8px 12px;
+}
 .private-tree-drawer {
   display: none;
 }

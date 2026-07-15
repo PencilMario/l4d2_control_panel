@@ -133,7 +133,15 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
       body: JSON.stringify(body),
     });
     setJob(created);
-    pollJob(created.ID);
+    void pollJob(created.ID).catch(() => undefined);
+  };
+  const queueAndWait = async (path: string, body: unknown) => {
+    const created = await api<Job>(path, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    setJob(created);
+    return pollJob(created.ID);
   };
   const action = async (id: string, kind: string) => {
     if (onAction) {
@@ -149,23 +157,26 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
       setError(errorMessage(e));
     }
   };
-  const pollJob = (id: string) => {
-    const read = async () => {
+  const pollJob = (id: string) =>
+    new Promise<Job>((resolve, reject) => {
+      const read = async () => {
       try {
         const next = await api<Job>(`/api/jobs/${id}`);
         setJob(next);
         if (["succeeded", "failed", "interrupted"].includes(next.Status)) {
           clearInterval(timer);
           void Promise.allSettled([loadInstances(), loadPackages()]);
+          resolve(next);
         }
       } catch (reason) {
         clearInterval(timer);
         setError(errorMessage(reason));
+        reject(reason);
       }
-    };
-    const timer = window.setInterval(() => void read(), 800);
-    void read();
-  };
+      };
+      const timer = window.setInterval(() => void read(), 800);
+      void read();
+    });
   if (auth === "checking")
     return <div className="splash">正在连接控制节点…</div>;
   if (auth === "no")
@@ -299,12 +310,12 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
             reload={loadInstances}
             acceptJob={(next) => {
               setJob(next);
-              pollJob(next.ID);
+              void pollJob(next.ID).catch(() => undefined);
             }}
           />
         )}{" "}
         {page === "private" && (
-          <PrivateFilesPage instances={instances} queue={queue} />
+          <PrivateFilesPage instances={instances} queue={queue} queueAndWait={queueAndWait} />
         )}
         {page === "content" && (
           <ContentPage
