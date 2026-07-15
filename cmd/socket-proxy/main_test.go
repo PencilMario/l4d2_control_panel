@@ -73,7 +73,23 @@ func TestSuperviseCaptureRetriesAndRestoresAvailability(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("capture supervisor did not retry")
 	}
-	if err := status.unavailable(); err != nil {
-		t.Fatalf("capture remained unavailable after retry: %v", err)
+	waitCtx, waitCancel := context.WithTimeout(ctx, time.Second)
+	defer waitCancel()
+	waitFor(t, waitCtx, func() bool { return status.unavailable() == nil })
+}
+
+func waitFor(t *testing.T, ctx context.Context, condition func() bool) {
+	t.Helper()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if condition() {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("condition was not met: %v", ctx.Err())
+		case <-ticker.C:
+		}
 	}
 }
