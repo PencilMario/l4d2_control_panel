@@ -73,8 +73,7 @@ func run(ctx context.Context) error {
 		return err
 	}
 	defer func() {
-		_ = listener.Close()
-		_ = os.Remove(socketPath)
+		closeUnixListener(listener)
 	}()
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
@@ -85,6 +84,10 @@ func run(ctx context.Context) error {
 	}()
 	log.Printf("restricted Docker proxy listening on unix://%s", socketPath)
 	return server.Serve(listener)
+}
+
+func closeUnixListener(listener net.Listener) {
+	_ = listener.Close()
 }
 
 func listenUnix(socketPath string) (net.Listener, error) {

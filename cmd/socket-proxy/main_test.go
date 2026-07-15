@@ -48,6 +48,31 @@ func TestSocketListenerRejectsRegularFileAndSetsMode(t *testing.T) {
 	}
 }
 
+func TestSocketCleanupNeverRemovesReplacementRegularFile(t *testing.T) {
+	path := filepath.Join(os.TempDir(), fmt.Sprintf("l4d2-panel-cleanup-%d.sock", os.Getpid()))
+	t.Cleanup(func() { _ = os.Remove(path) })
+	_ = os.Remove(path)
+	ln, err := listenUnix(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeUnixListener(ln)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("socket remains after close: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("replacement"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	closeUnixListener(ln)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("replacement file was removed: %v", err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("replacement mode = %v", info.Mode())
+	}
+}
+
 func TestProxyHandlerRoutesTrafficBeforeDockerPolicy(t *testing.T) {
 	counter := traffic.NewCounter()
 	trafficHandler := traffic.NewHandler(counter, nil)
