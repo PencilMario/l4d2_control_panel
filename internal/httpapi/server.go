@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -503,7 +504,10 @@ func (s *Server) instancePerformanceHistory(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusServiceUnavailable, "performance_unavailable", "performance provider unavailable")
 		return
 	}
-	snapshots := s.performance.History(chi.URLParam(r, "id"))
+	snapshots := slices.Clone(s.performance.History(chi.URLParam(r, "id")))
+	sort.SliceStable(snapshots, func(i, j int) bool {
+		return snapshots[i].Timestamp.Before(snapshots[j].Timestamp)
+	})
 	if len(snapshots) > 720 {
 		snapshots = snapshots[len(snapshots)-720:]
 	}

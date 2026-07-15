@@ -410,14 +410,21 @@ func TestInstancePerformanceHistory(t *testing.T) {
 	}
 
 	zero := 0.0
-	provider.history = make([]metrics.Snapshot, 722)
 	start := time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC)
-	for i := range provider.history {
-		provider.history[i] = metrics.Snapshot{Timestamp: start.Add(time.Duration(i) * time.Second), RunID: fmt.Sprintf("run-%d", i), CPUPercent: &zero}
+	provider.history = []metrics.Snapshot{
+		{Timestamp: start.Add(721 * time.Second), RunID: "run-721", CPUPercent: &zero, NetworkRXBytesPerSecond: &zero},
+		{Timestamp: start.Add(500 * time.Second), RunID: "equal-first", CPUPercent: &zero},
+		{Timestamp: start, RunID: "run-0", CPUPercent: &zero},
 	}
-	provider.history[721].MemoryPercent = nil
-	provider.history[721].NetworkRXBytesPerSecond = &zero
-	provider.history[721].Issues = []metrics.Issue{{Source: "secret", Message: "must not leak"}}
+	for i := 1; i <= 720; i++ {
+		provider.history = append(provider.history, metrics.Snapshot{Timestamp: start.Add(time.Duration(i) * time.Second), RunID: fmt.Sprintf("run-%d", i), CPUPercent: &zero})
+	}
+	provider.history[0].MemoryPercent = nil
+	provider.history[0].Issues = []metrics.Issue{{Source: "secret", Message: "must not leak"}}
+	providerBefore, err := json.Marshal(provider.history)
+	if err != nil {
+		t.Fatal(err)
+	}
 	response := authenticatedJSON(t, s, cookie, http.MethodGet, "/api/instances/history/performance-history", "")
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
@@ -426,7 +433,7 @@ func TestInstancePerformanceHistory(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &points); err != nil {
 		t.Fatal(err)
 	}
-	if len(points) != 720 || points[0]["at"] != start.Add(2*time.Second).Format(time.RFC3339) || points[0]["run_id"] != "run-2" || points[719]["at"] != start.Add(721*time.Second).Format(time.RFC3339) || points[719]["run_id"] != "run-721" || points[719]["cpu_percent"] != float64(0) || points[719]["network_rx_bytes_per_sec"] != float64(0) || points[719]["memory_percent"] != nil {
+	if len(points) != 720 || points[0]["at"] != start.Add(3*time.Second).Format(time.RFC3339) || points[0]["run_id"] != "run-3" || points[497]["run_id"] != "equal-first" || points[498]["run_id"] != "run-500" || points[719]["at"] != start.Add(721*time.Second).Format(time.RFC3339) || points[719]["run_id"] != "run-721" || points[719]["cpu_percent"] != float64(0) || points[719]["network_rx_bytes_per_sec"] != float64(0) || points[719]["memory_percent"] != nil {
 		t.Fatalf("history len=%d first=%v last=%v", len(points), points[0], points[len(points)-1])
 	}
 	for _, forbidden := range []string{"network_rx_bytes", "network_tx_bytes", "block_read_bytes", "block_write_bytes", "issues", "error", "errors", "map", "players", "container_running", "address", "packet"} {
@@ -434,8 +441,12 @@ func TestInstancePerformanceHistory(t *testing.T) {
 			t.Fatalf("history leaked %s: %s", forbidden, response.Body.String())
 		}
 	}
-	if provider.history[721].Issues[0].Message != "must not leak" || provider.history[721].CPUPercent == nil || *provider.history[721].CPUPercent != 0 {
-		t.Fatal("provider history mutated")
+	providerAfter, err := json.Marshal(provider.history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(providerAfter, providerBefore) {
+		t.Fatal("provider history order or content mutated")
 	}
 }
 
