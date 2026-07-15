@@ -108,6 +108,25 @@ func (e *Engine) Runtime(ctx context.Context, containerID string) (RuntimeState,
 	return RuntimeState{Running: result.State.Running, StartedAt: result.State.StartedAt}, nil
 }
 
+func (e *Engine) ImageSize(ctx context.Context, containerID string) (uint64, error) {
+	var container struct {
+		Image string `json:"Image"`
+	}
+	if err := e.do(ctx, http.MethodGet, "/containers/"+url.PathEscape(containerID)+"/json", nil, nil, &container); err != nil {
+		return 0, err
+	}
+	if container.Image == "" {
+		return 0, errors.New("container image is empty")
+	}
+	var image struct {
+		Size uint64 `json:"Size"`
+	}
+	if err := e.do(ctx, http.MethodGet, "/images/"+url.PathEscape(container.Image)+"/json", nil, nil, &image); err != nil {
+		return 0, err
+	}
+	return image.Size, nil
+}
+
 type statsResponse struct {
 	CPUStats struct {
 		CPUUsage struct {

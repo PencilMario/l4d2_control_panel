@@ -206,7 +206,7 @@ describe("App", () => {
       const value = path === "/api/session" ? { authenticated: true }
         : path === "/api/instances" ? [apiInstance]
         : path === "/api/instances/1/performance-history" ? null
-        : path === "/api/instances/1/overview" ? { ...runningZeroOverview, sampled_at: overviewIndex++ === 0 ? "2026-07-15T12:00:05Z" : "2026-07-15T12:00:10Z", run_id: "run-1", container_running_known: true, memory_limit_bytes: 1024, memory_percent: 0, network_rx_bytes_per_sec: 0, network_tx_bytes_per_sec: 0, network_rx_bytes: 0, network_tx_bytes: 0, block_read_bytes_per_sec: 0, block_write_bytes_per_sec: 0, block_read_bytes: 0, block_write_bytes: 0, pids: 0, uptime_seconds: 0, a2s_latency_ms: 0 }
+        : path === "/api/instances/1/overview" ? { ...runningZeroOverview, sampled_at: overviewIndex++ === 0 ? "2026-07-15T12:00:05Z" : "2026-07-15T12:00:10Z", run_id: "run-1", container_running_known: true, image_size_bytes: 5 * 1024 ** 3, memory_limit_bytes: 1024, memory_percent: 0, network_rx_bytes_per_sec: 0, network_tx_bytes_per_sec: 0, network_rx_bytes: 0, network_tx_bytes: 0, block_read_bytes_per_sec: 0, block_write_bytes_per_sec: 0, block_read_bytes: 0, block_write_bytes: 0, pids: 0, uptime_seconds: 0, a2s_latency_ms: 0 }
         : path === "/api/packages" ? [] : { ok: true };
       if (path === "/api/instances/1/performance-history") return initialHistory.promise;
       return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -217,6 +217,7 @@ describe("App", () => {
     const refresh = intervalSpy.mock.calls.find(([, timeout]) => timeout === 5_000)![0] as () => void;
     initialHistory.resolve(new Response(JSON.stringify([{ at: "2026-07-15T12:00:00Z", run_id: "run-1", cpu_percent: 1, memory_percent: 2, network_rx_bytes_per_sec: null, network_tx_bytes_per_sec: null, block_read_bytes_per_sec: null, block_write_bytes_per_sec: null }]), { status: 200, headers: { "Content-Type": "application/json" } }));
     expect(await screen.findByTestId("performance-chart")).toHaveAttribute("data-point-count", "2");
+    expect(screen.getByText("5 GiB")).toBeInTheDocument();
     await act(async () => refresh());
     await waitFor(() => expect(screen.getByTestId("performance-chart")).toHaveAttribute("data-point-count", "3"));
     expect(calls.filter((path) => path.endsWith("/performance-history"))).toHaveLength(1);

@@ -68,6 +68,7 @@ export type Instance = ConfigurableInstance & {
   pids?: number | null;
   uptime_seconds?: number | null;
   a2s_latency_ms?: number | null;
+  image_size_bytes?: number | null;
 };
 export type InstanceOverview = {
   actual_state: string;
@@ -93,6 +94,7 @@ export type InstanceOverview = {
   pids: number | null;
   uptime_seconds: number | null;
   a2s_latency_ms: number | null;
+  image_size_bytes?: number | null;
   issues?: string[];
 };
 type Props = {
@@ -345,6 +347,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
             pids: overview.pids ?? null,
             uptime_seconds: overview.uptime_seconds ?? null,
             a2s_latency_ms: overview.a2s_latency_ms ?? null,
+            image_size_bytes: overview.image_size_bytes ?? null,
             memory:
               overview.memory_bytes === null
                 ? null
@@ -915,7 +918,7 @@ function Overview({
                 </div>
                 <PerformancePanel
                   snapshot={{
-                    players: x.players,
+                    image_size_bytes: x.image_size_bytes ?? null,
                     cpu_percent: x.cpu,
                     memory_bytes: x.memory_bytes ?? (x.memory === null ? null : x.memory * (1 << 30)),
                     memory_limit_bytes: x.memory_limit_bytes ?? null,

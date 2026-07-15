@@ -425,6 +425,7 @@ type instanceOverview struct {
 	ActualState           domain.InstanceState `json:"actual_state"`
 	ContainerRunning      bool                 `json:"container_running"`
 	ContainerRunningKnown bool                 `json:"container_running_known"`
+	ImageSizeBytes        *uint64              `json:"image_size_bytes"`
 	SampledAt             *time.Time           `json:"sampled_at"`
 	RunID                 *string              `json:"run_id"`
 	Map                   string               `json:"map,omitempty"`
@@ -486,7 +487,7 @@ func (s *Server) instanceOverview(w http.ResponseWriter, r *http.Request) {
 
 func overviewFromSnapshot(actualState domain.InstanceState, snapshot metrics.Snapshot) instanceOverview {
 	result := instanceOverview{
-		ActualState: actualState, Players: snapshot.Players, MaxPlayers: snapshot.MaxPlayers,
+		ActualState: actualState, ImageSizeBytes: snapshot.ImageSizeBytes, Players: snapshot.Players, MaxPlayers: snapshot.MaxPlayers,
 		CPUPercent: snapshot.CPUPercent, MemoryBytes: snapshot.MemoryBytes, MemoryLimitBytes: snapshot.MemoryLimitBytes, MemoryPercent: snapshot.MemoryPercent,
 		NetworkRXBytesPerSec: snapshot.NetworkRXBytesPerSecond, NetworkTXBytesPerSec: snapshot.NetworkTXBytesPerSecond, NetworkRXBytes: snapshot.NetworkRXBytes, NetworkTXBytes: snapshot.NetworkTXBytes,
 		BlockReadBytesPerSec: snapshot.BlockReadBytesPerSecond, BlockWriteBytesPerSec: snapshot.BlockWriteBytesPerSecond, BlockReadBytes: snapshot.BlockReadBytes, BlockWriteBytes: snapshot.BlockWriteBytes,

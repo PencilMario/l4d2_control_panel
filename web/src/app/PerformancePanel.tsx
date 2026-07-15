@@ -10,7 +10,7 @@ import {
 } from "recharts";
 
 export type PerformanceSnapshot = {
-  players: number | null;
+  image_size_bytes: number | null;
   cpu_percent: number | null;
   memory_bytes: number | null;
   memory_limit_bytes: number | null;
@@ -43,7 +43,7 @@ type Mode = "CPU" | "内存" | "网络" | "磁盘";
 const MODES: Mode[] = ["CPU", "内存", "网络", "磁盘"];
 export const LINE_CONNECTS_NULLS = false;
 const SNAPSHOT_KEYS: ReadonlyArray<keyof PerformanceSnapshot> = [
-  "players",
+  "image_size_bytes",
   "cpu_percent",
   "memory_bytes",
   "memory_limit_bytes",
@@ -100,8 +100,8 @@ const seriesFor = (mode: Mode) => {
   if (mode === "CPU") return [{ key: "cpu", label: "CPU", color: "#8de35b" }];
   if (mode === "内存") return [{ key: "memory", label: "内存", color: "#e4b84d" }];
   if (mode === "网络") return [
-    { key: "rx", label: "网络 RX", color: "#53b7d8" },
-    { key: "tx", label: "网络 TX", color: "#d78c59" },
+    { key: "rx", label: "下载", color: "#53b7d8" },
+    { key: "tx", label: "上传", color: "#d78c59" },
   ];
   return [
     { key: "read", label: "磁盘读", color: "#8ccf87" },
@@ -219,7 +219,7 @@ export const PerformancePanel = memo(function PerformancePanel({ snapshot, histo
   return (
     <section className="performance-panel">
       <div className="performance-current">
-        <Metric label="玩家" value={snapshot.players === null ? "--" : String(snapshot.players)} />
+        <Metric label="镜像大小" value={formatBytes(snapshot.image_size_bytes)} />
         <Metric label="CPU" value={formatPercent(snapshot.cpu_percent)} />
         <Metric label="内存" value={`${formatBytes(snapshot.memory_bytes)} / ${formatBytes(snapshot.memory_limit_bytes)} (${formatPercent(snapshot.memory_percent)})`} />
         <Metric label="下载" value={formatBytesPerSecond(snapshot.network_rx_bytes_per_sec)} note={`累计 ${formatBytes(snapshot.network_rx_bytes)}`} />

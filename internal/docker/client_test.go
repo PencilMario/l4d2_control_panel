@@ -309,6 +309,59 @@ func TestRuntimeParsesRunningAndStartedAt(t *testing.T) {
 	}
 }
 
+func TestImageSize(t *testing.T) {
+	t.Run("returns inspected image size", func(t *testing.T) {
+		var paths []string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			paths = append(paths, r.URL.EscapedPath())
+			switch r.URL.EscapedPath() {
+			case "/v1.44/containers/container%2Fname/json":
+				_ = json.NewEncoder(w).Encode(map[string]any{"Image": "sha256:image"})
+			case "/v1.44/images/sha256:image/json":
+				_ = json.NewEncoder(w).Encode(map[string]any{"Size": uint64(5368709120)})
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		defer server.Close()
+
+		size, err := NewEngine(server.URL).ImageSize(context.Background(), "container/name")
+		if err != nil || size != 5368709120 {
+			t.Fatalf("size=%d err=%v", size, err)
+		}
+		want := []string{"/v1.44/containers/container%2Fname/json", "/v1.44/images/sha256:image/json"}
+		if strings.Join(paths, "|") != strings.Join(want, "|") {
+			t.Fatalf("paths=%v", paths)
+		}
+	})
+
+	t.Run("rejects empty container image", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"Image": ""})
+		}))
+		defer server.Close()
+
+		if _, err := NewEngine(server.URL).ImageSize(context.Background(), "container"); err == nil {
+			t.Fatal("expected empty image error")
+		}
+	})
+
+	t.Run("returns image inspect failure", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "/containers/") {
+				_ = json.NewEncoder(w).Encode(map[string]any{"Image": "sha256:image"})
+				return
+			}
+			http.Error(w, "inspect failed", http.StatusInternalServerError)
+		}))
+		defer server.Close()
+
+		if _, err := NewEngine(server.URL).ImageSize(context.Background(), "container"); err == nil {
+			t.Fatal("expected image inspect error")
+		}
+	})
+}
+
 func TestPingReadsDockerInfo(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1.44/info" {

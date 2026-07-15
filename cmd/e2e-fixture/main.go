@@ -212,7 +212,8 @@ func (fixturePerformance) Latest(string) (metrics.Snapshot, bool) {
 	playersOnline, maxPlayers := 1, 8
 	return metrics.Snapshot{
 		Timestamp: time.Date(2026, 7, 15, 12, 0, 10, 0, time.UTC), RunID: "fixture-run", ContainerRunning: &running,
-		CPUPercent: fixtureFloat64(12.5), MemoryBytes: fixtureUint64(768 << 20), MemoryLimitBytes: fixtureUint64(2 << 30), MemoryPercent: fixtureFloat64(37.5),
+		ImageSizeBytes: fixtureUint64(3_221_225_472),
+		CPUPercent:     fixtureFloat64(12.5), MemoryBytes: fixtureUint64(768 << 20), MemoryLimitBytes: fixtureUint64(2 << 30), MemoryPercent: fixtureFloat64(37.5),
 		NetworkRXBytesPerSecond: fixtureFloat64(128), NetworkTXBytesPerSecond: fixtureFloat64(64), NetworkRXBytes: fixtureUint64(4096), NetworkTXBytes: fixtureUint64(2048),
 		BlockReadBytesPerSecond: fixtureFloat64(32), BlockWriteBytesPerSecond: fixtureFloat64(16), BlockReadBytes: fixtureUint64(1024), BlockWriteBytes: fixtureUint64(512),
 		PIDs: fixtureUint64(24), UptimeSeconds: fixtureUint64(3600), A2SLatencyMS: fixtureFloat64(2.5), Map: &gameMap, Players: &playersOnline, MaxPlayers: &maxPlayers,

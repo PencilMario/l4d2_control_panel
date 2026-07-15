@@ -503,12 +503,13 @@ func TestInstanceOverviewUsesSamplerObservations(t *testing.T) {
 		running := true
 		zeroFloat := 0.0
 		zeroUint := uint64(0)
+		imageSize := uint64(3_221_225_472)
 		playersOnline := 0
 		maxPlayers := 8
 		gameMap := "c5m1_waterfront"
 		sampledAt := time.Date(2026, 7, 15, 12, 30, 45, 123456789, time.FixedZone("fixture", 8*60*60))
 		performance := &overviewPerformance{found: true, latest: metrics.Snapshot{
-			Timestamp: sampledAt, RunID: "run-7", ContainerRunning: &running,
+			Timestamp: sampledAt, RunID: "run-7", ContainerRunning: &running, ImageSizeBytes: &imageSize,
 			CPUPercent: &zeroFloat, MemoryBytes: &zeroUint, MemoryLimitBytes: uint64TestPointer(2 << 30), MemoryPercent: float64TestPointer(0),
 			NetworkRXBytesPerSecond: float64TestPointer(12.5), NetworkTXBytesPerSecond: &zeroFloat, NetworkRXBytes: uint64TestPointer(100), NetworkTXBytes: &zeroUint,
 			BlockReadBytesPerSecond: &zeroFloat, BlockWriteBytesPerSecond: float64TestPointer(1.5), BlockReadBytes: &zeroUint, BlockWriteBytes: uint64TestPointer(200),
@@ -525,7 +526,7 @@ func TestInstanceOverviewUsesSamplerObservations(t *testing.T) {
 		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 			t.Fatal(err)
 		}
-		if body["actual_state"] != string(domain.StateRunning) || body["container_running"] != true || body["container_running_known"] != true || body["sampled_at"] != sampledAt.UTC().Format(time.RFC3339Nano) || body["run_id"] != "run-7" || body["map"] != "c5m1_waterfront" || body["players"] != float64(0) || body["max_players"] != float64(8) || body["cpu_percent"] != float64(0) || body["memory_bytes"] != float64(0) || body["memory_limit_bytes"] != float64(2<<30) || body["memory_percent"] != float64(0) || body["network_rx_bytes_per_sec"] != 12.5 || body["network_tx_bytes_per_sec"] != float64(0) || body["network_rx_bytes"] != float64(100) || body["network_tx_bytes"] != float64(0) || body["block_read_bytes_per_sec"] != float64(0) || body["block_write_bytes_per_sec"] != 1.5 || body["block_read_bytes"] != float64(0) || body["block_write_bytes"] != float64(200) || body["pids"] != float64(0) || body["uptime_seconds"] != float64(90) || body["a2s_latency_ms"] != float64(0) {
+		if body["actual_state"] != string(domain.StateRunning) || body["container_running"] != true || body["container_running_known"] != true || body["sampled_at"] != sampledAt.UTC().Format(time.RFC3339Nano) || body["run_id"] != "run-7" || body["image_size_bytes"] != float64(imageSize) || body["map"] != "c5m1_waterfront" || body["players"] != float64(0) || body["max_players"] != float64(8) || body["cpu_percent"] != float64(0) || body["memory_bytes"] != float64(0) || body["memory_limit_bytes"] != float64(2<<30) || body["memory_percent"] != float64(0) || body["network_rx_bytes_per_sec"] != 12.5 || body["network_tx_bytes_per_sec"] != float64(0) || body["network_rx_bytes"] != float64(100) || body["network_tx_bytes"] != float64(0) || body["block_read_bytes_per_sec"] != float64(0) || body["block_write_bytes_per_sec"] != 1.5 || body["block_read_bytes"] != float64(0) || body["block_write_bytes"] != float64(200) || body["pids"] != float64(0) || body["uptime_seconds"] != float64(90) || body["a2s_latency_ms"] != float64(0) {
 			t.Fatalf("overview=%s", response.Body.String())
 		}
 		if _, ok := body["network_rx_bytes_per_second"]; ok {
@@ -724,6 +725,7 @@ func TestInstancePerformanceHistory(t *testing.T) {
 		provider.history = append(provider.history, metrics.Snapshot{Timestamp: start.Add(time.Duration(i) * time.Second), RunID: fmt.Sprintf("run-%d", i), CPUPercent: &zero})
 	}
 	provider.history[0].MemoryPercent = nil
+	provider.history[0].ImageSizeBytes = uint64TestPointer(3_221_225_472)
 	provider.history[0].Issues = []metrics.Issue{{Source: "secret", Message: "must not leak"}}
 	providerBefore, err := json.Marshal(provider.history)
 	if err != nil {
@@ -740,7 +742,7 @@ func TestInstancePerformanceHistory(t *testing.T) {
 	if len(points) != 720 || points[0]["at"] != start.Add(3*time.Second).Format(time.RFC3339) || points[0]["run_id"] != "run-3" || points[497]["run_id"] != "equal-first" || points[498]["run_id"] != "run-500" || points[719]["at"] != start.Add(721*time.Second).Format(time.RFC3339) || points[719]["run_id"] != "run-721" || points[719]["cpu_percent"] != float64(0) || points[719]["network_rx_bytes_per_sec"] != float64(0) || points[719]["memory_percent"] != nil {
 		t.Fatalf("history len=%d first=%v last=%v", len(points), points[0], points[len(points)-1])
 	}
-	for _, forbidden := range []string{"network_rx_bytes", "network_tx_bytes", "block_read_bytes", "block_write_bytes", "issues", "error", "errors", "map", "players", "container_running", "address", "packet"} {
+	for _, forbidden := range []string{"image_size_bytes", "network_rx_bytes", "network_tx_bytes", "block_read_bytes", "block_write_bytes", "issues", "error", "errors", "map", "players", "container_running", "address", "packet"} {
 		if _, ok := points[719][forbidden]; ok {
 			t.Fatalf("history leaked %s: %s", forbidden, response.Body.String())
 		}
