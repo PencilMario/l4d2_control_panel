@@ -213,7 +213,7 @@ func TestPackageRollbackRestoresDeletedAppliedEmptyDirectory(t *testing.T) {
 	}
 }
 
-func TestPipelineJournalNormalizesNestedDirectoryBackup(t *testing.T) {
+func TestPipelineJournalAvoidsUnrelatedNestedDirectoryBackup(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
 	base := filepath.Join(root, "instances", "abc")
@@ -239,21 +239,12 @@ func TestPipelineJournalNormalizesNestedDirectoryBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(value.Affected) != 1 || value.Affected[0].Path != "cfg" {
+	if len(value.Affected) != 1 || value.Affected[0].Path != "cfg/package.cfg" || value.Affected[0].Existed {
 		t.Fatalf("affected=%v", value.Affected)
 	}
 	backupRoot := filepath.Join(filepath.Dir(journals[0]), "replaced")
-	files := 0
-	if err := filepath.WalkDir(backupRoot, func(_ string, e os.DirEntry, err error) error {
-		if err == nil && !e.IsDir() {
-			files++
-		}
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if files != 12 {
-		t.Fatalf("backup files=%d", files)
+	if _, err := os.Lstat(backupRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unrelated directory was backed up: %v", err)
 	}
 	if err := deployment.Rollback(); err != nil {
 		t.Fatal(err)
@@ -615,6 +606,84 @@ func TestPipelineFailureRollbackRestoresControlledSharedVPKLink(t *testing.T) {
 	}
 	if got, err := os.Readlink(target); err != nil || filepath.ToSlash(got) != linkTarget {
 		t.Fatalf("link=%q err=%v", got, err)
+	}
+}
+
+func TestPipelineUpdateWithPrivateDirectoryAndControlledSiblingLink(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	m := content.NewPrivateManager(root, 1<<20)
+	if _, err := m.Save(ctx, "abc", "addons/sub/file.cfg", []byte("private")); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ApplyChanges(ctx, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "instances", "abc", "game", "left4dead2", "addons", "a.vpk")
+	if err := os.Symlink("/opt/l4d2/shared-vpk/a.vpk", link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := New(root).Apply(ctx, "abc", zipFile(t, map[string]string{"cfg/package.cfg": "new"}), "v1", Hot); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(filepath.Dir(link), "sub", "file.cfg")); err != nil || string(raw) != "private" {
+		t.Fatalf("private=%q err=%v", raw, err)
+	}
+	if got, err := os.Readlink(link); err != nil || filepath.ToSlash(got) != "/opt/l4d2/shared-vpk/a.vpk" {
+		t.Fatalf("link=%q err=%v", got, err)
+	}
+}
+
+func TestPipelineRollbackWithPrivateDirectoryRestoresControlledSiblingLink(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	m := content.NewPrivateManager(root, 1<<20)
+	if _, err := m.Save(ctx, "abc", "addons/sub/file.cfg", []byte("private")); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ApplyChanges(ctx, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "instances", "abc", "game", "left4dead2", "addons", "a.vpk")
+	if err := os.Symlink("/opt/l4d2/shared-vpk/a.vpk", link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	p := New(root)
+	p.AfterDeploy = func() error { return errors.New("injected") }
+	if err := p.Apply(ctx, "abc", zipFile(t, map[string]string{"cfg/package.cfg": "new"}), "v1", Hot); err == nil {
+		t.Fatal("expected failure")
+	}
+	if raw, err := os.ReadFile(filepath.Join(filepath.Dir(link), "sub", "file.cfg")); err != nil || string(raw) != "private" {
+		t.Fatalf("private=%q err=%v", raw, err)
+	}
+	if got, err := os.Readlink(link); err != nil || filepath.ToSlash(got) != "/opt/l4d2/shared-vpk/a.vpk" {
+		t.Fatalf("link=%q err=%v", got, err)
+	}
+}
+
+func TestPipelinePrivateDirectoryStillRejectsArbitrarySiblingLink(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	m := content.NewPrivateManager(root, 1<<20)
+	if _, err := m.Save(ctx, "abc", "addons/sub/file.cfg", []byte("private")); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ApplyChanges(ctx, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(root, "outside")
+	if err := os.WriteFile(outside, []byte("safe"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "instances", "abc", "game", "left4dead2", "addons", "bad.vpk")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := New(root).Apply(ctx, "abc", zipFile(t, map[string]string{"cfg/package.cfg": "new"}), "v1", Hot); err == nil {
+		t.Fatal("arbitrary symlink accepted")
+	}
+	if raw, err := os.ReadFile(outside); err != nil || string(raw) != "safe" {
+		t.Fatalf("outside=%q err=%v", raw, err)
 	}
 }
 

@@ -123,12 +123,15 @@ func (p *Pipeline) Begin(ctx context.Context, instanceID, archivePath, version s
 	}
 	old := readManifest(manifestPath)
 	affected := map[string]bool{}
+	affectedKinds := map[string]string{}
 	for path := range newManifest.Files {
 		affected[path] = true
+		affectedKinds[path] = "file"
 	}
 	if mode == Full {
 		for path := range old.Files {
 			affected[path] = true
+			affectedKinds[path] = "file"
 		}
 	}
 	privateManager := content.NewPrivateManager(p.root, 1<<20)
@@ -148,14 +151,30 @@ func (p *Pipeline) Begin(ctx context.Context, instanceID, archivePath, version s
 	}
 	for _, target := range privateTargets {
 		affected[target.Path] = true
+		affectedKinds[target.Path] = target.Kind
+		if target.Kind == "directory" {
+			if err := collectAffectedGameTree(game, target.Path, affected, affectedKinds); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if err := collectFiles(filepath.Join(base, "private"), affected); err != nil {
 		return nil, err
 	}
 	for path := range affected {
+		if _, ok := affectedKinds[path]; !ok {
+			affectedKinds[path] = "file"
+		}
+	}
+	for path := range affected {
 		parts := strings.Split(path, "/")
 		for i := 1; i < len(parts); i++ {
-			if affected[strings.Join(parts[:i], "/")] {
+			ancestor := strings.Join(parts[:i], "/")
+			if affected[ancestor] {
+				if affectedKinds[ancestor] == "directory" {
+					delete(affected, ancestor)
+					continue
+				}
 				delete(affected, path)
 				break
 			}
@@ -674,6 +693,35 @@ func collectFiles(root string, affected map[string]bool) error {
 			return err
 		}
 		affected[filepath.ToSlash(relative)] = true
+		return nil
+	})
+}
+
+func collectAffectedGameTree(game, relativeRoot string, affected map[string]bool, kinds map[string]string) error {
+	root, err := safepath.Join(game, relativeRoot)
+	if err != nil {
+		return err
+	}
+	if _, err = os.Lstat(root); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			relative, err := filepath.Rel(game, path)
+			if err != nil {
+				return err
+			}
+			name := filepath.ToSlash(relative)
+			affected[name] = true
+			kinds[name] = "symlink"
+		} else if !entry.IsDir() && !entry.Type().IsRegular() {
+			return errors.New("unsupported game target type")
+		}
 		return nil
 	})
 }
