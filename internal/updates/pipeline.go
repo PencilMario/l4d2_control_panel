@@ -305,6 +305,9 @@ func (d *deployment) Commit() error {
 
 func (d *deployment) Rollback() error {
 	d.journal.Stage = "rolling_back"
+	if err := validateUpdateJournalPathAndValue(d.pipeline.root, d.journalPath, d.journal); err != nil {
+		return err
+	}
 	stageErr := writeJournal(d.journalPath, d.journal)
 	rollbackErr := d.pipeline.rollbackJournal(d.journalPath, d.journal)
 	if rollbackErr != nil {
@@ -340,6 +343,10 @@ func (p *Pipeline) Recover(ctx context.Context) error {
 			result = errors.Join(result, fmt.Errorf("read update journal %s: %w", journalPath, err))
 			continue
 		}
+		if err := validateUpdateJournalPathAndValue(p.root, journalPath, value); err != nil {
+			result = errors.Join(result, fmt.Errorf("validate update journal %s: %w", journalPath, err))
+			continue
+		}
 		if value.Stage == "committed" {
 			result = errors.Join(result, os.RemoveAll(filepath.Dir(journalPath)))
 			continue
@@ -353,6 +360,9 @@ func (p *Pipeline) Recover(ctx context.Context) error {
 }
 
 func (p *Pipeline) rollbackJournal(journalPath string, value updateJournal) error {
+	if err := validateUpdateJournalPathAndValue(p.root, journalPath, value); err != nil {
+		return err
+	}
 	work := filepath.Dir(journalPath)
 	expectedInstanceID := filepath.Base(filepath.Dir(filepath.Dir(work)))
 	if value.Version != 1 || value.InstanceID == "" || value.InstanceID != expectedInstanceID || filepath.Base(value.InstanceID) != value.InstanceID {
@@ -432,6 +442,139 @@ func (p *Pipeline) rollbackJournal(journalPath string, value updateJournal) erro
 		}
 	}
 	return result
+}
+
+func validateUpdateJournalPathAndValue(root, journalPath string, value updateJournal) error {
+	if value.Version != 1 {
+		return errors.New("invalid update journal version")
+	}
+	if value.InstanceID == "" || filepath.Base(value.InstanceID) != value.InstanceID || value.InstanceID == "." || value.InstanceID == ".." {
+		return errors.New("invalid update journal instance")
+	}
+	if value.Mode != Hot && value.Mode != Full {
+		return errors.New("invalid update journal mode")
+	}
+	allowedStages := map[string]bool{"prepared": true, "applying": true, "deployed": true, "committed": true, "rolling_back": true}
+	if !allowedStages[value.Stage] {
+		return errors.New("invalid update journal stage")
+	}
+	if value.BackupRoot != "replaced" {
+		return errors.New("invalid update journal backup root")
+	}
+	work := filepath.Dir(journalPath)
+	backups := filepath.Dir(work)
+	base := filepath.Dir(backups)
+	expectedBase := filepath.Join(root, "instances", value.InstanceID)
+	if filepath.Clean(base) != filepath.Clean(expectedBase) || filepath.Base(backups) != "backups" {
+		return errors.New("update journal outside instance backups")
+	}
+	workName := filepath.Base(work)
+	if !strings.HasPrefix(workName, "update-") {
+		return errors.New("invalid update journal work name")
+	}
+	if _, err := uuid.Parse(strings.TrimPrefix(workName, "update-")); err != nil {
+		return errors.New("invalid update journal work id")
+	}
+	if filepath.Clean(journalPath) != filepath.Join(work, "journal.json") {
+		return errors.New("invalid update journal path")
+	}
+	if err := validateUpdatePathNoSymlink(backups, work, true); err != nil {
+		return err
+	}
+	if err := validateUpdatePathNoSymlink(backups, journalPath, false); err != nil {
+		return err
+	}
+	for _, name := range []string{"replaced", "manifest.before", "private-manifest.before", "private-lower.before"} {
+		path := filepath.Join(work, name)
+		if _, err := os.Lstat(path); err == nil {
+			if err = validateUpdatePathNoSymlink(work, path, name == "replaced" || name == "private-lower.before"); err != nil {
+				return err
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	for _, backup := range []struct {
+		path          string
+		required, dir bool
+	}{{filepath.Join(work, "manifest.before"), value.ManifestExisted, false}, {filepath.Join(work, "private-manifest.before"), value.PrivateManifestExisted, false}, {filepath.Join(work, "private-lower.before"), value.PrivateLowerExisted, true}} {
+		_, statErr := os.Lstat(backup.path)
+		if backup.required && errors.Is(statErr, os.ErrNotExist) {
+			return errors.New("required update metadata backup is missing")
+		}
+		if !backup.required && statErr == nil {
+			return errors.New("unexpected update metadata backup")
+		}
+		if statErr == nil {
+			if err := validateUpdatePathNoSymlink(work, backup.path, backup.dir); err != nil {
+				return err
+			}
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
+		}
+	}
+	seen := map[string]journalEntry{}
+	for _, entry := range value.Affected {
+		if entry.Path == "" || strings.Contains(entry.Path, "\\") || filepath.IsAbs(entry.Path) || filepath.ToSlash(filepath.Clean(filepath.FromSlash(entry.Path))) != entry.Path || entry.Path == "." || strings.HasPrefix(entry.Path, "../") {
+			return errors.New("invalid update journal affected path")
+		}
+		if _, ok := seen[entry.Path]; ok {
+			return errors.New("duplicate update journal affected path")
+		}
+		if entry.Existed {
+			if entry.Kind != "file" && entry.Kind != "directory" {
+				return errors.New("invalid update journal affected kind")
+			}
+		} else if entry.Kind != "" {
+			return errors.New("unexpected kind for absent update target")
+		}
+		seen[entry.Path] = entry
+	}
+	for path, entry := range seen {
+		parts := strings.Split(path, "/")
+		for i := 1; i < len(parts); i++ {
+			ancestor := strings.Join(parts[:i], "/")
+			if parent, ok := seen[ancestor]; ok && parent.Existed && parent.Kind == "file" {
+				return errors.New("file update target has affected descendant")
+			}
+		}
+		_ = entry
+	}
+	snapshotSeen := map[string]bool{}
+	for _, id := range value.PrivateSnapshots {
+		if !content.ValidPrivateSnapshotID(id) {
+			return errors.New("invalid private snapshot id")
+		}
+		if snapshotSeen[id] {
+			return errors.New("duplicate private snapshot id")
+		}
+		snapshotSeen[id] = true
+		snapshotPath := filepath.Join(base, "backups", "private", "snapshots", id)
+		if err := validateUpdatePathNoSymlink(filepath.Join(base, "backups"), snapshotPath, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateUpdatePathNoSymlink(root, path string, wantDirectory bool) error {
+	if err := rejectSymlinkPath(root, path); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("symbolic links are forbidden")
+	}
+	if wantDirectory && !info.IsDir() {
+		return errors.New("expected update journal directory")
+	}
+	if !wantDirectory && !info.Mode().IsRegular() {
+		return errors.New("expected update journal file")
+	}
+	return nil
 }
 
 func directoryNames(root string) ([]string, error) {

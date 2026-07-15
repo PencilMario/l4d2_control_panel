@@ -396,6 +396,76 @@ func TestPipelineRecoverRollsBackInterruptedPrivateApply(t *testing.T) {
 		t.Fatalf("game=%q err=%v", raw, err)
 	}
 }
+
+func TestRecoverRejectsCorruptUpdateJournalsWithoutSideEffects(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*updateJournal)
+	}{{"stage", func(j *updateJournal) { j.Stage = "evil" }}, {"mode", func(j *updateJournal) { j.Mode = "evil" }}, {"kind", func(j *updateJournal) { j.Affected = []journalEntry{{Path: "cfg/a.cfg", Existed: true, Kind: "link"}} }}, {"path", func(j *updateJournal) { j.Affected = []journalEntry{{Path: "../outside", Existed: false}} }}, {"snapshot", func(j *updateJournal) { j.PrivateSnapshots = []string{"../../outside"} }}}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			base := filepath.Join(root, "instances", "abc")
+			work := filepath.Join(base, "backups", "update-55555555-5555-5555-5555-555555555555")
+			sentinel := filepath.Join(root, "outside")
+			if err := os.MkdirAll(work, 0750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(sentinel, []byte("safe"), 0640); err != nil {
+				t.Fatal(err)
+			}
+			value := updateJournal{Version: 1, InstanceID: "abc", Mode: Hot, Stage: "committed", BackupRoot: "replaced"}
+			tc.mutate(&value)
+			if err := writeJournal(filepath.Join(work, "journal.json"), value); err != nil {
+				t.Fatal(err)
+			}
+			before, _ := os.ReadFile(filepath.Join(work, "journal.json"))
+			if err := New(root).Recover(context.Background()); err == nil {
+				t.Fatal("corrupt journal accepted")
+			}
+			after, err := os.ReadFile(filepath.Join(work, "journal.json"))
+			if err != nil || string(after) != string(before) {
+				t.Fatalf("journal changed: %q err=%v", after, err)
+			}
+			if raw, err := os.ReadFile(sentinel); err != nil || string(raw) != "safe" {
+				t.Fatalf("outside=%q err=%v", raw, err)
+			}
+		})
+	}
+}
+
+func TestRecoverRejectsSymlinkedUpdateJournal(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "instances", "abc", "backups", "update-66666666-6666-6666-6666-666666666666")
+	if err := os.MkdirAll(work, 0750); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(root, "outside.json")
+	value := updateJournal{Version: 1, InstanceID: "abc", Mode: Hot, Stage: "committed", BackupRoot: "replaced"}
+	if err := writeJournal(outside, value); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(work, "journal.json")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	before, _ := os.ReadFile(outside)
+	if err := New(root).Recover(context.Background()); err == nil {
+		t.Fatal("symlink journal accepted")
+	}
+	after, err := os.ReadFile(outside)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("outside changed: %q err=%v", after, err)
+	}
+}
+
+func TestValidateUpdateJournalRejectsTraversalWorkPath(t *testing.T) {
+	root := t.TempDir()
+	value := updateJournal{Version: 1, InstanceID: "abc", Mode: Hot, Stage: "committed", BackupRoot: "replaced"}
+	journal := filepath.Join(root, "outside", "update-77777777-7777-7777-7777-777777777777", "journal.json")
+	if err := validateUpdateJournalPathAndValue(root, journal, value); err == nil {
+		t.Fatal("outside work accepted")
+	}
+}
 func zipFile(t *testing.T, files map[string]string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "package.zip")
