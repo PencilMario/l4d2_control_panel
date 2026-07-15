@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/not0721here/l4d2-control-panel/internal/content"
@@ -10,10 +11,24 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/updates"
 )
 
+type missingSourceRepo struct{}
+
+func (missingSourceRepo) GitHubSource(context.Context, string) (domain.GitHubSource, error) {
+	return domain.GitHubSource{}, errors.New("not found")
+}
+
 type fakeReleaseFetcher struct{ result releases.FetchResult }
 
 func (f fakeReleaseFetcher) FetchLatest(context.Context, string, string, string, *content.PackageManager) (releases.FetchResult, error) {
 	return f.result, nil
+}
+
+func TestScheduledReleaseReportsDeletedSource(t *testing.T) {
+	d := Dispatcher{Sources: missingSourceRepo{}, Packages: &content.PackageManager{}, PackagesUpdate: &fakePackageUpdater{}}
+	err := d.run(context.Background(), domain.ScheduledTask{Type: "release_hot", Payload: `{"source_id":"deleted"}`})
+	if err == nil || err.Error() != "GitHub source not found" {
+		t.Fatalf("err=%v", err)
+	}
 }
 
 type fakePackageUpdater struct {

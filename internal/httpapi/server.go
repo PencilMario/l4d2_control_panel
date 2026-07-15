@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -156,6 +158,11 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Delete("/api/instances/{id}/private/file/*", s.deletePrivate)
 		r.Post("/api/instances/{id}/private/apply", s.applyPrivate)
 		r.Get("/api/packages", s.listPackages)
+		r.Get("/api/github-sources", s.listGitHubSources)
+		r.Post("/api/github-sources", s.createGitHubSource)
+		r.Put("/api/github-sources/{id}", s.updateGitHubSource)
+		r.Delete("/api/github-sources/{id}", s.deleteGitHubSource)
+		r.Post("/api/github-sources/{id}/check", s.checkGitHubSource)
 		r.Post("/api/packages/uploads", s.uploadPackage)
 		r.Post("/api/packages/github", s.fetchRelease)
 		r.Post("/api/instances/{id}/updates", s.updatePackage)
@@ -683,6 +690,94 @@ func (s *Server) fetchRelease(w http.ResponseWriter, r *http.Request) {
 			token, _, _ = s.secrets.Get(ctx, "github_token")
 		}
 		_, err := s.releases.FetchLatest(ctx, input.Repository, input.AssetPattern, token, s.packages)
+		return err
+	})
+	if !ok {
+		return
+	}
+	writeJSON(w, 202, job)
+}
+
+func (s *Server) listGitHubSources(w http.ResponseWriter, r *http.Request) {
+	items, err := s.store.GitHubSources(r.Context())
+	if err != nil {
+		writeError(w, 500, "source_error", err.Error())
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func decodeGitHubSource(w http.ResponseWriter, r *http.Request) (domain.GitHubSource, bool) {
+	var input domain.GitHubSource
+	if decodeJSON(w, r, &input) != nil {
+		return input, false
+	}
+	input.Name = strings.TrimSpace(input.Name)
+	input.Repository = strings.TrimSpace(input.Repository)
+	input.AssetPattern = strings.TrimSpace(input.AssetPattern)
+	if input.Name == "" || !regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`).MatchString(input.Repository) {
+		writeError(w, 422, "source_invalid", "name and valid owner/repository are required")
+		return input, false
+	}
+	if _, err := regexp.Compile(input.AssetPattern); err != nil || input.AssetPattern == "" {
+		writeError(w, 422, "source_invalid", "valid asset pattern is required")
+		return input, false
+	}
+	return input, true
+}
+func (s *Server) createGitHubSource(w http.ResponseWriter, r *http.Request) {
+	input, ok := decodeGitHubSource(w, r)
+	if !ok {
+		return
+	}
+	input.ID = uuid.NewString()
+	if err := s.store.SaveGitHubSource(r.Context(), input); err != nil {
+		writeError(w, 500, "source_error", err.Error())
+		return
+	}
+	created, _ := s.store.GitHubSource(r.Context(), input.ID)
+	writeJSON(w, 201, created)
+}
+func (s *Server) updateGitHubSource(w http.ResponseWriter, r *http.Request) {
+	input, ok := decodeGitHubSource(w, r)
+	if !ok {
+		return
+	}
+	input.ID = chi.URLParam(r, "id")
+	if _, err := s.store.GitHubSource(r.Context(), input.ID); err != nil {
+		writeError(w, 404, "source_not_found", "GitHub source not found")
+		return
+	}
+	if err := s.store.SaveGitHubSource(r.Context(), input); err != nil {
+		writeError(w, 500, "source_error", err.Error())
+		return
+	}
+	updated, _ := s.store.GitHubSource(r.Context(), input.ID)
+	writeJSON(w, 200, updated)
+}
+func (s *Server) deleteGitHubSource(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.DeleteGitHubSource(r.Context(), chi.URLParam(r, "id")); err != nil {
+		writeError(w, 404, "source_not_found", "GitHub source not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+func (s *Server) checkGitHubSource(w http.ResponseWriter, r *http.Request) {
+	if s.packages == nil || s.jobs == nil {
+		writeError(w, 503, "packages_unavailable", "package manager unavailable")
+		return
+	}
+	source, err := s.store.GitHubSource(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, 404, "source_not_found", "GitHub source not found")
+		return
+	}
+	job, ok := s.startJob(w, r, "global", "release_fetch", func(ctx context.Context, reporter jobs.Reporter) error {
+		reporter.Progress("release", 10, "checking GitHub Release")
+		token := ""
+		if s.secrets != nil {
+			token, _, _ = s.secrets.Get(ctx, "github_token")
+		}
+		_, err := s.releases.FetchLatest(ctx, source.Repository, source.AssetPattern, token, s.packages)
 		return err
 	})
 	if !ok {

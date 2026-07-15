@@ -26,6 +26,9 @@ type Dispatcher struct {
 	ReleaseFetcher interface {
 		FetchLatest(context.Context, string, string, string, *content.PackageManager) (releases.FetchResult, error)
 	}
+	Sources interface {
+		GitHubSource(context.Context, string) (domain.GitHubSource, error)
+	}
 	Maintenance *maintenance.Manager
 	Secrets     interface {
 		Get(context.Context, string) (string, bool, error)
@@ -48,11 +51,22 @@ func (d Dispatcher) run(ctx context.Context, task domain.ScheduledTask) error {
 		Repository    string `json:"repository"`
 		AssetPattern  string `json:"asset_pattern"`
 		RetentionDays int    `json:"retention_days"`
+		SourceID      string `json:"source_id"`
 	}
 	if task.Payload != "" {
 		if err := json.Unmarshal([]byte(task.Payload), &input); err != nil {
 			return err
 		}
+	}
+	if input.SourceID != "" {
+		if d.Sources == nil {
+			return errors.New("GitHub source not found")
+		}
+		source, err := d.Sources.GitHubSource(ctx, input.SourceID)
+		if err != nil {
+			return errors.New("GitHub source not found")
+		}
+		input.Repository, input.AssetPattern = source.Repository, source.AssetPattern
 	}
 	if task.Type == "release_hot" || task.Type == "release_full" {
 		fetcher := d.ReleaseFetcher

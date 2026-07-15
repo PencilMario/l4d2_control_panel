@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
  enabled INTEGER NOT NULL, last_run TEXT NOT NULL DEFAULT '', next_run TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS secrets (name TEXT PRIMARY KEY, ciphertext BLOB NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS github_sources (
+ id TEXT PRIMARY KEY, name TEXT NOT NULL, repository TEXT NOT NULL,
+ asset_pattern TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
 INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS instance_plugin_ports (
  instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,

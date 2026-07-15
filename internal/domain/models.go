@@ -39,6 +39,14 @@ type AuditRecord struct {
 	ID, Action, Target, Result, Metadata string
 	CreatedAt                            time.Time
 }
+type GitHubSource struct {
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Repository   string    `json:"repository"`
+	AssetPattern string    `json:"asset_pattern"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
 type ScheduledTask struct {
 	ID           string    `json:"id"`
 	InstanceID   string    `json:"instance_id"`

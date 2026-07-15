@@ -57,6 +57,12 @@ type Confirmation = {
   confirmLabel: string;
   confirm: () => void;
 };
+type GitHubSource = {
+  id: string;
+  name: string;
+  repository: string;
+  asset_pattern: string;
+};
 
 const errorMessage = (reason: unknown) =>
   reason instanceof Error ? reason.message : String(reason);
@@ -791,15 +797,12 @@ function ContentPage({
   const [contentError, setContentError] = useState("");
   const [vpkUploadStatus, setVPKUploadStatus] = useState("");
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
-  const [releaseRepository, setReleaseRepository] = useState(
-    DEFAULT_PLUGIN_REPOSITORY,
-  );
-  const [releaseAssetPattern, setReleaseAssetPattern] = useState(
-    DEFAULT_PLUGIN_ASSET_PATTERN,
-  );
+  const [sources, setSources] = useState<GitHubSource[]>([]);
+  const [sourceEditor, setSourceEditor] = useState<GitHubSource | null>(null);
   const loadVPK = () => api<any[]>("/api/content/vpk").then(setVpks);
+  const loadSources = () => api<GitHubSource[]>("/api/github-sources").then((items) => setSources(Array.isArray(items) ? items : []));
   useEffect(() => {
-    Promise.all([loadVPK(), reloadPackages()]).catch((reason) =>
+    Promise.all([loadVPK(), reloadPackages(), loadSources()]).catch((reason) =>
       setContentError(errorMessage(reason)),
     );
   }, []);
@@ -985,43 +988,42 @@ function ContentPage({
       <Panel
         title="插件包"
         action={
-          <FileButton
-            label="上传 ZIP"
-            accept=".zip"
-            onFile={(file) => runContentAction(() => uploadPackage(file))}
-          />
+          <div className="inline-actions">
+            <button onClick={() => setSourceEditor({ id: "", name: "", repository: "", asset_pattern: "" })}>添加 GitHub 源</button>
+            <FileButton label="上传 ZIP" accept=".zip" onFile={(file) => runContentAction(() => uploadPackage(file))} />
+          </div>
         }
       >
-        <form
-          className="release-source"
-          onSubmit={(event) => {
+        {sourceEditor ? (
+          <form className="release-source" onSubmit={(event) => {
             event.preventDefault();
-            runContentAction(() =>
-              queue("/api/packages/github", {
-                repository: releaseRepository,
-                asset_pattern: releaseAssetPattern,
-              }),
-            );
-          }}
-        >
-          <label>
-            GitHub 仓库
-            <input
-              value={releaseRepository}
-              onChange={(event) => setReleaseRepository(event.target.value)}
-              required
-            />
-          </label>
-          <label>
-            Release 资源规则
-            <input
-              value={releaseAssetPattern}
-              onChange={(event) => setReleaseAssetPattern(event.target.value)}
-              required
-            />
-          </label>
-          <button className="create">检查新版本</button>
-        </form>
+            runContentAction(async () => {
+              await api(sourceEditor.id ? `/api/github-sources/${sourceEditor.id}` : "/api/github-sources", {
+                method: sourceEditor.id ? "PUT" : "POST",
+                body: JSON.stringify({ name: sourceEditor.name, repository: sourceEditor.repository, asset_pattern: sourceEditor.asset_pattern }),
+              });
+              setSourceEditor(null);
+              await loadSources();
+            });
+          }}>
+            <label>源名称<input aria-label="源名称" value={sourceEditor.name} onChange={(event) => setSourceEditor({ ...sourceEditor, name: event.target.value })} required /></label>
+            <label>GitHub 仓库<input aria-label="GitHub 仓库" value={sourceEditor.repository} onChange={(event) => setSourceEditor({ ...sourceEditor, repository: event.target.value })} required /></label>
+            <label>Release 资源规则<input aria-label="Release 资源规则" value={sourceEditor.asset_pattern} onChange={(event) => setSourceEditor({ ...sourceEditor, asset_pattern: event.target.value })} required /></label>
+            <div className="inline-actions"><button className="create">保存源</button><button type="button" onClick={() => setSourceEditor(null)}>取消</button></div>
+          </form>
+        ) : null}
+        <div className="source-grid">
+          {sources.map((source) => (
+            <article className="source-card" key={source.id}>
+              <div><b>{source.name}</b><small>{source.repository}</small><code>{source.asset_pattern}</code></div>
+              <div className="inline-actions">
+                <button aria-label={`检查更新 ${source.name}`} onClick={() => runContentAction(() => queue(`/api/github-sources/${source.id}/check`, {}))}>检查更新</button>
+                <button onClick={() => setSourceEditor(source)}>编辑</button>
+                <button className="danger" onClick={() => { if (window.confirm(`删除源 ${source.name}？已下载插件包会保留。`)) runContentAction(async () => { await api(`/api/github-sources/${source.id}`, { method: "DELETE" }); await loadSources(); }); }}>删除</button>
+              </div>
+            </article>
+          ))}
+        </div>
         {packages.map((x) => (
           <div className="data-row" key={x.id}>
             <div>
@@ -1221,10 +1223,16 @@ function SchedulesPage({ instances }: { instances: Instance[] }) {
   const [scheduleStatus, setScheduleStatus] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [taskType, setTaskType] = useState("game_update");
-  const releaseTask = taskType === "release_hot" || taskType === "release_full";
+  const [sources, setSources] = useState<GitHubSource[]>([]);
+  const releaseTask = ["release_check", "release_hot", "release_full"].includes(taskType);
+  const needsInstance = !["release_check", "cleanup"].includes(taskType);
   const load = async () => {
-    const items = await api<any[]>("/api/schedules");
+    const [items, sourceItems] = await Promise.all([
+      api<any[]>("/api/schedules"),
+      api<GitHubSource[]>("/api/github-sources"),
+    ]);
     setTasks(items.map(normalizeScheduledTask));
+    setSources(Array.isArray(sourceItems) ? sourceItems : []);
   };
   useEffect(() => {
     load().catch((reason) => setScheduleError(errorMessage(reason)));
@@ -1239,17 +1247,14 @@ function SchedulesPage({ instances }: { instances: Instance[] }) {
       await api("/api/schedules", {
         method: "POST",
         body: JSON.stringify({
-          instance_id: data.get("instance"),
+          instance_id: needsInstance ? data.get("instance") : "",
           type: taskType,
           cron: data.get("cron"),
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          online_policy: data.get("policy"),
+          online_policy: needsInstance ? data.get("policy") : "force",
           enabled: true,
           payload: releaseTask
-            ? JSON.stringify({
-                repository: data.get("repository"),
-                asset_pattern: data.get("asset_pattern"),
-              })
+            ? JSON.stringify({ source_id: data.get("source") })
             : "{}",
         }),
       });
@@ -1268,16 +1273,6 @@ function SchedulesPage({ instances }: { instances: Instance[] }) {
         <p className="eyebrow">NEW SCHEDULE</p>
         <h2>添加维护窗口</h2>
         <label>
-          实例
-          <select name="instance">
-            {instances.map((x) => (
-              <option key={x.id} value={x.id}>
-                {x.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
           任务
           <select
             aria-label="任务"
@@ -1288,36 +1283,39 @@ function SchedulesPage({ instances }: { instances: Instance[] }) {
             <option value="game_update">游戏更新</option>
             <option value="package_hot">插件热更新</option>
             <option value="package_full">插件完整更新</option>
+            <option value="release_check">仅同步 GitHub 源</option>
             <option value="release_hot">GitHub Release 热更新</option>
             <option value="release_full">GitHub Release 完整更新</option>
             <option value="backup">备份</option>
             <option value="cleanup">清理</option>
           </select>
         </label>
+        {needsInstance ? (
+          <label>
+            实例
+            <select name="instance">
+              {instances.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+            </select>
+          </label>
+        ) : null}
         {releaseTask ? (
-          <>
-            <label>
-              GitHub 仓库
-              <input name="repository" defaultValue={DEFAULT_PLUGIN_REPOSITORY} required />
-            </label>
-            <label>
-              Release 资源规则
-              <input name="asset_pattern" defaultValue={DEFAULT_PLUGIN_ASSET_PATTERN} required />
-            </label>
-          </>
+          <label>
+            GitHub 源
+            <select aria-label="GitHub 源" name="source" required>
+              {sources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}
+            </select>
+          </label>
         ) : null}
         <label>
           Cron
           <input name="cron" defaultValue="0 4 * * *" />
         </label>
-        <label>
-          在线玩家策略
-          <select name="policy">
-            <option value="skip">跳过</option>
-            <option value="wait">等待</option>
-            <option value="force">强制执行</option>
-          </select>
-        </label>
+        {needsInstance ? (
+          <label>
+            在线玩家策略
+            <select name="policy"><option value="skip">跳过</option><option value="wait">等待</option><option value="force">强制执行</option></select>
+          </label>
+        ) : null}
         {scheduleError && (
           <div className="error" role="alert">
             {scheduleError}
@@ -1328,7 +1326,7 @@ function SchedulesPage({ instances }: { instances: Instance[] }) {
             {scheduleStatus}
           </div>
         )}
-        <button className="create" disabled={submitting || !instances.length}>
+        <button className="create" disabled={submitting || (needsInstance && !instances.length) || (releaseTask && !sources.length)}>
           保存计划
         </button>
       </form>

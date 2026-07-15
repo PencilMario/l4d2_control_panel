@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -223,5 +224,39 @@ func TestScheduledTasksPersist(t *testing.T) {
 	}
 	if err := s.DeleteScheduledTask(ctx, task.ID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestGitHubSourcesPersistAndDefaultIsSeeded(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	sources, err := s.GitHubSources(ctx)
+	if err != nil || len(sources) != 2 {
+		t.Fatalf("defaults=%#v err=%v", sources, err)
+	}
+	foundCompetitive := false
+	for _, source := range sources {
+		foundCompetitive = foundCompetitive || source.Repository == "PencilMario/L4D2-Competitive-Rework"
+	}
+	if !foundCompetitive {
+		t.Fatalf("missing Competitive Rework source: %#v", sources)
+	}
+	source := domain.GitHubSource{ID: "custom", Name: "Custom", Repository: "owner/repo", AssetPattern: `^plugins\.zip$`}
+	if err := s.SaveGitHubSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := s.GitHubSource(ctx, source.ID)
+	if err != nil || loaded.Name != "Custom" {
+		t.Fatalf("loaded=%#v err=%v", loaded, err)
+	}
+	if err := s.DeleteGitHubSource(ctx, source.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GitHubSource(ctx, source.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err=%v", err)
 	}
 }

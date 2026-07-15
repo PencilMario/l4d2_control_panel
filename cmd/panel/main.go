@@ -130,7 +130,7 @@ func main() {
 	privateManager := content.NewPrivateManager(cfg.DataRoot, 1<<20)
 	updateCoordinator := &updates.Coordinator{Lifecycle: life, Deployer: updatePipeline, Instances: db}
 	gameCoordinator := &updates.GameCoordinator{Root: cfg.DataRoot, Instances: db, Lifecycle: life, Updater: engine, Private: privateManager}
-	dispatcher := automation.Dispatcher{Jobs: jobManager, Players: playerService, Packages: packageManager, PackagesUpdate: updateCoordinator, GameUpdate: gameCoordinator, Releases: releases.Client{}, Maintenance: maintenance.New(cfg.DataRoot), Secrets: secretService}
+	dispatcher := automation.Dispatcher{Jobs: jobManager, Players: playerService, Packages: packageManager, PackagesUpdate: updateCoordinator, GameUpdate: gameCoordinator, Releases: releases.Client{}, Sources: db, Maintenance: maintenance.New(cfg.DataRoot), Secrets: secretService}
 	scheduleService := scheduler.NewService(db, dispatcher)
 	secureCookie := true
 	if configured := os.Getenv("L4D2_PANEL_SECURE_COOKIE"); configured != "" {

@@ -377,6 +377,26 @@ func TestScheduleAcceptsSnakeCaseJSONAndRejectsUnknownFields(t *testing.T) {
 	})
 }
 
+func TestGitHubSourceCRUD(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	cookie := loginCookie(t, s)
+	request := authenticatedJSON(t, s, cookie, http.MethodPost, "/api/github-sources", `{"name":"第二源","repository":"owner/repo","asset_pattern":"^plugins\\.zip$"}`)
+	if request.Code != http.StatusCreated {
+		t.Fatalf("create=%d %s", request.Code, request.Body.String())
+	}
+	var created domain.GitHubSource
+	_ = json.Unmarshal(request.Body.Bytes(), &created)
+	listed := authenticatedJSON(t, s, cookie, http.MethodGet, "/api/github-sources", "")
+	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), "第二源") {
+		t.Fatalf("list=%d %s", listed.Code, listed.Body.String())
+	}
+	deleted := authenticatedJSON(t, s, cookie, http.MethodDelete, "/api/github-sources/"+created.ID, "")
+	if deleted.Code != http.StatusNoContent {
+		t.Fatalf("delete=%d %s", deleted.Code, deleted.Body.String())
+	}
+}
+
 func TestInstanceActionRunsAsPersistentJob(t *testing.T) {
 	s, db := testServer(t)
 	defer db.Close()

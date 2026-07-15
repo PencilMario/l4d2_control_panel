@@ -924,6 +924,31 @@ textarea:focus-visible {
 .release-source button {
   white-space: nowrap;
 }
+.source-grid {
+  display: grid;
+  gap: 9px;
+  margin: 10px 0 14px;
+}
+.source-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 14px;
+  background: #0a0f0d;
+  border: 1px solid #28332f;
+  border-left: 3px solid var(--acid);
+}
+.source-card > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+.source-card small,
+.source-card code {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 10px;
+}
 .data-row div {
   display: grid;
 }
@@ -1110,6 +1135,9 @@ textarea:focus-visible {
   }
   .release-source {
     grid-template-columns: 1fr;
+  }
+  .source-card {
+    flex-direction: column;
   }
 }
 @media (max-width: 600px) {

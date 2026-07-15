@@ -463,22 +463,21 @@ describe("App", () => {
     const calls: Array<[RequestInfo | URL, RequestInit | undefined]> = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       calls.push([input, init]);
-      return new Response(String(input) === "/api/packages/github" ? '{"ID":"job-1","Status":"pending"}' : "[]", {
-        status: String(input) === "/api/packages/github" ? 202 : 200,
+      const path = String(input);
+      const response = path === "/api/github-sources" ? '[{"id":"default","name":"默认源","repository":"owner/repo","asset_pattern":"^plugins[.]zip$"}]' : path.endsWith("/check") ? '{"ID":"job-1","Status":"pending"}' : "[]";
+      return new Response(response, {
+        status: path.endsWith("/check") ? 202 : 200,
         headers: { "Content-Type": "application/json" },
       });
     }));
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
-    await userEvent.click(await screen.findByRole("button", { name: "检查新版本" }));
+    await userEvent.click(await screen.findByRole("button", { name: "检查更新 默认源" }));
     expect(calls).toContainEqual([
-      "/api/packages/github",
+      "/api/github-sources/default/check",
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({
-          repository: "PencilMario/L4D2-Not0721Here-CoopSvPlugins",
-          asset_pattern: "^L4D2-Not0721Here-CoopSvPlugins-compiled\\.zip$",
-        }),
+        body: JSON.stringify({}),
       }),
     ]);
   });
@@ -486,19 +485,18 @@ describe("App", () => {
   it("saves independent scheduled Release update modes", async () => {
     let submitted: any;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input) === "/api/schedules" && init?.method === "POST") submitted = JSON.parse(String(init.body));
-      return new Response(init?.method === "POST" ? "{}" : "[]", { status: 200, headers: { "Content-Type": "application/json" } });
+      const path = String(input);
+      if (path === "/api/schedules" && init?.method === "POST") submitted = JSON.parse(String(init.body));
+      const response = path === "/api/github-sources" ? '[{"id":"source-1","name":"源一","repository":"owner/repo","asset_pattern":"^plugins[.]zip$"}]' : init?.method === "POST" ? "{}" : "[]";
+      return new Response(response, { status: 200, headers: { "Content-Type": "application/json" } });
     }));
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "计划任务" }));
     await userEvent.selectOptions(screen.getByLabelText("任务"), "release_hot");
-    expect(screen.getByLabelText("GitHub 仓库")).toBeInTheDocument();
+    expect(screen.getByLabelText("GitHub 源")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "保存计划" }));
     expect(submitted.type).toBe("release_hot");
-    expect(JSON.parse(submitted.payload)).toEqual({
-      repository: "PencilMario/L4D2-Not0721Here-CoopSvPlugins",
-      asset_pattern: "^L4D2-Not0721Here-CoopSvPlugins-compiled\\.zip$",
-    });
+    expect(JSON.parse(submitted.payload)).toEqual({ source_id: "source-1" });
   });
 
   it("confirms player kicks and bans before submitting them", async () => {

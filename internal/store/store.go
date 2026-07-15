@@ -28,7 +28,61 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = migrateGitHubSources(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = migrateCompetitiveSource(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
+}
+
+func migrateGitHubSources(db *sql.DB) error {
+	var applied int
+	if err := db.QueryRow(`SELECT count(*) FROM schema_migrations WHERE version=4`).Scan(&applied); err != nil {
+		return err
+	}
+	if applied > 0 {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.Exec(`INSERT INTO github_sources(id,name,repository,asset_pattern,created_at,updated_at) SELECT 'default-not0721here','Not0721Here Coop 插件包','PencilMario/L4D2-Not0721Here-CoopSvPlugins','^L4D2-Not0721Here-CoopSvPlugins-compiled\.zip$',?,? WHERE NOT EXISTS (SELECT 1 FROM github_sources)`, now, now); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(4,?)`, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func migrateCompetitiveSource(db *sql.DB) error {
+	var applied int
+	if err := db.QueryRow(`SELECT count(*) FROM schema_migrations WHERE version=5`).Scan(&applied); err != nil {
+		return err
+	}
+	if applied > 0 {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO github_sources(id,name,repository,asset_pattern,created_at,updated_at) VALUES('default-competitive-rework','L4D2 Competitive Rework','PencilMario/L4D2-Competitive-Rework','^L4D2-Competitive-Rework-compiled\.zip$',?,?)`, now, now); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(5,?)`, now); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func migrateSelectedPackage(db *sql.DB) error {
@@ -384,4 +438,54 @@ func (s *Store) LoadSecret(ctx context.Context, name string) ([]byte, bool, erro
 func (s *Store) DeleteSecret(ctx context.Context, name string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM secrets WHERE name=?`, name)
 	return err
+}
+
+func (s *Store) SaveGitHubSource(ctx context.Context, v domain.GitHubSource) error {
+	now := time.Now().UTC()
+	if v.CreatedAt.IsZero() {
+		v.CreatedAt = now
+	}
+	v.UpdatedAt = now
+	_, err := s.db.ExecContext(ctx, `INSERT INTO github_sources(id,name,repository,asset_pattern,created_at,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,repository=excluded.repository,asset_pattern=excluded.asset_pattern,updated_at=excluded.updated_at`, v.ID, v.Name, v.Repository, v.AssetPattern, v.CreatedAt.Format(time.RFC3339Nano), v.UpdatedAt.Format(time.RFC3339Nano))
+	return err
+}
+func (s *Store) GitHubSource(ctx context.Context, id string) (domain.GitHubSource, error) {
+	var v domain.GitHubSource
+	var created, updated string
+	err := s.db.QueryRowContext(ctx, `SELECT id,name,repository,asset_pattern,created_at,updated_at FROM github_sources WHERE id=?`, id).Scan(&v.ID, &v.Name, &v.Repository, &v.AssetPattern, &created, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return v, ErrNotFound
+	}
+	v.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	v.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+	return v, err
+}
+func (s *Store) GitHubSources(ctx context.Context) ([]domain.GitHubSource, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,name,repository,asset_pattern,created_at,updated_at FROM github_sources ORDER BY name,id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []domain.GitHubSource{}
+	for rows.Next() {
+		var v domain.GitHubSource
+		var created, updated string
+		if err := rows.Scan(&v.ID, &v.Name, &v.Repository, &v.AssetPattern, &created, &updated); err != nil {
+			return nil, err
+		}
+		v.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		v.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+		result = append(result, v)
+	}
+	return result, rows.Err()
+}
+func (s *Store) DeleteGitHubSource(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM github_sources WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	if count, _ := result.RowsAffected(); count == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
