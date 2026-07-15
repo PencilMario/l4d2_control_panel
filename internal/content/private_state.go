@@ -66,12 +66,6 @@ func scanPrivateTree(root string) (map[string]manifestEntry, error) {
 		if path == root {
 			return nil
 		}
-		if strings.HasPrefix(entry.Name(), ".private-") {
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			return errors.New("symbolic links are forbidden")
 		}

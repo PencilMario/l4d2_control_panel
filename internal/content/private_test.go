@@ -136,8 +136,11 @@ func TestPrivateTreeAndDiffIgnoreSaveTemporaryFiles(t *testing.T) {
 	if _, err := manager.Save(ctx, "abc", "cfg/live.cfg", []byte("complete")); err != nil {
 		t.Fatal(err)
 	}
-	privateRoot, _ := manager.privateRoot("abc")
-	temporary := filepath.Join(privateRoot, "cfg", ".private-blocked")
+	temporaryRoot := filepath.Join(manager.root, "instances", "abc", "backups", "private", "workspace-temp")
+	if err := os.MkdirAll(temporaryRoot, 0750); err != nil {
+		t.Fatal(err)
+	}
+	temporary := filepath.Join(temporaryRoot, "blocked-partial")
 	if err := os.WriteFile(temporary, []byte("partial"), 0640); err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +171,7 @@ func TestPrivateTreeAndDiffIgnoreSaveTemporaryFiles(t *testing.T) {
 	case <-time.After(25 * time.Millisecond):
 	}
 	lock.Unlock()
-	tree := <-treeResult
+	<-treeResult
 	diff := <-diffResult
 	select {
 	case err := <-errorsSeen:
@@ -178,13 +181,95 @@ func TestPrivateTreeAndDiffIgnoreSaveTemporaryFiles(t *testing.T) {
 	if err := os.Remove(temporary); err != nil {
 		t.Fatal(err)
 	}
-	for _, entry := range tree {
-		if strings.Contains(entry.Path, ".private-") {
-			t.Fatalf("tree exposed temporary entry: %#v", entry)
-		}
-	}
 	if diff.Summary.Added != 1 || len(diff.Changes) != 1 || diff.Changes[0].Path != "cfg/live.cfg" {
 		t.Fatalf("diff exposed temporary state: %#v", diff)
+	}
+}
+
+func TestPrivateWorkspacePreservesPrivatePrefixedDotfiles(t *testing.T) {
+	manager := NewPrivateManager(t.TempDir(), 1<<20)
+	ctx := context.Background()
+	if err := manager.MakeDir(ctx, "abc", ".private-directory"); err != nil {
+		t.Fatal(err)
+	}
+	for path, data := range map[string]string{
+		".private-settings":    "root",
+		"cfg/.private-example": "nested",
+	} {
+		if _, err := manager.Save(ctx, "abc", path, []byte(data)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tree, err := manager.Tree(ctx, "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, entry := range tree {
+		seen[entry.Path] = true
+	}
+	for _, path := range []string{".private-directory", ".private-settings", "cfg/.private-example"} {
+		if !seen[path] {
+			t.Fatalf("tree hid legitimate path %q: %#v", path, tree)
+		}
+	}
+	diff, err := manager.Diff(ctx, "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff.Summary.Added != 3 {
+		t.Fatalf("diff hid legitimate resources: %#v", diff)
+	}
+	listed, err := manager.List(ctx, "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("list=%#v", listed)
+	}
+	temporaryRoot := filepath.Join(manager.root, "instances", "abc", "backups", "private", "workspace-temp")
+	temporaryEntries, err := os.ReadDir(temporaryRoot)
+	if err != nil || len(temporaryEntries) != 0 {
+		t.Fatalf("save temporary artifacts=%v err=%v", temporaryEntries, err)
+	}
+}
+
+func TestPrivateWorkspaceTempIsOutsideTreeAcrossManagers(t *testing.T) {
+	root := t.TempDir()
+	managerA := NewPrivateManager(root, 1<<20)
+	managerB := NewPrivateManager(root, 1<<20)
+	ctx := context.Background()
+	if _, err := managerA.Save(ctx, "abc", "cfg/live.cfg", []byte("live")); err != nil {
+		t.Fatal(err)
+	}
+	tempRoot := filepath.Join(root, "instances", "abc", "backups", "private", "workspace-temp")
+	if err := os.MkdirAll(tempRoot, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tempRoot, "blocked-partial"), []byte("partial"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	tree, err := managerB.Tree(ctx, "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tree) != 2 || tree[1].Path != "cfg/live.cfg" {
+		t.Fatalf("tree exposed staging metadata: %#v", tree)
+	}
+	diff, err := managerB.Diff(ctx, "abc")
+	if err != nil || diff.Summary.Added != 1 {
+		t.Fatalf("diff=%#v err=%v", diff, err)
+	}
+	if err := managerB.Apply(ctx, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	game := filepath.Join(root, "instances", "abc", "game", "left4dead2")
+	if _, err := os.Stat(filepath.Join(game, "blocked-partial")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("apply copied staging metadata: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(game, "cfg", "live.cfg"))
+	if err != nil || string(raw) != "live" {
+		t.Fatalf("applied=%q err=%v", raw, err)
 	}
 }
 

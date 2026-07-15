@@ -90,7 +90,11 @@ func (m *PrivateManager) save(instanceID, name string, data []byte) (PrivateFile
 	if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
 		return PrivateFile{}, err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(target), ".private-*")
+	temporaryRoot := filepath.Join(m.root, "instances", instanceID, "backups", "private", "workspace-temp")
+	if err := os.MkdirAll(temporaryRoot, 0750); err != nil {
+		return PrivateFile{}, err
+	}
+	temporary, err := os.CreateTemp(temporaryRoot, "save-*")
 	if err != nil {
 		return PrivateFile{}, err
 	}
