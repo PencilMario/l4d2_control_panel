@@ -2,10 +2,12 @@ package jobs
 
 import (
 	"context"
-	"github.com/google/uuid"
-	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"log"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/not0721here/l4d2-control-panel/internal/domain"
 )
 
 type Status string
@@ -24,6 +26,7 @@ type Job struct {
 	Percent                              int
 	Error                                string
 	CreatedAt, UpdatedAt                 time.Time
+	StartedAt, FinishedAt                *time.Time
 }
 type Reporter interface {
 	Progress(stage string, percent int, message string)
@@ -36,28 +39,39 @@ type reporter struct {
 func (r reporter) Progress(stage string, percent int, message string) {
 	r.m.mu.Lock()
 	j := r.m.jobs[r.id]
-	j.Stage, j.Percent, j.Message, j.UpdatedAt = stage, percent, message, time.Now().UTC()
+	now := time.Now().UTC()
+	j.Stage, j.Percent, j.Message, j.UpdatedAt = stage, percent, message, now
 	r.m.jobs[r.id] = j
+	event := domain.JobEvent{JobID: j.ID, Kind: "progress", Stage: stage, Percent: percent, Message: message, CreatedAt: now}
+	r.m.events[j.ID] = append(r.m.events[j.ID], event)
+	var persistErr error
 	if r.m.repo != nil {
-		_ = r.m.repo.SaveJob(toRecord(j))
+		persistErr = r.m.repo.SaveJobWithEvent(toRecord(j), event)
 	}
 	r.m.mu.Unlock()
+	if persistErr != nil {
+		log.Printf("persist job progress %s: %v", j.ID, persistErr)
+	}
 }
 
 type Manager struct {
-	mu    sync.RWMutex
-	jobs  map[string]Job
-	locks map[string]*sync.Mutex
-	repo  Repository
-	wg    sync.WaitGroup
+	mu     sync.RWMutex
+	jobs   map[string]Job
+	events map[string][]domain.JobEvent
+	locks  map[string]*sync.Mutex
+	repo   Repository
+	wg     sync.WaitGroup
 }
 
 type Repository interface {
-	SaveJob(domain.JobRecord) error
+	SaveJobWithEvent(domain.JobRecord, domain.JobEvent) error
 	LoadJob(string) (domain.JobRecord, bool, error)
+	JobEvents(string) ([]domain.JobEvent, error)
 }
 
-func NewManager() *Manager { return &Manager{jobs: map[string]Job{}, locks: map[string]*sync.Mutex{}} }
+func NewManager() *Manager {
+	return &Manager{jobs: map[string]Job{}, events: map[string][]domain.JobEvent{}, locks: map[string]*sync.Mutex{}}
+}
 func NewPersistentManager(repo Repository) *Manager {
 	m := NewManager()
 	m.repo = repo
@@ -69,13 +83,15 @@ func NewPersistentManager(repo Repository) *Manager {
 func (m *Manager) Start(ctx context.Context, instanceID, kind string, fn func(context.Context, Reporter) error) (Job, error) {
 	now := time.Now().UTC()
 	j := Job{ID: uuid.NewString(), InstanceID: instanceID, Type: kind, Status: Pending, CreatedAt: now, UpdatedAt: now}
+	event := domain.JobEvent{JobID: j.ID, Kind: "queued", Message: "Task queued", CreatedAt: now}
 	if m.repo != nil {
-		if err := m.repo.SaveJob(toRecord(j)); err != nil {
+		if err := m.repo.SaveJobWithEvent(toRecord(j), event); err != nil {
 			return Job{}, err
 		}
 	}
 	m.mu.Lock()
 	m.jobs[j.ID] = j
+	m.events[j.ID] = append(m.events[j.ID], event)
 	lock := m.locks[instanceID]
 	if lock == nil {
 		lock = &sync.Mutex{}
@@ -114,16 +130,49 @@ func (m *Manager) Wait(ctx context.Context) error {
 func (m *Manager) setStatus(id string, status Status, percent int, message string) {
 	m.mu.Lock()
 	j := m.jobs[id]
-	j.Status, j.UpdatedAt = status, time.Now().UTC()
+	now := time.Now().UTC()
+	j.Status, j.UpdatedAt = status, now
 	if percent >= 0 {
 		j.Percent = percent
 	}
 	j.Error = message
+	event := domain.JobEvent{JobID: j.ID, Kind: string(status), Stage: j.Stage, Percent: j.Percent, CreatedAt: now}
+	switch status {
+	case Running:
+		j.StartedAt = &now
+		event.Kind = "started"
+		event.Message = "Task started"
+	case Succeeded:
+		j.FinishedAt = &now
+		event.Message = "Task completed"
+	case Failed, Interrupted:
+		j.FinishedAt = &now
+		event.Message = message
+	}
 	m.jobs[id] = j
+	m.events[id] = append(m.events[id], event)
+	var persistErr error
+	var pruneErr error
 	if m.repo != nil {
-		_ = m.repo.SaveJob(toRecord(j))
+		persistErr = m.repo.SaveJobWithEvent(toRecord(j), event)
+		if persistErr == nil && status == Succeeded {
+			if pruner, ok := m.repo.(interface{ PruneSuccessfulJobs() error }); ok {
+				pruneErr = pruner.PruneSuccessfulJobs()
+			}
+		}
+		if persistErr == nil && (status == Succeeded || status == Failed || status == Interrupted) {
+			delete(m.jobs, id)
+			delete(m.events, id)
+		}
 	}
 	m.mu.Unlock()
+	if persistErr != nil {
+		log.Printf("persist job status %s: %v", id, persistErr)
+		return
+	}
+	if pruneErr != nil {
+		log.Printf("prune successful jobs: %v", pruneErr)
+	}
 }
 func (m *Manager) Get(id string) (Job, bool) {
 	m.mu.RLock()
@@ -138,9 +187,32 @@ func (m *Manager) Get(id string) (Job, bool) {
 	return j, ok
 }
 
+func (m *Manager) Details(id string) (Job, []domain.JobEvent, bool, error) {
+	m.mu.RLock()
+	job, ok := m.jobs[id]
+	if ok {
+		events := append([]domain.JobEvent(nil), m.events[id]...)
+		m.mu.RUnlock()
+		return job, events, true, nil
+	}
+	m.mu.RUnlock()
+	if m.repo == nil {
+		return Job{}, nil, false, nil
+	}
+	record, found, err := m.repo.LoadJob(id)
+	if err != nil || !found {
+		return Job{}, nil, found, err
+	}
+	events, err := m.repo.JobEvents(id)
+	if err != nil {
+		return Job{}, nil, false, err
+	}
+	return fromRecord(record), events, true, nil
+}
+
 func toRecord(j Job) domain.JobRecord {
-	return domain.JobRecord{ID: j.ID, InstanceID: j.InstanceID, Type: j.Type, Stage: j.Stage, Message: j.Message, Status: string(j.Status), Error: j.Error, Percent: j.Percent, CreatedAt: j.CreatedAt, UpdatedAt: j.UpdatedAt}
+	return domain.JobRecord{ID: j.ID, InstanceID: j.InstanceID, Type: j.Type, Stage: j.Stage, Message: j.Message, Status: string(j.Status), Error: j.Error, Percent: j.Percent, CreatedAt: j.CreatedAt, UpdatedAt: j.UpdatedAt, StartedAt: j.StartedAt, FinishedAt: j.FinishedAt}
 }
 func fromRecord(v domain.JobRecord) Job {
-	return Job{ID: v.ID, InstanceID: v.InstanceID, Type: v.Type, Stage: v.Stage, Message: v.Message, Status: Status(v.Status), Error: v.Error, Percent: v.Percent, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt}
+	return Job{ID: v.ID, InstanceID: v.InstanceID, Type: v.Type, Stage: v.Stage, Message: v.Message, Status: Status(v.Status), Error: v.Error, Percent: v.Percent, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt, StartedAt: v.StartedAt, FinishedAt: v.FinishedAt}
 }

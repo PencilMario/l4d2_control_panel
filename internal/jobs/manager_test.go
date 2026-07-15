@@ -65,6 +65,65 @@ func TestPersistentManagerReloadsCompletedJob(t *testing.T) {
 	}
 }
 
+func TestPersistentManagerRecordsLifecycleEvents(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	manager := NewPersistentManager(db)
+	created, err := manager.Start(context.Background(), "a", "install", func(_ context.Context, reporter Reporter) error {
+		reporter.Progress("download", 40, "downloading")
+		return errors.New("download interrupted")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wait(t, manager, created.ID)
+	job, events, ok, err := manager.Details(created.ID)
+	if err != nil || !ok || job.StartedAt == nil || job.FinishedAt == nil || job.Error != "download interrupted" {
+		t.Fatalf("job=%#v events=%#v ok=%v err=%v", job, events, ok, err)
+	}
+	assertEventKinds(t, events, "queued", "started", "progress", "failed")
+	if events[2].Stage != "download" || events[2].Percent != 40 || events[2].Message != "downloading" {
+		t.Fatalf("progress event=%#v", events[2])
+	}
+	if events[3].Message != "download interrupted" {
+		t.Fatalf("failed event=%#v", events[3])
+	}
+}
+
+func TestPersistentManagerPrunesSuccessfulJobsUsingGlobalLimit(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.SetSuccessfulJobLimit(1); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewPersistentManager(db)
+	first, err := manager.Start(context.Background(), "a", "install", func(context.Context, Reporter) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	wait(t, manager, first.ID)
+	second, err := manager.Start(context.Background(), "b", "install", func(context.Context, Reporter) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	wait(t, manager, second.ID)
+	if err := manager.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := manager.Get(first.ID); found {
+		t.Fatal("oldest successful job remained accessible")
+	}
+	if job, found := manager.Get(second.ID); !found || job.Status != Succeeded {
+		t.Fatalf("newest job=%#v found=%v", job, found)
+	}
+}
+
 func TestPersistentManagerMarksStaleRunningJobInterrupted(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {
@@ -96,10 +155,11 @@ func TestReporterPersistsProgress(t *testing.T) {
 
 type failingRepository struct{ err error }
 
-func (r failingRepository) SaveJob(domain.JobRecord) error { return r.err }
+func (r failingRepository) SaveJobWithEvent(domain.JobRecord, domain.JobEvent) error { return r.err }
 func (failingRepository) LoadJob(string) (domain.JobRecord, bool, error) {
 	return domain.JobRecord{}, false, nil
 }
+func (failingRepository) JobEvents(string) ([]domain.JobEvent, error) { return nil, nil }
 
 func TestStartReturnsInitialPersistenceFailureWithoutRunning(t *testing.T) {
 	want := errors.New("database unavailable")
@@ -143,4 +203,16 @@ func wait(t *testing.T, m *Manager, id string) Job {
 	}
 	t.Fatal("timeout")
 	return Job{}
+}
+
+func assertEventKinds(t *testing.T, events []domain.JobEvent, wants ...string) {
+	t.Helper()
+	if len(events) != len(wants) {
+		t.Fatalf("events=%#v wants=%#v", events, wants)
+	}
+	for index, want := range wants {
+		if events[index].Kind != want {
+			t.Fatalf("event %d kind=%q want=%q", index, events[index].Kind, want)
+		}
+	}
 }
