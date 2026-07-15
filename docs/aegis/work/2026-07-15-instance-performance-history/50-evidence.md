@@ -36,6 +36,8 @@
 - Task 7 E2E RED: the first `npm run e2e` run failed both desktop and mobile before reaching the new metrics assertions because the preserved journey implicitly expected `coop`/8 while the current create form defaults to `versus`/32. This exposed test isolation drift, not a product defect. After explicitly selecting the intended values, a focused desktop run reached the new layout assertion and failed with expected fixed wrapper height 220 versus the deployed CSS contract of 210 pixels (190 on mobile). The assertion was corrected to the actual responsive fixed-height contract; no product file was changed.
 - Task 7 E2E GREEN: fresh `npm run e2e` passed 2/2 projects/tests in 27.9 seconds (desktop 10.9 seconds, mobile 10.9 seconds). The real HTTP fixture journey verified login, overview navigation, running state, map `c2m1_highway`, players `1 / 8`, selected package, stop/config/console/player actions, CPU `12.5%`, memory `768 MiB / 2 GiB (37.5%)`, RX/TX rates and totals, disk read/write rates and totals, PID 24, uptime `1h 0s`, A2S `2.5 ms`, a two-point history preserving first-point null gaps and second-point zero rates, default CPU mode, all four `aria-pressed` mode transitions, network and disk legends, fixed chart heights, card/control/action bounds and absence of horizontal page overflow on desktop and 390-pixel mobile viewports.
 - Task 7 overview-boundary follow-up GREEN: fresh `npm run e2e` passed 2/2 projects/tests in 27.7 seconds (desktop 11.0 seconds, mobile 10.7 seconds) without a product change. While still on Overview, the test individually proved all four mode buttons and every available action button stay within the instance card and current viewport with one-pixel tolerance, retain `scrollWidth <= clientWidth`, and remain accompanied by an in-card chart wrapper/control group. It also proved both `document.documentElement` and `document.body` have `scrollWidth <= clientWidth` in desktop and 390-pixel mobile projects; the later Jobs-page overflow check is retained as separate preserved-journey coverage.
+- Final whole-feature review RED/GREEN: RFC3339Nano RunIDs were rejected by the real traffic counter, adjacent nonempty run sessions remained visually connected, and unavailable overview maps emitted `null`; fixes added real Counter/HTTP/sampler contract coverage, cross-run chart gaps and legacy `map,omitempty` behavior.
+- Final whole-feature review: approved with no Critical or Important findings after commits `13e6e25`, `3ce6278` and `223aa15`.
 
 ## Regression evidence
 
@@ -47,6 +49,7 @@
 - Latest `cd web && npm run e2e` — exit 0; 2/2 tests passed in 27.7 seconds across desktop and mobile projects.
 - `docker compose --env-file .env.example config --quiet` — exit 0 with no diagnostics.
 - Linux amd64, `CGO_ENABLED=0` cross-builds of `./cmd/panel` and `./cmd/socket-proxy` — exit 0; temporary outputs were 17,186,282 and 9,760,910 bytes and were removed immediately (`removed=True`).
+- Controller final fresh verification: `go test -count=1 ./...`, `go vet ./...`, `npm test -- --run` (3 files, 50 tests), `npm run build`, `npm run e2e` (2/2 in 27.8 seconds), Compose config and both Linux amd64 CGO-disabled builds all exited 0.
 
 ## Linux capture smoke
 
@@ -60,3 +63,12 @@
 - Remove/Restore: no product instrumentation or fallback was added. Playwright output remained under ignored `web/test-results`; Vite `web/dist` remained ignored. Cross-build binaries were written to `%TEMP%` and removed. No Task 7 fixture, Go, Playwright or capture process remained after commands exited.
 - Residual risks: Linux runtime ownership/capability/socket/capture behavior is unverified; Windows race coverage is unavailable without `gcc`; the production bundle remains above Vite's 500 kB warning threshold. The real HTTP desktop/mobile administration journey and local static deployment contract have direct automated evidence.
 - Confidence: B. Core local behavior has fresh regression and main-journey evidence, but Linux-only operational acceptance and race execution remain blocked by the environment. This evidence is advisory; the controller owns the authoritative completion decision.
+
+## Final evidence boundary
+
+- Claim checked: the approved per-instance performance metrics, one-hour history, secure proxy transport and desktop/mobile overview journey are implemented and pass deterministic local verification.
+- Direct evidence: protocol/unit/integration tests, full Go and frontend suites, production build, real-HTTP Playwright journeys, Compose rendering and Linux static compilation.
+- Not verified: real Linux AF_PACKET traffic attribution, live Unix UID/GID permissions/capabilities under Docker, and race instrumentation.
+- Remove/restore: no temporary binaries, tracked build output, fixture listener or test process remains.
+- Confidence: B for deployment readiness pending the documented Linux-host smoke; A for deterministic contracts and the local user journey.
+- Authority: verified development evidence and advisory merge readiness, not a production deployment completion signal.
