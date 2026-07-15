@@ -1,20 +1,20 @@
 # TodoCheckpointDraft
 
-Updated: 2026-07-15 17:02 +08:00
+Updated: 2026-07-15 17:44 +08:00
 
 ## Todo
 
 - [x] Task 1: Safe workspace tree and staged diffs
 - [x] Task 2: Transactional apply, lower-layer restoration and snapshots
 - [x] Task 3: Resumable uploads and complete HTTP contract
-- [ ] Task 4: Independent private-files Tab
+- [x] Task 4: Independent private-files Tab
 - [ ] Task 5: Console follow-latest state machine
 - [ ] Task 6: Browser acceptance
 - [ ] Task 7: Full regression, documentation and retirement audit
 
 ## Active slice
 
-Task 4. Implement the independent private-files Tab with the approved tree/editor layout and staged apply workflow.
+Task 5. Implement and test the console follow-latest state machine without changing the WebSocket protocol.
 
 ## Completed
 
@@ -35,6 +35,8 @@ Task 4. Implement the independent private-files Tab with the approved tree/edito
 - Task 3 target Go suites and repeated upload/concurrency/HTTP tests passed.
 - Task 3 spec review passed after durable cleanup/recovery, instance guards, fsync/no-replace semantics, progress stages and adversarial HTTP coverage.
 - Task 3 quality review approved after Delete TOCTOU, slow-upload lock scope, store error mapping and Recover/Complete session locking fixes.
+- Task 4 commits `7c3bf72`, `b558a08`, `614b55e`; target 38/38, full web 42/42 and production build passed.
+- Task 4 spec and quality reviews approved after real upload resume, Job completion refresh, content-based editor validation, path history, focus trapping, pending guards, instance isolation, serialized polling and incremental hashing.
 
 ## Evidence refs
 
@@ -48,7 +50,7 @@ Nothing.
 
 ## ResumeStateHint
 
-Read this checkpoint, the intent, baseline read set, approved spec and plan. Confirm the worktree branch and diff agree with this checkpoint. Resume Task 4 only; do not start Task 5 until Task 4 implementation, spec review and code-quality review all pass.
+Read this checkpoint, the intent, baseline read set, approved spec and plan. Confirm the worktree branch and diff agree with this checkpoint. Resume Task 5 only; do not start Task 6 until Task 5 implementation, spec review and code-quality review all pass.
 
 ## DriftCheckDraft
 
@@ -61,4 +63,4 @@ Read this checkpoint, the intent, baseline read set, approved spec and plan. Con
 - Task 2 residual: Windows normal symlinks are covered; junction/reparse subtype reporting remains dependent on Go runtime behavior.
 - Intermittent Windows TempDir cleanup/file-lock noise occurred across unrelated tests; required fresh and repeated focused suites passed.
 - Task 3 residual Minor: per-upload session mutex registry does not evict UUID locks.
-- Decision: continue to Task 4.
+- Decision: continue to Task 5.
