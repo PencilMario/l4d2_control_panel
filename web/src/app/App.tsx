@@ -36,6 +36,7 @@ import {
   type PackageVersion,
 } from "./InstanceConfigModal";
 import { PrivateFilesPage } from "./PrivateFilesPage";
+import { useConsoleFollow } from "./useConsoleFollow";
 import "../styles/app.css";
 export type Instance = ConfigurableInstance & {
   players: number;
@@ -684,6 +685,7 @@ function Terminal({
   const [lines, setLines] = useState<string[]>([]);
   const [input, setInput] = useState("");
   const socket = useRef<WebSocket | null>(null);
+  const consoleFollow = useConsoleFollow(lines);
   useEffect(() => {
     const protocol = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(
@@ -709,11 +711,14 @@ function Terminal({
           <X />
         </button>
       </div>
-      <pre>{lines.join("")}</pre>
+      <pre ref={consoleFollow.outputRef} onScroll={consoleFollow.onScroll}>
+        {lines.join("")}
+      </pre>
       <form
         onSubmit={(e) => {
           e.preventDefault();
           if (input) {
+            consoleFollow.forceFollow();
             socket.current?.send(input + "\n");
             setInput("");
           }

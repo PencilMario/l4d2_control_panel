@@ -25,6 +25,55 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe("App", () => {
+  it("keeps console websocket chunks and follows after sending a command", async () => {
+    const sockets: FakeWebSocket[] = [];
+    class FakeWebSocket {
+      binaryType = "";
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      send = vi.fn();
+      close = vi.fn();
+      constructor(public url: string) { sockets.push(this); }
+    }
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "控制台" }));
+    const output = document.querySelector(".terminal-modal pre") as HTMLPreElement;
+    let scrollTop = 0;
+    Object.defineProperties(output, {
+      scrollHeight: { configurable: true, get: () => 600 },
+      clientHeight: { configurable: true, get: () => 100 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => { scrollTop = value; },
+      },
+    });
+    act(() => sockets[0].onmessage?.({ data: "ready\n" } as MessageEvent));
+    expect(output).toHaveTextContent("ready");
+    expect(scrollTop).toBe(600);
+
+    await userEvent.type(screen.getByRole("textbox"), "status");
+    await userEvent.click(screen.getByRole("button", { name: "发送" }));
+    expect(sockets[0].send).toHaveBeenCalledWith("status\n");
+    expect(scrollTop).toBe(600);
+    expect(sockets[0].url).toContain("/api/instances/1/console");
+
+    act(() => {
+      for (let index = 0; index <= 500; index += 1) {
+        sockets[0].onmessage?.({ data: `[${index}]\n` } as MessageEvent);
+      }
+    });
+    expect(output).not.toHaveTextContent("ready");
+    expect(output).not.toHaveTextContent("[0]");
+    expect(output).toHaveTextContent("[1]");
+    expect(output).toHaveTextContent("[500]");
+    expect(scrollTop).toBe(600);
+  });
   it("shows operational instance data", () => {
     render(
       <App
