@@ -176,11 +176,14 @@ func (fixturePlayers) Summary(context.Context, string) (players.Summary, error) 
 	return players.Summary{Map: "c2m1_highway", Players: 1, MaxPlayers: 8}, nil
 }
 func (fixturePlayers) Online(context.Context, string) (players.Snapshot, error) {
+	score := int32(12)
+	secure := true
 	return players.Snapshot{
 		Map:        "c2m1_highway",
 		MaxPlayers: 8,
+		Match:      players.MatchInfo{Hostname: "Fixture Host", Version: "2.2.4.3 10097", Secure: &secure, OS: "Linux Dedicated", Map: "c2m1_highway", PrivateAddress: "127.0.1.1:27015", PublicAddress: "203.0.113.15:27015", Humans: 1, MaxPlayers: 8},
 		Players: []players.OnlinePlayer{{
-			UserID: 7, Name: "Fixture Player", Score: 12, Duration: 90 * time.Second,
+			UserID: 7, Name: "Fixture Player", UniqueID: "STEAM_1:0:42", Connected: "01:30", Ping: 45, Loss: 0, Score: &score, Duration: 90 * time.Second,
 		}},
 	}, nil
 }

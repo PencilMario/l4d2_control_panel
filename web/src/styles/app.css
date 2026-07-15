@@ -1052,13 +1052,125 @@ textarea:focus-visible {
   border-color: #67342f;
 }
 .players-modal {
-  max-width: 720px;
+  max-width: 1080px;
   width: calc(100% - 32px);
 }
 .players-modal > .section-head > button {
   border: 0;
   background: none;
   color: #b8c1bd;
+}
+.match-summary {
+  margin: 14px 0 16px;
+}
+.match-summary-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 0.65fr 1fr 1fr;
+  gap: 8px;
+}
+.match-summary-grid > div {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: #111714;
+}
+.match-summary-grid .match-primary {
+  border-top: 2px solid var(--amber);
+}
+.match-summary-grid small,
+.match-summary-grid b {
+  display: block;
+}
+.match-summary-grid small {
+  margin-bottom: 5px;
+  color: #7f8c86;
+  font-size: 10px;
+}
+.match-summary-grid b {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.match-addresses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  padding: 9px 2px 0;
+  color: #7f8c86;
+  font-size: 10px;
+}
+.match-addresses code {
+  color: #b8c7c0;
+}
+.player-operations-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+}
+.player-operations {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.player-operations th,
+.player-operations td {
+  padding: 10px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.player-operations th {
+  color: #7f8c86;
+  background: #0c110f;
+  font: 700 9px/1 monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.player-operations tbody tr:last-child td {
+  border-bottom: 0;
+}
+.player-operations code {
+  color: #a8d8c1;
+}
+@media (max-width: 720px) {
+  .match-summary-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .player-operations-wrap {
+    overflow: visible;
+    border: 0;
+  }
+  .player-operations,
+  .player-operations tbody,
+  .player-operations tr,
+  .player-operations td {
+    display: block;
+    width: 100%;
+  }
+  .player-operations thead {
+    display: none;
+  }
+  .player-operations tr {
+    margin-bottom: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-top: 2px solid #374a42;
+    background: #111714;
+  }
+  .player-operations td {
+    display: flex;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 5px 0;
+    border: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .player-operations td::before {
+    content: attr(data-label);
+    flex: 0 0 64px;
+    color: #7f8c86;
+    font: 700 9px/1.5 monospace;
+    text-transform: uppercase;
+  }
 }
 .private-file svg {
   width: 13px;

@@ -74,6 +74,32 @@ type Confirmation = {
   confirmLabel: string;
   confirm: () => void;
 };
+type PlayerMatch = {
+  hostname: string;
+  version: string;
+  secure: boolean | null;
+  os: string;
+  map: string;
+  private_address: string;
+  public_address: string;
+  humans: number;
+  max_players: number;
+};
+type OnlinePlayer = {
+  user_id: number;
+  name: string;
+  unique_id?: string;
+  connected?: string;
+  ping?: number;
+  loss?: number;
+  score: number | null;
+};
+type PlayerSnapshot = {
+  map?: string;
+  max_players?: number;
+  match?: PlayerMatch;
+  players: OnlinePlayer[];
+};
 type GitHubSource = {
   id: string;
   name: string;
@@ -1295,18 +1321,18 @@ function PlayersModal({
   close: () => void;
   queue: (path: string, body: any) => Promise<void>;
 }) {
-  const [snapshot, setSnapshot] = useState<any>(null);
+  const [snapshot, setSnapshot] = useState<PlayerSnapshot | null>(null);
   const [playersError, setPlayersError] = useState("");
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   useEffect(() => {
-    api(`/api/instances/${instance.id}/players`)
+    api<PlayerSnapshot>(`/api/instances/${instance.id}/players`)
       .then(setSnapshot)
       .catch((reason) => {
         setSnapshot({ players: [] });
         setPlayersError(errorMessage(reason));
       });
   }, [instance.id]);
-  const requestAction = (player: any, action: "kick" | "ban") => {
+  const requestAction = (player: OnlinePlayer, action: "kick" | "ban") => {
     const kick = action === "kick";
     setConfirmation({
       title: kick ? `踢出 ${player.name}？` : `永久封禁 ${player.name}？`,
@@ -1330,11 +1356,11 @@ function PlayersModal({
   return (
     <>
       <div className="modal-wrap">
-        <div className="modal players-modal">
+        <div className="modal players-modal" role="dialog" aria-modal="true" aria-labelledby="players-title">
           <div className="section-head">
             <div>
               <p className="eyebrow">ONLINE PLAYERS</p>
-              <h2>{instance.name}</h2>
+              <h2 id="players-title">{instance.name}</h2>
             </div>
             <button aria-label="关闭玩家列表" onClick={close}>
               <X />
@@ -1345,29 +1371,37 @@ function PlayersModal({
               {playersError}
             </div>
           )}
-          {snapshot?.players?.map((player: any) => (
-            <div className="data-row" key={`${player.name}-${player.user_id}`}>
-              <div>
-                <b>{player.name}</b>
-                <small>
-                  UserID {player.user_id || "未映射"} · 分数 {player.score}
-                </small>
-              </div>
-              {player.user_id > 0 && (
-                <div className="inline-actions">
-                  <button onClick={() => requestAction(player, "kick")}>
-                    踢出
-                  </button>
-                  <button
-                    className="danger"
-                    onClick={() => requestAction(player, "ban")}
-                  >
-                    永久封禁
-                  </button>
-                </div>
-              )}
+          {snapshot?.match ? <MatchSummary match={snapshot.match} /> : null}
+          {snapshot?.players?.length ? (
+            <div className="player-operations-wrap">
+              <table className="player-operations">
+                <thead>
+                  <tr><th>UserID</th><th>名称</th><th>UniqueID</th><th>已连接</th><th>Ping</th><th>Loss</th><th>分数</th><th>操作</th></tr>
+                </thead>
+                <tbody>
+                  {snapshot.players.map((player) => (
+                    <tr key={`${player.name}-${player.user_id}`}>
+                      <td data-label="UserID"><b>{player.user_id || "未映射"}</b></td>
+                      <td data-label="名称"><b>{player.name}</b></td>
+                      <td data-label="UniqueID"><code>{player.unique_id || "--"}</code></td>
+                      <td data-label="已连接">{player.connected || "--"}</td>
+                      <td data-label="Ping">{player.ping === undefined ? "--" : `${player.ping} ms`}</td>
+                      <td data-label="Loss">{player.loss === undefined ? "--" : `${player.loss}%`}</td>
+                      <td data-label="分数">{player.score ?? "--"}</td>
+                      <td data-label="操作">
+                        {player.user_id > 0 ? (
+                          <div className="inline-actions">
+                            <button onClick={() => requestAction(player, "kick")}>踢出</button>
+                            <button className="danger" onClick={() => requestAction(player, "ban")}>永久封禁</button>
+                          </div>
+                        ) : "--"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          ))}
+          ) : null}
           {snapshot && !snapshot.players?.length && (
             <div className="empty">当前没有在线玩家</div>
           )}
@@ -1384,6 +1418,25 @@ function PlayersModal({
         />
       )}
     </>
+  );
+}
+
+function MatchSummary({ match }: { match: PlayerMatch }) {
+  const secure = match.secure === null ? "--" : match.secure ? "安全" : "不安全";
+  const value = (input: string) => input || "--";
+  return (
+    <section className="match-summary" aria-label="对局摘要">
+      <div className="match-summary-grid">
+        <div className="match-primary"><small>地图</small><b>{value(match.map)}</b></div>
+        <div><small>真人玩家</small><b>{match.humans} / {match.max_players}</b></div>
+        <div><small>主机 / 系统</small><b>{value(match.hostname)} · {value(match.os)}</b></div>
+        <div><small>版本</small><b>{value(match.version)} · {secure}</b></div>
+      </div>
+      <div className="match-addresses">
+        <span>内网 <code>{value(match.private_address)}</code></span>
+        <span>公网 <code>{value(match.public_address)}</code></span>
+      </div>
+    </section>
   );
 }
 

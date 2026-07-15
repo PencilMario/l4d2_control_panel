@@ -76,6 +76,10 @@ Each instance has an independent **Private Files** Tab. File edits, uploads, ren
 
 Uploads are chunked and resumable only when the instance, target path and complete file fingerprint match. The fingerprint includes the file name, size, last-modified time and digest. The browser resumes from the server-confirmed offset after interruption and refreshes the workspace only after completion; upload sessions do not expose game paths or command execution.
 
+## Match and player operations
+
+The instance player dialog combines a live SRCDS match summary with human-player operations. It shows hostname, map, human capacity, version/security, operating system and private/public addresses, followed by UserID, Steam UniqueID, connected time, ping, loss and A2S score for each human player. BOTs remain hidden. Desktop uses an operations table while mobile folds each row into a readable detail card; kick and permanent-ban actions continue to use the mapped numeric UserID.
+
 The instance console follows the latest output while the viewport is at the bottom. Scrolling up pauses following without discarding incoming output; returning to the bottom resumes it. Reconnect replay follows the same rule, so user-selected history is not pulled away by live or replayed lines.
 
 ## Persistent data

@@ -550,6 +550,13 @@ test("real HTTP administration journey survives refresh and streams recovery sta
 
   await card.getByRole("button", { name: "玩家" }).click();
   await expect(page.getByText("Fixture Player")).toBeVisible();
+  const playersDialog = page.getByRole("dialog", { name: instanceName });
+  await expect(playersDialog.getByRole("region", { name: "对局摘要" })).toContainText("c2m1_highway");
+  await expect(playersDialog).toContainText("Fixture Host");
+  await expect(playersDialog).toContainText("STEAM_1:0:42");
+  await expect(playersDialog).toContainText("01:30");
+  await expect(playersDialog).toContainText("45 ms");
+  await expect(playersDialog).toContainText("0%");
   await page.getByRole("button", { name: "踢出" }).click();
   const confirmKick = page.getByRole("button", { name: "确认踢出" });
   const cancel = page.getByRole("button", { name: "取消" });
