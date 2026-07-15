@@ -4,9 +4,9 @@ Updated: 2026-07-16 +08:00
 
 ## Current Todo
 
-- Active: Task 3, expose and verify the authenticated archive HTTP contract.
-- Pending: React toolbar, desktop/mobile acceptance and final evidence.
-- Completed: approved design and plan, isolated baseline, Task 1 transaction helper and Task 2 secure ZIP content owner.
+- Active: Task 4, implement the private-files toolbar import/export experience.
+- Pending: desktop/mobile acceptance and final evidence.
+- Completed: approved design and plan, isolated baseline, Tasks 1-2 content ownership and Task 3 authenticated archive API.
 
 ## Evidence Refs
 
@@ -17,6 +17,9 @@ Updated: 2026-07-16 +08:00
 - Task 2 RED: `go test ./internal/content -run 'TestPrivateZIP' -count=1` failed because the archive API did not exist.
 - Task 2 GREEN: `go test ./internal/content -run 'TestPrivateZIP|TestPrivateSnapshot|TestPrivateRestore' -count=1` and `go vet ./internal/content` passed.
 - Task 2 broad run: the full content package intermittently failed the pre-existing Windows manifest atomic-reader test and one temporary-directory cleanup; the focused archive/restoration matrix stayed green.
+- Task 3 RED: archive route tests returned `405 Method Not Allowed` before route registration.
+- Task 3 GREEN: `go test ./internal/httpapi -run 'TestPrivateFileAPIContract|TestPrivateArchiveAPI' -count=1` and `go vet ./internal/content ./internal/httpapi` passed.
+- Task 3 broad run: the combined content/API command hit Windows-only `testing.TempDir` cleanup locks in unrelated tests; all behavioral assertions in the focused API matrix passed.
 
 ## Blockers
 
@@ -26,9 +29,9 @@ None. The first exact parallel Go baseline hit the repository's documented Windo
 
 - Scope remains private workspace ZIP import/export only.
 - Compatibility boundary remains staged import, manual apply, unchanged snapshots/applied manifest and exact archive root paths.
-- Canonical owner remains `PrivateManager`; `private_archive.go` delegates publication to `replacePrivateWorkspaceLocked` and contains no apply/game/snapshot writer.
+- HTTP remains a contract adapter: it spools export before committing headers and delegates import semantics to `PrivateManager`; mutation auditing remains middleware-owned.
 - Decision: `continue`.
 
 ## Next Step
 
-Add authenticated GET/POST archive contract tests, run them RED, then register handlers with stable error mapping.
+Add toolbar interaction tests for warning/cancel/import/no-auto-apply/export/instance ownership, run them RED, then implement the React controls.

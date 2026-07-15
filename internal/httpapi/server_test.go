@@ -113,7 +113,7 @@ func TestPrivateFileAPIContract(t *testing.T) {
 	private := content.NewPrivateManager(root, 1<<20)
 	s = New(db, s.auth, WithOperations(nil, jobs.NewPersistentManager(db)), WithContent(nil, private, nil, nil, nil), WithPrivateUploads(content.NewPrivateUploadManager(root, 8<<20)))
 	cookie := loginCookie(t, s)
-	for _, check := range []struct{ method, path string }{{http.MethodGet, "/api/instances/abc/private/tree"}, {http.MethodPost, "/api/instances/abc/private/directories"}} {
+	for _, check := range []struct{ method, path string }{{http.MethodGet, "/api/instances/abc/private/tree"}, {http.MethodPost, "/api/instances/abc/private/directories"}, {http.MethodGet, "/api/instances/abc/private/archive"}, {http.MethodPost, "/api/instances/abc/private/archive"}} {
 		r := httptest.NewRequest(check.method, check.path, strings.NewReader(`{"path":"x"}`))
 		w := httptest.NewRecorder()
 		s.Handler().ServeHTTP(w, r)
@@ -141,6 +141,7 @@ func TestPrivateFileAPIContract(t *testing.T) {
 		{http.MethodGet, "/api/instances/missing/private/uploads/" + uuid.NewString()}, {http.MethodPatch, "/api/instances/missing/private/uploads/" + uuid.NewString()}, {http.MethodPost, "/api/instances/missing/private/uploads/" + uuid.NewString() + "/complete"},
 		{http.MethodGet, "/api/instances/missing/private/snapshots"}, {http.MethodPost, "/api/instances/missing/private/snapshots/bad/restore"},
 		{http.MethodGet, "/api/instances/missing/private/file/a"}, {http.MethodDelete, "/api/instances/missing/private/file/a"}, {http.MethodPost, "/api/instances/missing/private/apply"},
+		{http.MethodGet, "/api/instances/missing/private/archive"}, {http.MethodPost, "/api/instances/missing/private/archive"},
 	} {
 		if w := do(check.method, check.path, `{}`); w.Code != 404 || !strings.Contains(w.Body.String(), `"code":"instance_not_found"`) {
 			t.Fatalf("%s %s: %d %s", check.method, check.path, w.Code, w.Body.String())
@@ -345,6 +346,137 @@ func TestPrivateFileAPIContract(t *testing.T) {
 	if !foundSuccess {
 		t.Fatal("successful mutation was not audited")
 	}
+}
+
+func TestPrivateArchiveAPI(t *testing.T) {
+	s, db := testServer(t)
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.CreateInstance(context.Background(), domain.Instance{ID: "abc", NodeID: "local", Name: "abc", GamePort: 27015}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	private := content.NewPrivateManager(root, 1<<20)
+	s = New(db, s.auth, WithContent(nil, private, nil, nil, nil))
+	cookie := loginCookie(t, s)
+	if _, err := private.Save(context.Background(), "abc", "old.cfg", []byte("old")); err != nil {
+		t.Fatal(err)
+	}
+
+	request := func(method, target, mediaType string, body []byte) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, target, bytes.NewReader(body))
+		r.AddCookie(cookie)
+		if mediaType != "" {
+			r.Header.Set("Content-Type", mediaType)
+		}
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		return w
+	}
+
+	if w := request(http.MethodPost, "/api/instances/abc/private/archive", "application/zip", []byte("not read")); w.Code != http.StatusPreconditionRequired || !strings.Contains(w.Body.String(), `"code":"confirmation_required"`) {
+		t.Fatalf("confirmation=%d %s", w.Code, w.Body.String())
+	}
+	if w := request(http.MethodPost, "/api/instances/abc/private/archive?confirm=true", "text/plain", []byte("bad")); w.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("media=%d %s", w.Code, w.Body.String())
+	}
+	if w := request(http.MethodPost, "/api/instances/abc/private/archive?confirm=true", "application/zip", []byte("bad")); w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), `"code":"invalid_private_archive"`) {
+		t.Fatalf("invalid=%d %s", w.Code, w.Body.String())
+	}
+	archive := httpPrivateZIP(t, []httpPrivateZIPEntry{
+		{name: "folder/new.cfg", body: "new"},
+		{name: "folder/empty/", directory: true},
+	})
+	if w := request(http.MethodPost, "/api/instances/abc/private/archive?confirm=true", "application/zip", archive); w.Code != http.StatusNoContent {
+		t.Fatalf("import=%d %s", w.Code, w.Body.String())
+	}
+	if _, err := private.Read(context.Background(), "abc", "old.cfg"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old file retained: %v", err)
+	}
+	if raw, err := private.Read(context.Background(), "abc", "folder/new.cfg"); err != nil || string(raw) != "new" {
+		t.Fatalf("new file=%q err=%v", raw, err)
+	}
+
+	exported := request(http.MethodGet, "/api/instances/abc/private/archive", "", nil)
+	if exported.Code != http.StatusOK || exported.Header().Get("Content-Type") != "application/zip" || !strings.Contains(exported.Header().Get("Content-Disposition"), "private-files-abc.zip") {
+		t.Fatalf("export=%d headers=%v body=%s", exported.Code, exported.Header(), exported.Body.String())
+	}
+	reader, err := zip.NewReader(bytes.NewReader(exported.Body.Bytes()), int64(exported.Body.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundFile, foundDirectory := false, false
+	for _, entry := range reader.File {
+		foundFile = foundFile || entry.Name == "folder/new.cfg"
+		foundDirectory = foundDirectory || entry.Name == "folder/empty/"
+	}
+	if !foundFile || !foundDirectory {
+		t.Fatalf("exported file=%t directory=%t", foundFile, foundDirectory)
+	}
+	audits, err := db.AuditEvents(context.Background(), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundAudit := false
+	for _, event := range audits {
+		if event.Target == "/api/instances/abc/private/archive" && event.Result == "204" {
+			foundAudit = true
+		}
+	}
+	if !foundAudit {
+		t.Fatal("successful archive import was not audited")
+	}
+}
+
+func TestPrivateArchiveAPILimitError(t *testing.T) {
+	s, db := testServer(t)
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.CreateInstance(context.Background(), domain.Instance{ID: "abc", NodeID: "local", Name: "abc", GamePort: 27015}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	private := content.NewPrivateManager(root, 1<<20)
+	s = New(db, s.auth, WithContent(nil, private, nil, nil, nil))
+	cookie := loginCookie(t, s)
+	limits := content.DefaultPrivateArchiveLimits
+	content.DefaultPrivateArchiveLimits.MaxCompressedBytes = 8
+	t.Cleanup(func() { content.DefaultPrivateArchiveLimits = limits })
+	r := httptest.NewRequest(http.MethodPost, "/api/instances/abc/private/archive?confirm=true", bytes.NewReader(httpPrivateZIP(t, []httpPrivateZIPEntry{{name: "a.cfg", body: "value"}})))
+	r.AddCookie(cookie)
+	r.Header.Set("Content-Type", "application/zip")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusRequestEntityTooLarge || !strings.Contains(w.Body.String(), `"code":"archive_too_large"`) {
+		t.Fatalf("limit=%d %s", w.Code, w.Body.String())
+	}
+}
+
+type httpPrivateZIPEntry struct {
+	name      string
+	body      string
+	directory bool
+}
+
+func httpPrivateZIP(t *testing.T, entries []httpPrivateZIPEntry) []byte {
+	t.Helper()
+	var raw bytes.Buffer
+	w := zip.NewWriter(&raw)
+	for _, item := range entries {
+		header := &zip.FileHeader{Name: item.name}
+		if item.directory {
+			header.SetMode(os.ModeDir | 0750)
+		}
+		entry, err := w.CreateHeader(header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = io.WriteString(entry, item.body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return raw.Bytes()
 }
 
 func TestPrivateInstanceLookupFailureIsServerError(t *testing.T) {
