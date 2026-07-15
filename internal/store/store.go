@@ -24,7 +24,55 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = migrateSelectedPackage(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
+}
+
+func migrateSelectedPackage(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(instances)`)
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, kind string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &kind, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "selected_package_id" {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if !found {
+		if _, err := tx.Exec(`ALTER TABLE instances ADD COLUMN selected_package_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE instances SET selected_package_id=package_version WHERE selected_package_id=''`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (3, CURRENT_TIMESTAMP)`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (s *Store) DB() *sql.DB  { return s.db }
 func (s *Store) Close() error { return s.db.Close() }
@@ -36,7 +84,7 @@ func (s *Store) CreateInstance(ctx context.Context, v domain.Instance) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `INSERT INTO instances(id,node_id,name,container_id,game_port,sourcetv_port,start_map,game_mode,tickrate,max_players,extra_args,runtime_image,package_version,desired_state,actual_state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, fields(v)...); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO instances(id,node_id,name,container_id,game_port,sourcetv_port,start_map,game_mode,tickrate,max_players,extra_args,runtime_image,package_version,selected_package_id,desired_state,actual_state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, fields(v)...); err != nil {
 		return err
 	}
 	if err = replacePluginPorts(ctx, tx, v.ID, v.PluginPorts); err != nil {
@@ -51,7 +99,7 @@ func (s *Store) UpdateInstance(ctx context.Context, v domain.Instance) error {
 		return err
 	}
 	defer tx.Rollback()
-	r, err := tx.ExecContext(ctx, `UPDATE instances SET node_id=?,name=?,container_id=?,game_port=?,sourcetv_port=?,start_map=?,game_mode=?,tickrate=?,max_players=?,extra_args=?,runtime_image=?,package_version=?,desired_state=?,actual_state=?,updated_at=? WHERE id=?`, v.NodeID, v.Name, v.ContainerID, v.GamePort, v.SourceTVPort, v.StartMap, v.GameMode, v.Tickrate, v.MaxPlayers, v.ExtraArgs, v.RuntimeImage, v.PackageVersion, v.DesiredState, v.ActualState, v.UpdatedAt.Format(time.RFC3339Nano), v.ID)
+	r, err := tx.ExecContext(ctx, `UPDATE instances SET node_id=?,name=?,container_id=?,game_port=?,sourcetv_port=?,start_map=?,game_mode=?,tickrate=?,max_players=?,extra_args=?,runtime_image=?,package_version=?,selected_package_id=?,desired_state=?,actual_state=?,updated_at=? WHERE id=?`, v.NodeID, v.Name, v.ContainerID, v.GamePort, v.SourceTVPort, v.StartMap, v.GameMode, v.Tickrate, v.MaxPlayers, v.ExtraArgs, v.RuntimeImage, v.PackageVersion, v.SelectedPackageID, v.DesiredState, v.ActualState, v.UpdatedAt.Format(time.RFC3339Nano), v.ID)
 	if err != nil {
 		return err
 	}
@@ -158,14 +206,14 @@ func (s *Store) allPluginPorts(ctx context.Context) (map[string][]int, error) {
 	return ports, rows.Err()
 }
 
-const selectInstance = `SELECT id,node_id,name,container_id,game_port,sourcetv_port,start_map,game_mode,tickrate,max_players,extra_args,runtime_image,package_version,desired_state,actual_state,created_at,updated_at FROM instances`
+const selectInstance = `SELECT id,node_id,name,container_id,game_port,sourcetv_port,start_map,game_mode,tickrate,max_players,extra_args,runtime_image,package_version,selected_package_id,desired_state,actual_state,created_at,updated_at FROM instances`
 
 type scanner interface{ Scan(...any) error }
 
 func scanInstance(s scanner) (domain.Instance, error) {
 	var v domain.Instance
 	var c, u string
-	err := s.Scan(&v.ID, &v.NodeID, &v.Name, &v.ContainerID, &v.GamePort, &v.SourceTVPort, &v.StartMap, &v.GameMode, &v.Tickrate, &v.MaxPlayers, &v.ExtraArgs, &v.RuntimeImage, &v.PackageVersion, &v.DesiredState, &v.ActualState, &c, &u)
+	err := s.Scan(&v.ID, &v.NodeID, &v.Name, &v.ContainerID, &v.GamePort, &v.SourceTVPort, &v.StartMap, &v.GameMode, &v.Tickrate, &v.MaxPlayers, &v.ExtraArgs, &v.RuntimeImage, &v.PackageVersion, &v.SelectedPackageID, &v.DesiredState, &v.ActualState, &c, &u)
 	if err == nil {
 		v.CreatedAt, _ = time.Parse(time.RFC3339Nano, c)
 		v.UpdatedAt, _ = time.Parse(time.RFC3339Nano, u)
@@ -173,7 +221,7 @@ func scanInstance(s scanner) (domain.Instance, error) {
 	return v, err
 }
 func fields(v domain.Instance) []any {
-	return []any{v.ID, v.NodeID, v.Name, v.ContainerID, v.GamePort, v.SourceTVPort, v.StartMap, v.GameMode, v.Tickrate, v.MaxPlayers, v.ExtraArgs, v.RuntimeImage, v.PackageVersion, v.DesiredState, v.ActualState, v.CreatedAt.Format(time.RFC3339Nano), v.UpdatedAt.Format(time.RFC3339Nano)}
+	return []any{v.ID, v.NodeID, v.Name, v.ContainerID, v.GamePort, v.SourceTVPort, v.StartMap, v.GameMode, v.Tickrate, v.MaxPlayers, v.ExtraArgs, v.RuntimeImage, v.PackageVersion, v.SelectedPackageID, v.DesiredState, v.ActualState, v.CreatedAt.Format(time.RFC3339Nano), v.UpdatedAt.Format(time.RFC3339Nano)}
 }
 
 func (s *Store) LoadCredential() (hash, salt []byte, found bool, err error) {

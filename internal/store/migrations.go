@@ -7,7 +7,8 @@ CREATE TABLE IF NOT EXISTS instances (
  game_port INTEGER NOT NULL UNIQUE, sourcetv_port INTEGER NOT NULL DEFAULT 0,
  start_map TEXT NOT NULL, game_mode TEXT NOT NULL, tickrate INTEGER NOT NULL,
  max_players INTEGER NOT NULL, extra_args TEXT NOT NULL DEFAULT '', runtime_image TEXT NOT NULL,
- package_version TEXT NOT NULL DEFAULT '', desired_state TEXT NOT NULL, actual_state TEXT NOT NULL,
+ package_version TEXT NOT NULL DEFAULT '', selected_package_id TEXT NOT NULL DEFAULT '',
+ desired_state TEXT NOT NULL, actual_state TEXT NOT NULL,
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS administrator (

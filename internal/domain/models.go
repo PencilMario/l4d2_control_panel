@@ -17,13 +17,17 @@ const (
 )
 
 type Instance struct {
-	ID, NodeID, Name, ContainerID, StartMap, GameMode, ExtraArgs, RuntimeImage, PackageVersion string
-	GamePort                                                                                   int
-	SourceTVPort                                                                               int   `json:"sourcetv_port"`
-	PluginPorts                                                                                []int `json:"plugin_ports"`
-	Tickrate, MaxPlayers                                                                       int
-	DesiredState, ActualState                                                                  InstanceState
-	CreatedAt, UpdatedAt                                                                       time.Time
+	ID, NodeID, Name, ContainerID, StartMap, GameMode string
+	ExtraArgs                                         string `json:"extra_args"`
+	RuntimeImage                                      string
+	PackageVersion                                    string `json:"applied_package_id"`
+	SelectedPackageID                                 string `json:"package_id"`
+	GamePort                                          int
+	SourceTVPort                                      int   `json:"sourcetv_port"`
+	PluginPorts                                       []int `json:"plugin_ports"`
+	Tickrate, MaxPlayers                              int
+	DesiredState, ActualState                         InstanceState
+	CreatedAt, UpdatedAt                              time.Time
 }
 
 type JobRecord struct {

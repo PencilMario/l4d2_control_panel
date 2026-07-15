@@ -10,3 +10,11 @@
 - `cd web && npm run build`: PASS.
 
 Implementation evidence will be appended after each red/green slice.
+
+## Task 1: Selected Package Persistence
+
+- RED: `go test -count=1 ./internal/store` failed to compile because `domain.Instance.SelectedPackageID` did not exist.
+- GREEN: added additive `selected_package_id`, legacy backfill from `package_version`, explicit selected/applied JSON fields and CRUD scan coverage.
+- `go test -count=1 ./internal/store`: PASS.
+- `go test -count=1 ./internal/store ./internal/httpapi`: PASS.
+- `git diff --check`: PASS.

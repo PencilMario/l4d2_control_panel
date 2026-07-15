@@ -2,11 +2,40 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 )
+
+func openLegacyInstanceDatabase(t *testing.T, path, packageID string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE instances (
+ id TEXT PRIMARY KEY, node_id TEXT NOT NULL DEFAULT 'local', name TEXT NOT NULL UNIQUE, container_id TEXT NOT NULL DEFAULT '',
+ game_port INTEGER NOT NULL UNIQUE, sourcetv_port INTEGER NOT NULL DEFAULT 0,
+ start_map TEXT NOT NULL, game_mode TEXT NOT NULL, tickrate INTEGER NOT NULL,
+ max_players INTEGER NOT NULL, extra_args TEXT NOT NULL DEFAULT '', runtime_image TEXT NOT NULL,
+ package_version TEXT NOT NULL DEFAULT '', desired_state TEXT NOT NULL, actual_state TEXT NOT NULL,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+)`)
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = db.Exec(`INSERT INTO instances(id,node_id,name,container_id,game_port,sourcetv_port,start_map,game_mode,tickrate,max_players,extra_args,runtime_image,package_version,desired_state,actual_state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "legacy", "local", "Legacy", "", 27015, 0, "map", "coop", 100, 8, "", "runtime", packageID, domain.StateStopped, domain.StateStopped, now, now)
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	return db
+}
 
 func TestOpenEnablesWALAndMigrates(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
@@ -64,6 +93,59 @@ func TestInstanceCRUD(t *testing.T) {
 	}
 	if _, err := s.Instance(ctx, got.ID); err != ErrNotFound {
 		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestSelectedPackagePersistsIndependentlyFromAppliedPackage(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	value := domain.Instance{
+		ID:                "instance-packages",
+		NodeID:            "local",
+		Name:              "Packages",
+		GamePort:          27015,
+		StartMap:          "c2m1_highway",
+		GameMode:          "coop",
+		Tickrate:          100,
+		MaxPlayers:        8,
+		RuntimeImage:      "runtime",
+		SelectedPackageID: "selected-package",
+		PackageVersion:    "applied-package",
+		DesiredState:      domain.StateStopped,
+		ActualState:       domain.StateStopped,
+	}
+	if err := s.CreateInstance(context.Background(), value); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Instance(context.Background(), value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SelectedPackageID != "selected-package" || got.PackageVersion != "applied-package" {
+		t.Fatalf("instance=%#v", got)
+	}
+}
+
+func TestMigrationBackfillsSelectedPackageFromAppliedPackage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "panel.db")
+	legacy := openLegacyInstanceDatabase(t, path, "package-a")
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	got, err := s.Instance(context.Background(), "legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SelectedPackageID != "package-a" || got.PackageVersion != "package-a" {
+		t.Fatalf("instance=%#v", got)
 	}
 }
 
