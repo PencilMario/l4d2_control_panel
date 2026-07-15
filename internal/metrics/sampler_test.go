@@ -38,6 +38,21 @@ type fakeRuntime struct {
 	runtimeFn            func(context.Context, string) (docker.RuntimeState, error)
 	statsDeadlineSeen    bool
 	statsCalls           int
+	imageSize            uint64
+	imageSizeErr         error
+	imageSizeCalls       int
+	imageSizeFn          func(context.Context, string) (uint64, error)
+}
+
+func (f *fakeRuntime) ImageSize(ctx context.Context, id string) (uint64, error) {
+	f.mu.Lock()
+	f.imageSizeCalls++
+	fn, size, err := f.imageSizeFn, f.imageSize, f.imageSizeErr
+	f.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, id)
+	}
+	return size, err
 }
 
 func (f *fakeRuntime) Runtime(ctx context.Context, id string) (docker.RuntimeState, error) {
@@ -143,8 +158,80 @@ func TestStoppedInstanceSkipsExpensiveSources(t *testing.T) {
 	s, _, runtime, network, player, _ := testSampler(now)
 	runtime.runtime["container"] = docker.RuntimeState{Running: false}
 	s.Sample(context.Background())
-	if runtime.statsCalls != 0 || network.totalsCalls != 0 || player.calls != 0 {
-		t.Fatalf("stopped calls stats=%d totals=%d players=%d", runtime.statsCalls, network.totalsCalls, player.calls)
+	if runtime.statsCalls != 0 || runtime.imageSizeCalls != 0 || network.totalsCalls != 0 || player.calls != 0 {
+		t.Fatalf("stopped calls stats=%d image=%d totals=%d players=%d", runtime.statsCalls, runtime.imageSizeCalls, network.totalsCalls, player.calls)
+	}
+}
+
+func TestRunningInstanceSamplesImageSize(t *testing.T) {
+	s, _, runtime, _, _, _ := testSampler(time.Now().UTC())
+	runtime.imageSize = 3_221_225_472
+	s.Sample(context.Background())
+	got, _ := s.Latest("one")
+	if got.ImageSizeBytes == nil || *got.ImageSizeBytes != runtime.imageSize || runtime.imageSizeCalls != 1 {
+		t.Fatalf("image size=%v calls=%d", got.ImageSizeBytes, runtime.imageSizeCalls)
+	}
+	*got.ImageSizeBytes = 1
+	fresh, _ := s.Latest("one")
+	if fresh.ImageSizeBytes == nil || *fresh.ImageSizeBytes != runtime.imageSize {
+		t.Fatalf("Latest aliases image size: %+v", fresh)
+	}
+}
+
+func TestImageSizeFailureKeepsOtherMetrics(t *testing.T) {
+	s, _, runtime, _, _, _ := testSampler(time.Now().UTC())
+	runtime.imageSizeErr = errors.New("inspect unavailable")
+	s.Sample(context.Background())
+	got, _ := s.Latest("one")
+	if got.ImageSizeBytes != nil || !hasIssue(got.Issues, "docker_image") {
+		t.Fatalf("snapshot=%+v", got)
+	}
+	if got.CPUPercent == nil || got.MemoryBytes == nil || got.Map == nil {
+		t.Fatalf("image failure discarded independent metrics: %+v", got)
+	}
+}
+
+func TestImageSizeQueryDoesNotBlockOtherSources(t *testing.T) {
+	s, _, runtime, _, _, _ := testSampler(time.Now().UTC())
+	release := make(chan struct{})
+	runtime.imageSizeFn = func(context.Context, string) (uint64, error) {
+		<-release
+		return 0, errors.New("inspect unavailable")
+	}
+	done := make(chan struct{})
+	go func() {
+		s.Sample(context.Background())
+		close(done)
+	}()
+	deadline := time.After(time.Second)
+	for {
+		runtime.mu.Lock()
+		statsCalls := runtime.statsCalls
+		runtime.mu.Unlock()
+		if statsCalls > 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			close(release)
+			<-done
+			t.Fatal("image size query blocked stats sampling")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	close(release)
+	<-done
+}
+
+func TestMergeSnapshotCopiesImageSizePointer(t *testing.T) {
+	size := uint64(42)
+	source := Snapshot{ImageSizeBytes: &size}
+	target := Snapshot{}
+	mergeSnapshot(&target, source)
+	size = 99
+	if target.ImageSizeBytes == nil || *target.ImageSizeBytes != 42 {
+		t.Fatalf("merged image size aliases source: %v", target.ImageSizeBytes)
 	}
 }
 
@@ -603,6 +690,8 @@ func (w *workerRuntime) Runtime(ctx context.Context, id string) (docker.RuntimeS
 	}
 	return docker.RuntimeState{Running: false}, nil
 }
+
+func (w *workerRuntime) ImageSize(context.Context, string) (uint64, error) { return 0, nil }
 
 func TestWorkerPoolProcessesMoreJobsThanWorkers(t *testing.T) {
 	items := make([]domain.Instance, 9)

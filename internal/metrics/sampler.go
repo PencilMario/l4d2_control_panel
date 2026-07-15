@@ -27,6 +27,7 @@ type InstanceSource interface {
 type RuntimeProvider interface {
 	Runtime(context.Context, string) (docker.RuntimeState, error)
 	Stats(context.Context, string) (docker.ResourceStats, error)
+	ImageSize(context.Context, string) (uint64, error)
 }
 type TrafficProvider interface {
 	Register(context.Context, traffic.Session) error
@@ -63,6 +64,7 @@ type Snapshot struct {
 	Timestamp                time.Time `json:"timestamp"`
 	RunID                    string    `json:"run_id"`
 	ContainerRunning         *bool     `json:"container_running"`
+	ImageSizeBytes           *uint64   `json:"image_size_bytes"`
 	CPUPercent               *float64  `json:"cpu_percent"`
 	MemoryBytes              *uint64   `json:"memory_bytes"`
 	MemoryLimitBytes         *uint64   `json:"memory_limit_bytes"`
@@ -235,8 +237,24 @@ func (s *Sampler) sampleInstance(ctx context.Context, instance domain.Instance) 
 	}
 	uptimeSeconds := uint64(uptime / time.Second)
 	snapshot.UptimeSeconds = &uptimeSeconds
+	type imageSizeResult struct {
+		size uint64
+		err  error
+	}
+	imageSizeCh := make(chan imageSizeResult, 1)
+	go func() {
+		size, err := s.runtime.ImageSize(ctx, instance.ContainerID)
+		imageSizeCh <- imageSizeResult{size: size, err: err}
+	}()
 
 	statsResult, playerResult, _ := s.collectIndependent(ctx, now, instance, "")
+	imageResult := <-imageSizeCh
+	if imageResult.err != nil {
+		imageErr := imageResult.err
+		snapshot.Issues = append(snapshot.Issues, issue("docker_image", imageErr))
+	} else {
+		snapshot.ImageSizeBytes = uint64ptr(imageResult.size)
+	}
 	mergeSnapshot(&snapshot, statsResult.snapshot)
 	mergeSnapshot(&snapshot, playerResult)
 	counters := counterSample{timestamp: now, runID: snapshot.RunID, read: statsResult.counters.read, write: statsResult.counters.write}
@@ -279,6 +297,9 @@ type sourceResult struct {
 }
 
 func mergeSnapshot(target *Snapshot, source Snapshot) {
+	if source.ImageSizeBytes != nil {
+		target.ImageSizeBytes = cloneUint64(source.ImageSizeBytes)
+	}
 	if source.CPUPercent != nil {
 		target.CPUPercent = source.CPUPercent
 	}
@@ -528,6 +549,7 @@ func cloneString(v *string) *string {
 }
 func cloneSnapshot(v Snapshot) Snapshot {
 	v.ContainerRunning = cloneBool(v.ContainerRunning)
+	v.ImageSizeBytes = cloneUint64(v.ImageSizeBytes)
 	v.CPUPercent = cloneFloat64(v.CPUPercent)
 	v.MemoryBytes = cloneUint64(v.MemoryBytes)
 	v.MemoryLimitBytes = cloneUint64(v.MemoryLimitBytes)
