@@ -1,5 +1,5 @@
-import { useState, type FormEvent } from "react";
-import { TerminalSquare, X } from "lucide-react";
+import { useRef, useState, type FormEvent } from "react";
+import { RefreshCw, TerminalSquare, X } from "lucide-react";
 
 export type PackageVersion = {
   id: string;
@@ -107,12 +107,15 @@ export function InstanceConfigModal({
   );
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   const setValue = <Key extends keyof InstanceConfigValues>(
     key: Key,
     value: InstanceConfigValues[Key],
   ) => setValues((current) => ({ ...current, [key]: value }));
   const submit = async (event: FormEvent) => {
     event.preventDefault();
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     setError("");
     setSubmitting(true);
     const parsedPorts = pluginPorts
@@ -126,6 +129,7 @@ export function InstanceConfigModal({
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   };
@@ -299,14 +303,16 @@ export function InstanceConfigModal({
           </div>
         ) : null}
         <div className="instance-config-actions">
-          <button type="button" onClick={onClose}>
+          <button type="button" disabled={submitting} onClick={onClose}>
             取消
           </button>
           <button
             className="create"
             disabled={submitting || !packages.length}
+            aria-busy={submitting}
           >
-            {actionLabel}
+            {submitting ? <RefreshCw /> : null}
+            {submitting ? "保存中…" : actionLabel}
           </button>
         </div>
       </form>

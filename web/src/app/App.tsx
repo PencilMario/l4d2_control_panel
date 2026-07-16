@@ -112,7 +112,7 @@ type Confirmation = {
   title: string;
   description: string;
   confirmLabel: string;
-  confirm: () => void;
+  confirm: () => Promise<boolean | void> | boolean | void;
 };
 type PlayerMatch = {
   hostname: string;
@@ -156,6 +156,32 @@ type HistoryBootstrap = {
   controller: AbortController;
   promise: Promise<PerformanceHistoryPoint[]>;
 };
+
+function useAsyncLocks() {
+  const locks = useRef(new Set<string>());
+  const [pending, setPending] = useState(new Set<string>());
+  const run = useCallback(async (key: string, operation: () => Promise<unknown>) => {
+    if (locks.current.has(key)) return false;
+    locks.current.add(key);
+    setPending((current) => new Set(current).add(key));
+    try {
+      await operation();
+      return true;
+    } finally {
+      locks.current.delete(key);
+      setPending((current) => {
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
+    }
+  }, []);
+  return {
+    pending,
+    run,
+    isLocked: (key: string) => locks.current.has(key),
+  };
+}
 
 export function mergePerformanceHistory(
   existing: PerformanceHistoryPoint[],
@@ -254,6 +280,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
   const pollTimers = useRef(new globalThis.Map<string, number>());
   const actionLocks = useRef(new Set<string>());
   const [pendingActions, setPendingActions] = useState(new Set<string>());
+  const queueLocks = useRef(new Set<string>());
   useEffect(() => () => {
     for (const controller of pollControllers.current.values()) controller.abort();
     for (const timer of pollTimers.current.values()) window.clearTimeout(timer);
@@ -466,12 +493,20 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
     };
   }, [auth, injected, loadInstances]);
   const queue = async (path: string, body: any) => {
-    const created = await api<Job>(path, {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    setJob(created);
-    void pollJob(created.ID).catch(() => undefined);
+    const serialized = JSON.stringify(body);
+    const key = `${path}\u0000${serialized}`;
+    if (queueLocks.current.has(key)) return;
+    queueLocks.current.add(key);
+    try {
+      const created = await api<Job>(path, {
+        method: "POST",
+        body: serialized,
+      });
+      setJob(created);
+      void pollJob(created.ID).catch(() => undefined);
+    } finally {
+      queueLocks.current.delete(key);
+    }
   };
   const queueAndWait = async (path: string, body: unknown) => {
     const created = await api<Job>(path, {
@@ -1042,9 +1077,9 @@ function Overview({
         <ConfirmationDialog
           {...confirmation}
           close={() => setConfirmation(null)}
-          onConfirm={() => {
-            confirmation.confirm();
-            setConfirmation(null);
+          onConfirm={async () => {
+            const succeeded = await confirmation.confirm();
+            if (succeeded !== false) setConfirmation(null);
           }}
         />
       )}
@@ -1052,8 +1087,8 @@ function Overview({
         <ReinstallDialog
           instance={reinstalling}
           close={() => setReinstalling(null)}
-          onConfirm={(game, packageOption) => {
-            void queue(`/api/instances/${reinstalling.id}/game-update`, {
+          onConfirm={async (game, packageOption) => {
+            await queue(`/api/instances/${reinstalling.id}/game-update`, {
               confirm: true,
               reinstall_game: game,
               reinstall_package: packageOption,
@@ -1150,6 +1185,7 @@ function ContentPage({
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [sources, setSources] = useState<GitHubSource[]>([]);
   const [sourceEditor, setSourceEditor] = useState<GitHubSource | null>(null);
+  const contentActions = useAsyncLocks();
   const loadVPK = () => api<any[]>("/api/content/vpk").then(setVpks);
   const loadSources = () => api<GitHubSource[]>("/api/github-sources").then((items) => setSources(Array.isArray(items) ? items : []));
   useEffect(() => {
@@ -1232,9 +1268,12 @@ function ContentPage({
     });
     await loadVPK();
   };
-  const runContentAction = (operation: () => Promise<unknown>) => {
+  const runContentAction = (key: string, operation: () => Promise<unknown>) => {
     setContentError("");
-    void operation().catch((reason) => setContentError(errorMessage(reason)));
+    return contentActions.run(key, operation).catch((reason) => {
+      setContentError(errorMessage(reason));
+      return false;
+    });
   };
   return (
     <div className="content-layout">
@@ -1262,7 +1301,9 @@ function ContentPage({
           <FileButton
             label="上传 VPK"
             accept=".vpk"
-            onFile={(file) => runContentAction(() => uploadVPK(file))}
+            disabled={contentActions.pending.has("upload:vpk")}
+            busy={contentActions.pending.has("upload:vpk")}
+            onFile={(file) => runContentAction("upload:vpk", () => uploadVPK(file))}
           />
         }
       >
@@ -1282,12 +1323,14 @@ function ContentPage({
               >
                 下载
               </a>
-              <button onClick={() => runContentAction(() => renameVPK(x.name))}>
+              <button disabled={contentActions.pending.has(`vpk:rename:${x.name}`)} aria-busy={contentActions.pending.has(`vpk:rename:${x.name}`)} onClick={() => runContentAction(`vpk:rename:${x.name}`, () => renameVPK(x.name))}>
                 重命名
               </button>
               <button
                 className="danger"
-                onClick={() => runContentAction(() => deleteVPK(x.name))}
+                disabled={contentActions.pending.has(`vpk:delete:${x.name}`)}
+                aria-busy={contentActions.pending.has(`vpk:delete:${x.name}`)}
+                onClick={() => runContentAction(`vpk:delete:${x.name}`, () => deleteVPK(x.name))}
               >
                 删除
               </button>
@@ -1301,14 +1344,14 @@ function ContentPage({
         action={
           <div className="inline-actions">
             <button onClick={() => setSourceEditor({ id: "", name: "", repository: "", asset_pattern: "" })}>添加 GitHub 源</button>
-            <FileButton label="上传 ZIP" accept=".zip" onFile={(file) => runContentAction(() => uploadPackage(file))} />
+            <FileButton label="上传 ZIP" accept=".zip" disabled={contentActions.pending.has("upload:package")} busy={contentActions.pending.has("upload:package")} onFile={(file) => runContentAction("upload:package", () => uploadPackage(file))} />
           </div>
         }
       >
         {sourceEditor ? (
           <form className="release-source" onSubmit={(event) => {
             event.preventDefault();
-            runContentAction(async () => {
+            runContentAction(`source:save:${sourceEditor.id || "new"}`, async () => {
               await api(sourceEditor.id ? `/api/github-sources/${sourceEditor.id}` : "/api/github-sources", {
                 method: sourceEditor.id ? "PUT" : "POST",
                 body: JSON.stringify({ name: sourceEditor.name, repository: sourceEditor.repository, asset_pattern: sourceEditor.asset_pattern }),
@@ -1320,7 +1363,7 @@ function ContentPage({
             <label>源名称<input aria-label="源名称" value={sourceEditor.name} onChange={(event) => setSourceEditor({ ...sourceEditor, name: event.target.value })} required /></label>
             <label>GitHub 仓库<input aria-label="GitHub 仓库" value={sourceEditor.repository} onChange={(event) => setSourceEditor({ ...sourceEditor, repository: event.target.value })} required /></label>
             <label>Release 资源规则<input aria-label="Release 资源规则" value={sourceEditor.asset_pattern} onChange={(event) => setSourceEditor({ ...sourceEditor, asset_pattern: event.target.value })} required /></label>
-            <div className="inline-actions"><button className="create">保存源</button><button type="button" onClick={() => setSourceEditor(null)}>取消</button></div>
+            <div className="inline-actions"><button className="create" disabled={contentActions.pending.has(`source:save:${sourceEditor.id || "new"}`)} aria-busy={contentActions.pending.has(`source:save:${sourceEditor.id || "new"}`)}>{contentActions.pending.has(`source:save:${sourceEditor.id || "new"}`) ? <><RefreshCw />保存中…</> : "保存源"}</button><button type="button" onClick={() => setSourceEditor(null)}>取消</button></div>
           </form>
         ) : null}
         <div className="source-grid">
@@ -1328,9 +1371,9 @@ function ContentPage({
             <article className="source-card" key={source.id}>
               <div><b>{source.name}</b><small>{source.repository}</small><code>{source.asset_pattern}</code></div>
               <div className="inline-actions">
-                <button aria-label={`检查更新 ${source.name}`} onClick={() => runContentAction(() => queue(`/api/github-sources/${source.id}/check`, {}))}>检查更新</button>
+                <button disabled={contentActions.pending.has(`source:check:${source.id}`)} aria-busy={contentActions.pending.has(`source:check:${source.id}`)} aria-label={`检查更新 ${source.name}`} onClick={() => runContentAction(`source:check:${source.id}`, () => queue(`/api/github-sources/${source.id}/check`, {}))}>检查更新</button>
                 <button onClick={() => setSourceEditor(source)}>编辑</button>
-                <button className="danger" onClick={() => { if (window.confirm(`删除源 ${source.name}？已下载插件包会保留。`)) runContentAction(async () => { await api(`/api/github-sources/${source.id}`, { method: "DELETE" }); await loadSources(); }); }}>删除</button>
+                <button className="danger" disabled={contentActions.pending.has(`source:delete:${source.id}`)} aria-busy={contentActions.pending.has(`source:delete:${source.id}`)} onClick={() => { if (window.confirm(`删除源 ${source.name}？已下载插件包会保留。`)) runContentAction(`source:delete:${source.id}`, async () => { await api(`/api/github-sources/${source.id}`, { method: "DELETE" }); await loadSources(); }); }}>删除</button>
               </div>
             </article>
           ))}
@@ -1351,7 +1394,7 @@ function ContentPage({
                 <button
                   disabled={!selected}
                   onClick={() =>
-                    runContentAction(() =>
+                    runContentAction(`update:${selected}:${x.id}:hot`, () =>
                       queue(`/api/instances/${selected}/updates`, {
                         package_id: x.id,
                         mode: "hot",
@@ -1371,7 +1414,7 @@ function ContentPage({
                       "完整更新会停止服务器并替换插件包；失败时后台任务会保留诊断记录。",
                     confirmLabel: "确认完整更新",
                     confirm: () =>
-                      runContentAction(() =>
+                      runContentAction(`update:${selected}:${x.id}:full`, () =>
                         queue(`/api/instances/${selected}/updates`, {
                           package_id: x.id,
                           mode: "full",
@@ -1394,9 +1437,9 @@ function ContentPage({
           description={confirmation.description}
           confirmLabel={confirmation.confirmLabel}
           close={() => setConfirmation(null)}
-          onConfirm={() => {
-            confirmation.confirm();
-            setConfirmation(null);
+          onConfirm={async () => {
+            const succeeded = await confirmation.confirm();
+            if (succeeded !== false) setConfirmation(null);
           }}
         />
       )}
@@ -1431,16 +1474,21 @@ function PlayersModal({
         ? "玩家会立即从当前服务器断开。"
         : "该玩家将被永久封禁，直至管理员手动解除。",
       confirmLabel: kick ? "确认踢出" : "确认永久封禁",
-      confirm: () => {
+      confirm: async () => {
         setPlayersError("");
-        void queue(
-          `/api/instances/${instance.id}/players/${player.user_id}/actions`,
-          {
-            action,
-            ...(kick ? {} : { minutes: 0 }),
-            confirm: true,
-          },
-        ).catch((reason) => setPlayersError(errorMessage(reason)));
+        try {
+          await queue(
+            `/api/instances/${instance.id}/players/${player.user_id}/actions`,
+            {
+              action,
+              ...(kick ? {} : { minutes: 0 }),
+              confirm: true,
+            },
+          );
+        } catch (reason) {
+          setPlayersError(errorMessage(reason));
+          throw reason;
+        }
       },
     });
   };
@@ -1502,9 +1550,9 @@ function PlayersModal({
         <ConfirmationDialog
           {...confirmation}
           close={() => setConfirmation(null)}
-          onConfirm={() => {
-            confirmation.confirm();
-            setConfirmation(null);
+          onConfirm={async () => {
+            const succeeded = await confirmation.confirm();
+            if (succeeded !== false) setConfirmation(null);
           }}
         />
       )}
@@ -1540,6 +1588,7 @@ function SettingsPage() {
   const [jobSettingsReady, setJobSettingsReady] = useState(false);
   const [savingJobs, setSavingJobs] = useState(false);
   const [jobsNotice, setJobsNotice] = useState("");
+  const settingsActions = useAsyncLocks();
   useEffect(() => {
     api<any>("/api/settings/steam")
       .then((x) => setSteam(x.configured))
@@ -1561,17 +1610,20 @@ function SettingsPage() {
   const saveSteam = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const data = new FormData(e.currentTarget);
+    const form = e.currentTarget;
     setSettingsError("");
     try {
-      await api("/api/settings/steam", {
-        method: "PUT",
-        body: JSON.stringify({
-          username: data.get("username"),
-          password: data.get("password"),
-        }),
+      await settingsActions.run("steam", async () => {
+        await api("/api/settings/steam", {
+          method: "PUT",
+          body: JSON.stringify({
+            username: data.get("username"),
+            password: data.get("password"),
+          }),
+        });
+        setSteam(true);
+        form.reset();
       });
-      setSteam(true);
-      e.currentTarget.reset();
     } catch (reason) {
       setSettingsError(errorMessage(reason));
     }
@@ -1579,20 +1631,24 @@ function SettingsPage() {
   const saveGithub = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const data = new FormData(e.currentTarget);
+    const form = e.currentTarget;
     setSettingsError("");
     try {
-      await api("/api/settings/github-token", {
-        method: "PUT",
-        body: JSON.stringify({ token: data.get("token") }),
+      await settingsActions.run("github", async () => {
+        await api("/api/settings/github-token", {
+          method: "PUT",
+          body: JSON.stringify({ token: data.get("token") }),
+        });
+        setGithub(true);
+        form.reset();
       });
-      setGithub(true);
-      e.currentTarget.reset();
     } catch (reason) {
       setSettingsError(errorMessage(reason));
     }
   };
   const saveJobSettings = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (settingsActions.isLocked("jobs")) return;
     const limit = Number(draftJobLimit);
     if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
       setSettingsError("已完成任务保留数量必须为 1 至 500 的整数");
@@ -1602,16 +1658,18 @@ function SettingsPage() {
     setJobsNotice("");
     setSavingJobs(true);
     try {
-      const saved = await api<{ successful_job_limit: number }>(
-        "/api/settings/jobs",
-        {
-          method: "PUT",
-          body: JSON.stringify({ successful_job_limit: limit }),
-        },
-      );
-      setConfirmedJobLimit(saved.successful_job_limit);
-      setDraftJobLimit(String(saved.successful_job_limit));
-      setJobsNotice("任务记录设置已保存");
+      await settingsActions.run("jobs", async () => {
+        const saved = await api<{ successful_job_limit: number }>(
+          "/api/settings/jobs",
+          {
+            method: "PUT",
+            body: JSON.stringify({ successful_job_limit: limit }),
+          },
+        );
+        setConfirmedJobLimit(saved.successful_job_limit);
+        setDraftJobLimit(String(saved.successful_job_limit));
+        setJobsNotice("任务记录设置已保存");
+      });
     } catch (reason) {
       setDraftJobLimit(String(confirmedJobLimit));
       setSettingsError(errorMessage(reason));
@@ -1647,7 +1705,9 @@ function SettingsPage() {
             required
           />
         </label>
-        <button className="create">加密保存</button>
+        <button className="create" disabled={settingsActions.pending.has("steam")} aria-busy={settingsActions.pending.has("steam")}>
+          {settingsActions.pending.has("steam") ? <><RefreshCw />保存中…</> : "加密保存"}
+        </button>
       </form>
       <form className="control-form" onSubmit={saveGithub}>
         <p className="eyebrow">GITHUB RELEASES</p>
@@ -1657,7 +1717,9 @@ function SettingsPage() {
           Token
           <input name="token" type="password" required />
         </label>
-        <button className="create">加密保存</button>
+        <button className="create" disabled={settingsActions.pending.has("github")} aria-busy={settingsActions.pending.has("github")}>
+          {settingsActions.pending.has("github") ? <><RefreshCw />保存中…</> : "加密保存"}
+        </button>
       </form>
       <form className="control-form" onSubmit={saveJobSettings}>
         <p className="eyebrow">JOB RECORDS</p>
@@ -1685,6 +1747,7 @@ function SettingsPage() {
           type="submit"
           aria-label="保存任务记录设置"
           disabled={!jobSettingsReady || savingJobs}
+          aria-busy={savingJobs}
         >
           {savingJobs ? "保存中…" : "保存"}
         </button>
@@ -1697,18 +1760,23 @@ function FileButton({
   label,
   accept,
   onFile,
+  disabled = false,
+  busy = false,
 }: {
   label: string;
   accept: string;
   onFile: (f: File) => void;
+  disabled?: boolean;
+  busy?: boolean;
 }) {
   return (
-    <label className="create file-button">
-      <Plus />
-      {label}
+    <label className="create file-button" aria-busy={busy} aria-disabled={disabled}>
+      {busy ? <RefreshCw /> : <Plus />}
+      {busy ? "处理中…" : label}
       <input
         type="file"
         accept={accept}
+        disabled={disabled}
         onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])}
       />
     </label>
@@ -1780,11 +1848,27 @@ function ConfirmationDialog({
   description: string;
   confirmLabel: string;
   close: () => void;
-  onConfirm: () => void;
+  onConfirm: () => Promise<boolean | void> | boolean | void;
 }) {
   const dialog = useRef<HTMLDivElement | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+  const confirm = async () => {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    try {
+      await onConfirm();
+    } catch {
+      // The owning feature keeps the dialog open and renders the request error.
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  };
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
+      if (submitting) return;
       if (event.key === "Escape") {
         close();
         return;
@@ -1808,7 +1892,7 @@ function ConfirmationDialog({
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [close]);
+  }, [close, submitting]);
   return (
     <div className="modal-wrap">
       <div
@@ -1825,14 +1909,17 @@ function ConfirmationDialog({
         <h2 id="confirmation-title">{title}</h2>
         <p>{description}</p>
         <div>
-          <button onClick={close}>取消</button>
+          <button disabled={submitting} onClick={close}>取消</button>
           <button
             autoFocus
             className="danger"
             aria-label={confirmLabel}
-            onClick={onConfirm}
+            disabled={submitting}
+            aria-busy={submitting}
+            onClick={() => void confirm()}
           >
-            {confirmLabel}
+            {submitting ? <RefreshCw /> : null}
+            {submitting ? "处理中…" : confirmLabel}
           </button>
         </div>
       </div>
@@ -1847,11 +1934,24 @@ function ReinstallDialog({
 }: {
   instance: Instance;
   close: () => void;
-  onConfirm: (game: boolean, packageOption: boolean) => void;
+  onConfirm: (game: boolean, packageOption: boolean) => Promise<void>;
 }) {
 	const hasPackage = Boolean(instance.package_id);
   const [game, setGame] = useState(true);
   const [packageOption, setPackageOption] = useState(hasPackage);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+  const submit = async () => {
+    if (submittingRef.current || (!game && !packageOption)) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    try {
+      await onConfirm(game, packageOption);
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  };
   return (
     <div className="modal-wrap">
       <div
@@ -1888,14 +1988,16 @@ function ReinstallDialog({
           </label>
         </fieldset>
         <div>
-          <button onClick={close}>取消</button>
+          <button disabled={submitting} onClick={close}>取消</button>
           <button
             className="danger"
             aria-label="确认重新安装"
-            disabled={!game && !packageOption}
-            onClick={() => onConfirm(game, packageOption)}
+            disabled={submitting || (!game && !packageOption)}
+            aria-busy={submitting}
+            onClick={() => void submit()}
           >
-            确认重新安装
+            {submitting ? <RefreshCw /> : null}
+            {submitting ? "正在创建任务…" : "确认重新安装"}
           </button>
         </div>
       </div>

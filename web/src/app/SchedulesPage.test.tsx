@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SchedulesPage } from "./SchedulesPage";
 
@@ -93,6 +93,33 @@ afterEach(() => {
 });
 
 describe("SchedulesPage", () => {
+  it("prevents duplicate schedule saves while the request is pending", async () => {
+    let posts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        if (path === "/api/github-sources") return json([]);
+        if (path === "/api/schedules" && init?.method === "POST") {
+          posts += 1;
+          return new Promise<Response>(() => undefined);
+        }
+        if (path === "/api/schedules") return json([]);
+        return json([]);
+      }),
+    );
+    render(<SchedulesPage instances={instances} packages={packages} />);
+    const button = await screen.findByRole("button", { name: "保存计划" });
+
+    act(() => {
+      button.click();
+      button.click();
+    });
+
+    expect(posts).toBe(1);
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-busy", "true");
+  });
   it("shows detailed descriptions for all eight task types", async () => {
     mockSchedules([]);
     const user = userEvent.setup();

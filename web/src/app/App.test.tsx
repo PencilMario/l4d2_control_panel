@@ -776,6 +776,79 @@ describe("App", () => {
     expect(firstButton).toHaveAttribute("aria-busy", "true");
     expect(secondButton).toBeEnabled();
   });
+  it("prevents duplicate GitHub source saves while the request is pending", async () => {
+    const save = deferred<Response>();
+    let sourcePosts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        if (path === "/api/github-sources" && init?.method === "POST") {
+          sourcePosts += 1;
+          return save.promise;
+        }
+        return new Response("[]", {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
+    await userEvent.click(await screen.findByRole("button", { name: "添加 GitHub 源" }));
+    await userEvent.type(screen.getByLabelText("源名称"), "社区源");
+    await userEvent.type(screen.getByLabelText("GitHub 仓库"), "owner/repo");
+    await userEvent.type(screen.getByLabelText("Release 资源规则"), "plugins.zip");
+    const button = screen.getByRole("button", { name: "保存源" });
+
+    act(() => {
+      button.click();
+      button.click();
+    });
+
+    expect(sourcePosts).toBe(1);
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-busy", "true");
+  });
+  it("prevents duplicate credential saves while the request is pending", async () => {
+    const save = deferred<Response>();
+    let steamPuts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        if (path === "/api/settings/steam" && init?.method === "PUT") {
+          steamPuts += 1;
+          return save.promise;
+        }
+        if (path === "/api/settings/jobs") {
+          return new Response('{"successful_job_limit":25}', {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response('{"configured":false}', {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "系统设置" }));
+    await userEvent.type(await screen.findByLabelText("用户名"), "operator");
+    await userEvent.type(screen.getByLabelText("密码"), "password");
+    const form = screen.getByLabelText("用户名").closest("form")!;
+    const button = within(form).getByRole("button", { name: "加密保存" });
+
+    act(() => {
+      button.click();
+      button.click();
+    });
+
+    expect(steamPuts).toBe(1);
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-busy", "true");
+  });
   it("opens private files as an independent main navigation page", async () => {
     vi.stubGlobal(
       "fetch",
@@ -1139,12 +1212,8 @@ describe("App", () => {
   });
 
   it("selects both forced reinstall targets by default", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response('{"ID":"job-1","Status":"pending"}', {
-        status: 202,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
+    const request = deferred<Response>();
+    const fetchMock = vi.fn(() => request.promise);
     vi.stubGlobal("fetch", fetchMock);
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "更新" }));
@@ -1152,9 +1221,14 @@ describe("App", () => {
     expect(screen.getByRole("dialog")).toHaveTextContent("重新安装实例组件");
     expect(screen.getByRole("checkbox", { name: "重新安装游戏本体" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "重新安装实例插件包" })).toBeChecked();
-    await userEvent.click(
-      screen.getByRole("button", { name: "确认重新安装" }),
-    );
+    const confirm = screen.getByRole("button", { name: "确认重新安装" });
+    act(() => {
+      confirm.click();
+      confirm.click();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(confirm).toBeDisabled();
+    expect(confirm).toHaveAttribute("aria-busy", "true");
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/instances/1/game-update",
       expect.objectContaining({
@@ -1258,6 +1332,50 @@ describe("App", () => {
           String(init.body).includes('"confirm":true'),
       ),
     ).toBe(true);
+  });
+  it("keeps confirmation actions busy until task creation completes", async () => {
+    const request = deferred<Response>();
+    let updatePosts = 0;
+    const packageVersion = {
+      id: "package-a",
+      filename: "coop-a.zip",
+      version: "v1",
+      size: 1024,
+      hot_compatible: false,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        if (path === "/api/instances/1/updates" && init?.method === "POST") {
+          updatePosts += 1;
+          return request.promise;
+        }
+        if (path === "/api/packages") {
+          return new Response(JSON.stringify([packageVersion]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response("[]", {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+    render(<App initialInstances={[instance]} initialPackages={[packageVersion]} />);
+    await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
+    await userEvent.click(await screen.findByRole("button", { name: "完整更新" }));
+    const confirm = screen.getByRole("button", { name: "确认完整更新" });
+
+    act(() => {
+      confirm.click();
+      confirm.click();
+    });
+
+    expect(updatePosts).toBe(1);
+    expect(confirm).toBeDisabled();
+    expect(confirm).toHaveAttribute("aria-busy", "true");
   });
 
   it("checks the configured GitHub Release without applying it", async () => {

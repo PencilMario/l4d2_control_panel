@@ -8,7 +8,7 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react";
-import { BookOpen, Pencil, Trash2, X } from "lucide-react";
+import { BookOpen, Pencil, RefreshCw, Trash2, X } from "lucide-react";
 import { api } from "../api/client";
 import type { PackageVersion } from "./InstanceConfigModal";
 
@@ -374,6 +374,8 @@ export function SchedulesPage({
   const [scheduleStatus, setScheduleStatus] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const submittingRef = useRef(false);
+  const deletingRef = useRef(false);
   const [taskType, setTaskType] = useState<ScheduleTaskType>("game_update");
   const [instanceID, setInstanceID] = useState(instances[0]?.id || "");
   const [sourceID, setSourceID] = useState("");
@@ -459,6 +461,8 @@ export function SchedulesPage({
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     setScheduleError("");
     setScheduleStatus(editing ? "正在更新计划…" : "正在保存计划…");
     setSubmitting(true);
@@ -496,12 +500,14 @@ export function SchedulesPage({
       setScheduleStatus("");
       setScheduleError(errorMessage(reason));
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   };
 
   const confirmDelete = async () => {
-    if (!deleteTarget) return;
+    if (!deleteTarget || deletingRef.current) return;
+    deletingRef.current = true;
     setDeleting(true);
     setScheduleError("");
     try {
@@ -513,6 +519,7 @@ export function SchedulesPage({
     } catch (reason) {
       setScheduleError(errorMessage(reason));
     } finally {
+      deletingRef.current = false;
       setDeleting(false);
     }
   };
@@ -664,8 +671,13 @@ export function SchedulesPage({
             {editing ? (
               <button type="button" onClick={resetCreate}>取消编辑</button>
             ) : null}
-            <button className="create" disabled={submitting || !canSubmit}>
-              {editing ? "保存修改" : "保存计划"}
+            <button
+              className="create"
+              disabled={submitting || !canSubmit}
+              aria-busy={submitting}
+            >
+              {submitting ? <RefreshCw /> : null}
+              {submitting ? "保存中…" : editing ? "保存修改" : "保存计划"}
             </button>
           </div>
         </form>
@@ -739,9 +751,11 @@ export function SchedulesPage({
               className="danger"
               aria-label="确认删除计划"
               disabled={deleting}
+              aria-busy={deleting}
               onClick={() => void confirmDelete()}
             >
-              确认删除计划
+              {deleting ? <RefreshCw /> : null}
+              {deleting ? "删除中…" : "确认删除计划"}
             </button>
           </div>
         </DialogFrame>

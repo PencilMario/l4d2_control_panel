@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -41,6 +41,28 @@ const instance: ConfigurableInstance = {
 };
 
 describe("InstanceConfigModal", () => {
+  it("prevents duplicate submissions while save is pending", () => {
+    const submit = vi.fn(() => new Promise<void>(() => undefined));
+    render(
+      <InstanceConfigModal
+        mode="edit"
+        instance={instance}
+        packages={[packageA, packageB]}
+        onClose={vi.fn()}
+        onSubmit={submit}
+      />,
+    );
+    const button = screen.getByRole("button", { name: "保存并应用" });
+
+    act(() => {
+      button.click();
+      button.click();
+    });
+
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-busy", "true");
+  });
   it("builds the managed command in runtime order", () => {
     expect(buildLaunchPreview(instance)).toBe(
       `./srcds_run -game left4dead2 -console -port 27015 -tickrate 100 +map c2m1_highway +mp_gamemode coop -maxplayers 8 +tv_enable 1 +tv_port 27020 -strictportbind +hostname "Night Coop"`,

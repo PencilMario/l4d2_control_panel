@@ -162,6 +162,7 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
   const [snapshotsOpen, setSnapshotsOpen] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
   const [activeUpload, setActiveUpload] = useState<ActiveUpload | null>(null);
   const [history, setHistory] = useState<{ path: string; versions: PrivateVersion[] } | null>(null);
   const drawerRef = useRef<HTMLDivElement>(null);
@@ -265,7 +266,8 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
   useModalFocus(Boolean(history), historyRef, historyTriggerRef, closeHistory);
 
   const run = useCallback(async (operation: () => Promise<void>) => {
-    if (busy) return;
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     setError("");
     setStatus("");
@@ -274,9 +276,10 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
     } catch (reason) {
       setError(errorMessage(reason));
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
-  }, [busy]);
+  }, []);
 
   const selectEntry = useCallback(
     (entry: PrivateEntry) => {
@@ -680,7 +683,7 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
             : "工作区与已应用版本一致"}
         </button>
         <div className="private-change-counts"><span>新增 {diff.summary.added}</span><span>修改 {diff.summary.modified}</span><span>删除 {diff.summary.deleted}</span></div>
-        <button className="create" disabled={!hasChanges || !instanceID || busy} onClick={() => void run(async () => {
+        <button className="create" disabled={!hasChanges || !instanceID || busy} aria-busy={busy} onClick={() => void run(async () => {
           if (queueAndWait) {
             const terminal = await queueAndWait(`/api/instances/${instanceID}/private/apply`, {});
             if (terminal.Status !== "succeeded") throw new Error(terminal.Error || "应用任务失败");
@@ -690,7 +693,7 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
             await queue(`/api/instances/${instanceID}/private/apply`, {});
             setStatus("应用任务已加入队列");
           }
-        })}>应用更改</button>
+        })}>{busy ? <><RefreshCw />应用中…</> : "应用更改"}</button>
       </footer>
     </section>
   );

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Instance } from "./App";
@@ -462,9 +462,12 @@ describe("PrivateFilesPage", () => {
     const queueAndWait = vi.fn(() => new Promise<any>((resolve) => { finish = resolve; }));
     render(<PrivateFilesPage instances={[instance]} queue={vi.fn()} queueAndWait={queueAndWait} />);
     const apply = await screen.findByRole("button", { name: "应用更改" });
-    await userEvent.click(apply);
-    await userEvent.click(apply);
+    act(() => {
+      apply.click();
+      apply.click();
+    });
     expect(queueAndWait).toHaveBeenCalledTimes(1);
+    expect(apply).toHaveAttribute("aria-busy", "true");
     changed = false;
     finish({ Status: "succeeded" });
     expect(await screen.findByText("工作区与已应用版本一致")).toBeVisible();
