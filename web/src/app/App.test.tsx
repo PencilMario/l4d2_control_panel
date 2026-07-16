@@ -82,7 +82,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe("App", () => {
-  it("keeps console websocket chunks and follows after sending a command", async () => {
+  it("keeps the newest 1000 console lines and follows after sending a command", async () => {
     const sockets: FakeWebSocket[] = [];
     class FakeWebSocket {
       binaryType = "";
@@ -131,7 +131,7 @@ describe("App", () => {
     expect(sockets[0].url).toContain("/api/instances/1/console");
 
     act(() => {
-      for (let index = 0; index <= 500; index += 1) {
+      for (let index = 0; index <= 1000; index += 1) {
         sockets[0].onmessage?.({ data: `[${index}]\n` } as MessageEvent);
       }
     });
@@ -139,7 +139,7 @@ describe("App", () => {
     expect(output).not.toHaveTextContent("ready");
     expect(output).not.toHaveTextContent("[0]");
     expect(output).toHaveTextContent("[1]");
-    expect(output).toHaveTextContent("[500]");
+    expect(output).toHaveTextContent("[1000]");
     expect(scrollTop).toBe(600);
   });
 

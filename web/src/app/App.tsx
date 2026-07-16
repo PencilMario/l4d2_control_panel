@@ -41,6 +41,7 @@ import {
 import { PrivateFilesPage } from "./PrivateFilesPage";
 import { SchedulesPage } from "./SchedulesPage";
 import { useConsoleFollow } from "./useConsoleFollow";
+import { appendConsoleOutput } from "./consoleBuffer";
 import {
   PerformancePanel,
   type PerformanceHistoryPoint,
@@ -1156,10 +1157,10 @@ function Terminal({
   instance: Instance;
   close: () => void;
 }) {
-  const [lines, setLines] = useState<string[]>([]);
+  const [output, setOutput] = useState("");
   const [input, setInput] = useState("");
   const socket = useRef<WebSocket | null>(null);
-  const consoleFollow = useConsoleFollow(lines);
+  const consoleFollow = useConsoleFollow(output);
   useEffect(() => {
     const protocol = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(
@@ -1169,7 +1170,7 @@ function Terminal({
     ws.onmessage = (e) => {
       const text =
         typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data);
-      setLines((old) => [...old, text].slice(-500));
+      setOutput((current) => appendConsoleOutput(current, text));
     };
     socket.current = ws;
     return () => ws.close();
@@ -1186,7 +1187,7 @@ function Terminal({
         </button>
       </div>
       <pre ref={consoleFollow.outputRef} onScroll={consoleFollow.onScroll}>
-        {lines.join("")}
+        {output}
       </pre>
       <form
         onSubmit={(e) => {
