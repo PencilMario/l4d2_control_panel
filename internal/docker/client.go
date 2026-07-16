@@ -237,11 +237,11 @@ func (e *Engine) InstallGame(ctx context.Context, dataRoot string, instance doma
 	if len(login) == 2 && login[1] == "anonymous" {
 		command = append(command, "+@sSteamCmdForcePlatformType", "windows", "+force_install_dir", "/opt/l4d2/game")
 		command = append(command, login...)
-		command = append(command, "+app_update", "222860", "+@sSteamCmdForcePlatformType", "linux", "+app_update", "222860", "validate", "+quit")
+		command = append(command, "+app_update", "222860", "+@sSteamCmdForcePlatformType", "linux", "+app_update", "222860", "+quit")
 	} else {
 		command = append(command, "+@sSteamCmdForcePlatformType", "linux", "+force_install_dir", "/opt/l4d2/game")
 		command = append(command, login...)
-		command = append(command, "+app_info_update", "1", "+app_update", "222860", "validate", "+quit")
+		command = append(command, "+app_info_update", "1", "+app_update", "222860", "+quit")
 	}
 	return e.runMaintenance(ctx, dataRoot, instance, command)
 }

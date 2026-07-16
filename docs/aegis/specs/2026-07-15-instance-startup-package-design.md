@@ -112,7 +112,7 @@ API 在创建和更新时验证额外启动项能按 Supervisor 接受的 shell-
 1. 重新读取实例和选定插件包，验证包仍存在。
 2. 检查数据目录空间、声明端口和同实例维护容器占用。
 3. 创建实例持久目录并将实际状态标记为 `installing`。
-4. 使用受限维护容器执行匿名 SteamCMD 首装序列：先 Windows 平台引导 App 222860，再切换 Linux 平台执行 `validate`。
+4. 使用受限维护容器执行匿名 SteamCMD 首装序列：先 Windows 平台引导 App 222860，再切换 Linux 平台完成首装；首装阶段不执行 `validate`，只有后续更新或完整性验证才使用 `validate`。
 5. 使用现有插件包 Pipeline 对实例执行完整部署并应用私有覆盖层。
 6. 提交部署事务并把 `PackageVersion` 更新为 `SelectedPackageID`。
 7. 根据最新启动配置创建 Host 网络游戏容器。

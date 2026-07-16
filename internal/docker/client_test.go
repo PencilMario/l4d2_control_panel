@@ -284,7 +284,7 @@ func TestGameUpdateOverridesRuntimeEntrypointWithSteamCMD(t *testing.T) {
 	}
 }
 
-func TestGameInstallBootstrapsWindowsBeforeLinuxValidate(t *testing.T) {
+func TestGameInstallBootstrapsWindowsBeforeLinuxWithoutValidate(t *testing.T) {
 	var created createRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -309,7 +309,36 @@ func TestGameInstallBootstrapsWindowsBeforeLinuxValidate(t *testing.T) {
 	joined := strings.Join(created.Cmd, " ")
 	windows := strings.Index(joined, "+@sSteamCmdForcePlatformType windows")
 	linux := strings.Index(joined, "+@sSteamCmdForcePlatformType linux")
-	if windows < 0 || linux < 0 || windows >= linux || !strings.Contains(joined, "+app_update 222860 +@sSteamCmdForcePlatformType linux +app_update 222860 validate") {
+	if windows < 0 || linux < 0 || windows >= linux || !strings.Contains(joined, "+app_update 222860 +@sSteamCmdForcePlatformType linux +app_update 222860 +quit") || strings.Contains(joined, "validate") {
+		t.Fatalf("command=%q", joined)
+	}
+}
+
+func TestCredentialedGameInstallDoesNotValidate(t *testing.T) {
+	var created createRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/json"):
+			_ = json.NewEncoder(w).Encode([]Container{})
+		case strings.HasSuffix(r.URL.Path, "/containers/create"):
+			if err := json.NewDecoder(r.Body).Decode(&created); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"Id": "maintenance"})
+		case strings.HasSuffix(r.URL.Path, "/wait"):
+			_ = json.NewEncoder(w).Encode(map[string]int{"StatusCode": 0})
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+	engine := NewEngine(server.URL, WithSteamCredentials(func() (string, string) { return "owner", "password" }))
+	instance := domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"}
+	if err := engine.InstallGame(context.Background(), t.TempDir(), instance); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(created.Cmd, " ")
+	if joined != "+@sSteamCmdForcePlatformType linux +force_install_dir /opt/l4d2/game +login owner password +app_info_update 1 +app_update 222860 +quit" || strings.Contains(joined, "validate") {
 		t.Fatalf("command=%q", joined)
 	}
 }

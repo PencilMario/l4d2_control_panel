@@ -58,11 +58,11 @@ Digest-pinned `NODE_IMAGE`, `GO_IMAGE`, `ALPINE_IMAGE` and an alternate
 Current L4D2 Steam content returns `Missing configuration` when an empty Linux install is requested directly. Before the first game container is created, the Panel uses a restricted maintenance container for the established anonymous bootstrap sequence:
 
 1. select the Windows platform and install App 222860;
-2. switch to Linux and run `app_update 222860 validate`;
+2. switch to Linux and finish the initial `app_update 222860` without validation;
 3. deploy the instance's selected plugin package and replay its private overlay;
 4. create the run-only game container and start `srcds_run` only after every stage succeeds.
 
-Later game updates use a fixed Linux-only SteamCMD maintenance container. Optional licensed Steam credentials can be encrypted from System Settings, but anonymous installation is supported and no credentials are written to container logs.
+Later game updates and explicit integrity checks use a fixed Linux-only SteamCMD maintenance container with `validate`. Optional licensed Steam credentials can be encrypted from System Settings, but anonymous installation is supported and no credentials are written to container logs.
 
 ## Instance startup configuration
 
