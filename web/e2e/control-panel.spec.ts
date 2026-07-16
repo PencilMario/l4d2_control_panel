@@ -930,6 +930,10 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await expect(failedLog).toContainText("执行进度");
   await expect(failedLog).toContainText("任务失败");
   await expect(failedLog).toContainText("执行用时 2分18秒");
+  await expect(failedLog.locator(".job-log-actions")).toHaveCSS(
+    "justify-content",
+    "flex-start",
+  );
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= window.innerWidth,

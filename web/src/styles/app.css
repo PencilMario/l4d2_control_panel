@@ -2516,7 +2516,7 @@ textarea:focus-visible {
 .task-log-resume svg { width: 15px; }
 .job-log-actions {
   display: flex;
-  justify-content: flex-end;
+  justify-content: flex-start;
   margin-bottom: 10px;
 }
 .job-log-actions button {
