@@ -57,6 +57,7 @@ services:
         GO_IMAGE: ${GO_IMAGE:-golang:1.25-alpine}
         ALPINE_IMAGE: ${ALPINE_IMAGE:-alpine:3.22}
     restart: unless-stopped
+    network_mode: bridge
     depends_on:
       panel-init:
         condition: service_completed_successfully

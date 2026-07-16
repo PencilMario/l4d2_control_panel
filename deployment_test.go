@@ -52,6 +52,7 @@ func TestControlServicesUseSharedUnixProxyAndPublishOnlyPanel(t *testing.T) {
 	if strings.Contains(panel, "network_mode: host") {
 		t.Fatal("Panel must not use host networking")
 	}
+	assertContains(t, panel, "network_mode: bridge", "Panel default bridge networking for host-gateway A2S")
 	if strings.Contains(panel, "/var/run/docker.sock") {
 		t.Fatal("Panel must never mount the raw Docker socket")
 	}
