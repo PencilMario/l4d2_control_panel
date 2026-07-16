@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -54,15 +55,39 @@ func run(ctx context.Context) error {
 	}
 	target, _ := url.Parse("http://docker")
 	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.Transport = &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+	dockerTransport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "unix", socket)
 	}}
+	proxy.Transport = dockerTransport
+	dockerClient := &http.Client{Transport: dockerTransport, Timeout: 5 * time.Second}
 
 	counter := traffic.NewCounter()
 	status := &captureStatus{err: errors.New("traffic capture is starting")}
 	go superviseCapture(ctx, counter, status, traffic.StartCapture, time.Second, log.Printf)
 	trafficHandler := traffic.NewHandler(counter, status.unavailable)
-	handler := newProxyHandler(trafficHandler, proxy)
+	handler := newProxyHandler(trafficHandler, proxy, func(ctx context.Context, id string) (map[string]string, error) {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/v1.44/containers/"+url.PathEscape(id)+"/json", nil)
+		if err != nil {
+			return nil, err
+		}
+		response, err := dockerClient.Do(request)
+		if err != nil {
+			return nil, err
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("inspect container: %s", response.Status)
+		}
+		var body struct {
+			Config struct {
+				Labels map[string]string `json:"Labels"`
+			} `json:"Config"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+			return nil, err
+		}
+		return body.Config.Labels, nil
+	})
 
 	socketPath := os.Getenv("SOCKET_PATH")
 	if socketPath == "" {
@@ -166,7 +191,7 @@ func securePathWith(path string, mode os.FileMode, uid, gid int, ownership owner
 	return err
 }
 
-func newProxyHandler(trafficHandler, dockerProxy http.Handler) http.Handler {
+func newProxyHandler(trafficHandler, dockerProxy http.Handler, labels func(context.Context, string) (map[string]string, error)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/_panel/traffic/") {
 			trafficHandler.ServeHTTP(w, r)
@@ -175,6 +200,17 @@ func newProxyHandler(trafficHandler, dockerProxy http.Handler) http.Handler {
 		if !socketproxy.Allowed(r.Method, r.URL.Path) {
 			http.Error(w, "docker endpoint forbidden", http.StatusForbidden)
 			return
+		}
+		if id, isLogs := socketproxy.LogContainerID(r.URL.Path); isLogs {
+			if !socketproxy.AllowedLogQuery(r.URL.Query()) {
+				http.Error(w, "docker logs query forbidden", http.StatusForbidden)
+				return
+			}
+			containerLabels, err := labels(r.Context(), id)
+			if err != nil || containerLabels["io.l4d2-panel.managed"] != "true" || containerLabels["io.l4d2-panel.role"] != "maintenance" {
+				http.Error(w, "docker container logs forbidden", http.StatusForbidden)
+				return
+			}
 		}
 		dockerProxy.ServeHTTP(w, r)
 	})

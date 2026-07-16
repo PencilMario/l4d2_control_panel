@@ -2,7 +2,9 @@ package socketproxy
 
 import (
 	"net/http"
+	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -11,6 +13,7 @@ var containerItem = regexp.MustCompile(`^/containers/[^/]+/(json|stats|logs)$`)
 var containerAction = regexp.MustCompile(`^/containers/[^/]+/(start|stop|wait|exec)$`)
 var execAction = regexp.MustCompile(`^/exec/[^/]+/(start|resize)$`)
 var containerDelete = regexp.MustCompile(`^/containers/[^/]+$`)
+var containerLogs = regexp.MustCompile(`^/containers/([^/]+)/logs$`)
 
 func Allowed(method, path string) bool {
 	path = versionPrefix.ReplaceAllString(path, "")
@@ -30,4 +33,21 @@ func Allowed(method, path string) bool {
 	default:
 		return false
 	}
+}
+
+func LogContainerID(path string) (string, bool) {
+	path = versionPrefix.ReplaceAllString(path, "")
+	match := containerLogs.FindStringSubmatch(path)
+	if len(match) != 2 {
+		return "", false
+	}
+	return match[1], true
+}
+
+func AllowedLogQuery(query url.Values) bool {
+	if len(query) != 5 || query.Get("stdout") != "1" || query.Get("stderr") != "1" || query.Get("follow") != "1" || query.Get("timestamps") != "1" {
+		return false
+	}
+	tail, err := strconv.Atoi(query.Get("tail"))
+	return err == nil && tail >= 0 && tail <= 1000
 }

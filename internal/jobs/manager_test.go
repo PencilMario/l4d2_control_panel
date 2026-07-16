@@ -69,6 +69,32 @@ func TestManagerWritesTaskLifecycleAndReporterLogs(t *testing.T) {
 	}
 }
 
+func TestLogContextUsesTaskReporter(t *testing.T) {
+	sink := &recordingLogSink{}
+	m := NewManager(WithLogSink(sink))
+	job, err := m.Start(context.Background(), "a", "install", func(ctx context.Context, _ Reporter) error {
+		LogContext(ctx, "steamcmd", joblogs.Output, "from context")
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	found := false
+	for _, call := range sink.calls {
+		if call.jobID == job.ID && call.source == "steamcmd" && call.message == "from context" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("calls=%#v", sink.calls)
+	}
+}
+
 func TestManagerSerializesMutationPerInstance(t *testing.T) {
 	m := NewManager()
 	release := make(chan struct{})

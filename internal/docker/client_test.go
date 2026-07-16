@@ -2,7 +2,9 @@ package docker
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
@@ -18,6 +20,39 @@ import (
 	"testing"
 	"time"
 )
+
+func dockerLogFrame(stream byte, body string) []byte {
+	header := make([]byte, 8)
+	header[0] = stream
+	binary.BigEndian.PutUint32(header[4:], uint32(len(body)))
+	return append(header, []byte(body)...)
+}
+
+func TestFollowLogsDecodesMultiplexedFramesAndPartialLines(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1.44/containers/abc/logs" || r.URL.Query().Get("follow") != "1" || r.URL.Query().Get("tail") != "200" {
+			t.Fatalf("request=%s?%s", r.URL.Path, r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
+		_, _ = w.Write(bytes.Join([][]byte{
+			dockerLogFrame(1, "first\npart"),
+			dockerLogFrame(2, "warning\n"),
+			dockerLogFrame(1, "ial\nlast"),
+		}, nil))
+	}))
+	defer server.Close()
+	lines := []string{}
+	if err := NewEngine(server.URL).FollowLogs(context.Background(), "abc", func(line string) error {
+		lines = append(lines, line)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"first", "warning", "partial", "last"}
+	if !slices.Equal(lines, want) {
+		t.Fatalf("lines=%v want=%v", lines, want)
+	}
+}
 
 func TestUnixEngineUsesSocketTransport(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "docker.sock")
@@ -210,7 +245,7 @@ func TestGameUpdateUsesFixedSteamCMDMaintenanceContainer(t *testing.T) {
 	if strings.Join(created.Entrypoint, " ") != "/home/steam/steamcmd/steamcmd.sh" || strings.Join(created.Cmd, " ") != "+@sSteamCmdForcePlatformType linux +force_install_dir /opt/l4d2/game +login anonymous +app_info_update 1 +app_update 222860 validate +quit" || created.HostConfig.NetworkMode != "bridge" || created.Labels[RoleLabel] != "maintenance" {
 		t.Fatalf("request=%#v", created)
 	}
-	if len(paths) != 5 {
+	if len(paths) != 6 || !slices.Contains(paths, "GET /v1.44/containers/maintenance/logs") {
 		t.Fatalf("paths=%v", paths)
 	}
 }
@@ -303,13 +338,13 @@ func TestGameUpdateAdoptsExistingMaintenanceContainer(t *testing.T) {
 			t.Fatalf("existing maintenance container was not adopted: %v", paths)
 		}
 	}
-	want := []string{
-		"GET /v1.44/containers/json",
-		"POST /v1.44/containers/maintenance-existing/wait",
-		"DELETE /v1.44/containers/maintenance-existing",
+	for _, want := range []string{"GET /v1.44/containers/json", "POST /v1.44/containers/maintenance-existing/wait", "GET /v1.44/containers/maintenance-existing/logs", "DELETE /v1.44/containers/maintenance-existing"} {
+		if !slices.Contains(paths, want) {
+			t.Fatalf("paths=%v missing=%s", paths, want)
+		}
 	}
-	if strings.Join(paths, "|") != strings.Join(want, "|") {
-		t.Fatalf("paths=%v want=%v", paths, want)
+	if paths[len(paths)-1] != "DELETE /v1.44/containers/maintenance-existing" {
+		t.Fatalf("container deleted before logs drained: %v", paths)
 	}
 }
 

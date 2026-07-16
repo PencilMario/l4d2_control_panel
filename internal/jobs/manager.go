@@ -38,6 +38,14 @@ type reporter struct {
 	id string
 }
 
+type reporterContextKey struct{}
+
+func LogContext(ctx context.Context, source string, level joblogs.Level, message string) {
+	if value, ok := ctx.Value(reporterContextKey{}).(Reporter); ok && value != nil {
+		value.Log(source, level, message)
+	}
+}
+
 func (r reporter) Progress(stage string, percent int, message string) {
 	r.m.mu.Lock()
 	j := r.m.jobs[r.id]
@@ -162,7 +170,8 @@ func (m *Manager) Start(ctx context.Context, instanceID, kind string, fn func(co
 			)
 			return
 		}
-		err := fn(ctx, reporter{m: m, id: j.ID})
+		activeReporter := reporter{m: m, id: j.ID}
+		err := fn(context.WithValue(ctx, reporterContextKey{}, Reporter(activeReporter)), activeReporter)
 		if err != nil {
 			_ = m.setStatus(j.ID, Failed, -1, err.Error())
 		} else {

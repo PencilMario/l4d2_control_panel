@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
+	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 )
 
 const apiVersion = "/v1.44"
@@ -281,18 +284,107 @@ func (e *Engine) runMaintenance(ctx context.Context, dataRoot string, instance d
 			return err
 		}
 	}
+	logCtx, cancelLogs := context.WithCancel(ctx)
+	logErrors := make(chan error, 1)
+	go func() {
+		logErrors <- e.FollowLogs(logCtx, containerID, func(line string) error {
+			jobs.LogContext(ctx, "steamcmd", joblogs.Output, line)
+			return nil
+		})
+	}()
 
 	var result struct {
 		StatusCode int `json:"StatusCode"`
 	}
 	if err := e.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(containerID)+"/wait", url.Values{"condition": []string{"not-running"}}, nil, &result); err != nil {
+		cancelLogs()
 		return err
 	}
+	select {
+	case logErr := <-logErrors:
+		if logErr != nil && !errors.Is(logErr, context.Canceled) {
+			jobs.LogContext(ctx, "docker", joblogs.Warn, "task log capture failed: "+logErr.Error())
+		}
+	case <-time.After(5 * time.Second):
+		cancelLogs()
+		jobs.LogContext(ctx, "docker", joblogs.Warn, "task log capture drain timed out")
+		<-logErrors
+	}
+	cancelLogs()
 	if err := e.do(context.WithoutCancel(ctx), http.MethodDelete, "/containers/"+url.PathEscape(containerID), url.Values{"force": []string{"true"}, "v": []string{"false"}}, nil, nil); err != nil {
 		return err
 	}
 	if result.StatusCode != 0 {
 		return fmt.Errorf("steamcmd exited with code %d", result.StatusCode)
+	}
+	return nil
+}
+
+func (e *Engine) FollowLogs(ctx context.Context, containerID string, emit func(string) error) error {
+	query := url.Values{"stdout": {"1"}, "stderr": {"1"}, "follow": {"1"}, "timestamps": {"1"}, "tail": {"200"}}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, e.base+apiVersion+"/containers/"+url.PathEscape(containerID)+"/logs?"+query.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	response, err := e.http.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		return fmt.Errorf("docker logs: %s: %s", response.Status, string(raw))
+	}
+	buffers := map[byte]*bytes.Buffer{1: {}, 2: {}}
+	emitBuffered := func(stream byte, final bool) error {
+		buffer := buffers[stream]
+		for {
+			raw := buffer.Bytes()
+			index := bytes.IndexByte(raw, '\n')
+			if index < 0 {
+				if final && len(raw) > 0 {
+					line := strings.TrimSuffix(string(raw), "\r")
+					buffer.Reset()
+					return emit(line)
+				}
+				return nil
+			}
+			line := strings.TrimSuffix(string(raw[:index]), "\r")
+			buffer.Next(index + 1)
+			if err := emit(line); err != nil {
+				return err
+			}
+		}
+	}
+	header := make([]byte, 8)
+	for {
+		if _, err := io.ReadFull(response.Body, header); err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				break
+			}
+			return err
+		}
+		stream := header[0]
+		length := binary.BigEndian.Uint32(header[4:])
+		if length > 2<<20 {
+			return errors.New("docker log frame exceeds limit")
+		}
+		buffer := buffers[stream]
+		if buffer == nil {
+			buffer = &bytes.Buffer{}
+			buffers[stream] = buffer
+		}
+		if _, err := io.CopyN(buffer, response.Body, int64(length)); err != nil {
+			return err
+		}
+		if err := emitBuffered(stream, false); err != nil {
+			return err
+		}
+	}
+	for _, stream := range []byte{1, 2} {
+		if err := emitBuffered(stream, true); err != nil {
+			return err
+		}
 	}
 	return nil
 }

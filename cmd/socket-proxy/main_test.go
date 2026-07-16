@@ -196,7 +196,7 @@ func TestProxyHandlerRoutesTrafficBeforeDockerPolicy(t *testing.T) {
 		dockerCalls++
 		w.WriteHeader(http.StatusTeapot)
 	})
-	handler := newProxyHandler(trafficHandler, dockerProxy)
+	handler := newProxyHandler(trafficHandler, dockerProxy, func(context.Context, string) (map[string]string, error) { return nil, nil })
 
 	req := httptest.NewRequest(http.MethodPut, "/_panel/traffic/instance-1", http.NoBody)
 	res := httptest.NewRecorder()
@@ -223,6 +223,38 @@ func TestProxyHandlerRoutesTrafficBeforeDockerPolicy(t *testing.T) {
 	handler.ServeHTTP(res, req)
 	if res.Code != http.StatusTeapot || dockerCalls != 1 {
 		t.Fatalf("allowed Docker route status/calls = %d/%d", res.Code, dockerCalls)
+	}
+}
+
+func TestProxyHandlerAllowsLogsOnlyForManagedMaintenanceContainer(t *testing.T) {
+	dockerCalls := 0
+	dockerProxy := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		dockerCalls++
+		w.WriteHeader(http.StatusOK)
+	})
+	labels := map[string]string{
+		"io.l4d2-panel.managed": "true",
+		"io.l4d2-panel.role":    "maintenance",
+	}
+	handler := newProxyHandler(http.NotFoundHandler(), dockerProxy, func(_ context.Context, id string) (map[string]string, error) {
+		if id != "abc" {
+			t.Fatalf("id=%q", id)
+		}
+		return labels, nil
+	})
+	target := "/v1.44/containers/abc/logs?stdout=1&stderr=1&follow=1&timestamps=1&tail=200"
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || dockerCalls != 1 {
+		t.Fatalf("status=%d calls=%d", response.Code, dockerCalls)
+	}
+
+	labels["io.l4d2-panel.role"] = "game"
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
+	if response.Code != http.StatusForbidden || dockerCalls != 1 {
+		t.Fatalf("game status=%d calls=%d", response.Code, dockerCalls)
 	}
 }
 
