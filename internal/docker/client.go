@@ -26,9 +26,20 @@ const apiVersion = "/v1.44"
 type Engine struct {
 	base             string
 	http             *http.Client
+	hijackDial       func(context.Context) (net.Conn, error)
 	extraEnv         []string
 	steamCredentials func() (string, string)
 }
+
+type apiError struct {
+	method, path, status, body string
+	statusCode                 int
+}
+
+func (e *apiError) Error() string {
+	return fmt.Sprintf("docker %s %s: %s: %s", e.method, e.path, e.status, e.body)
+}
+
 type EngineOption func(*Engine)
 
 func WithDownloadProxy(proxy string) EngineOption {
@@ -305,16 +316,36 @@ func (e *Engine) maintenanceContainers(ctx context.Context, instanceID string) (
 
 func NewEngine(host string, options ...EngineOption) *Engine {
 	client := &http.Client{}
+	var hijackDial func(context.Context) (net.Conn, error)
 	if strings.HasPrefix(host, "unix://") {
 		socketPath := strings.TrimPrefix(host, "unix://")
-		client.Transport = &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		hijackDial = func(ctx context.Context) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+		}
+		client.Transport = &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return hijackDial(ctx)
 		}}
 		host = "http://docker"
 	}
 	host = strings.TrimRight(host, "/")
 	host = strings.Replace(host, "tcp://", "http://", 1)
-	engine := &Engine{base: host, http: client}
+	if hijackDial == nil {
+		hijackDial = func(ctx context.Context) (net.Conn, error) {
+			parsed, err := url.Parse(host)
+			if err != nil {
+				return nil, err
+			}
+			if parsed.Scheme != "http" {
+				return nil, errors.New("docker attach requires an http socket proxy")
+			}
+			address := parsed.Host
+			if !strings.Contains(address, ":") {
+				address += ":80"
+			}
+			return (&net.Dialer{}).DialContext(ctx, "tcp", address)
+		}
+	}
+	engine := &Engine{base: host, http: client, hijackDial: hijackDial}
 	for _, option := range options {
 		option(engine)
 	}
@@ -347,7 +378,7 @@ func (e *Engine) do(ctx context.Context, method, path string, query url.Values, 
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("docker %s %s: %s: %s", method, path, resp.Status, string(raw))
+		return &apiError{method: method, path: path, status: resp.Status, body: string(raw), statusCode: resp.StatusCode}
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
@@ -366,7 +397,12 @@ func (e *Engine) Start(ctx context.Context, id string) error {
 	return e.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(id)+"/start", nil, nil, nil)
 }
 func (e *Engine) Stop(ctx context.Context, id string, seconds int) error {
-	return e.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(id)+"/stop", url.Values{"t": []string{strconv.Itoa(seconds)}}, nil, nil)
+	err := e.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(id)+"/stop", url.Values{"t": []string{strconv.Itoa(seconds)}}, nil, nil)
+	var responseErr *apiError
+	if errors.As(err, &responseErr) && responseErr.statusCode == http.StatusNotModified {
+		return nil
+	}
+	return err
 }
 func (e *Engine) Remove(ctx context.Context, id string) error {
 	return e.do(ctx, http.MethodDelete, "/containers/"+url.PathEscape(id), url.Values{"force": []string{"false"}, "v": []string{"false"}}, nil, nil)
@@ -402,19 +438,7 @@ func (e *Engine) AttachSupervisor(ctx context.Context, containerID string) (io.R
 	if err != nil {
 		return nil, err
 	}
-	parsed, err := url.Parse(e.base)
-	if err != nil {
-		return nil, err
-	}
-	if parsed.Scheme != "http" {
-		return nil, errors.New("docker attach requires an http socket proxy")
-	}
-	address := parsed.Host
-	if !strings.Contains(address, ":") {
-		address += ":80"
-	}
-	dialer := net.Dialer{}
-	conn, err := dialer.DialContext(ctx, "tcp", address)
+	conn, err := e.hijackDial(ctx)
 	if err != nil {
 		return nil, err
 	}

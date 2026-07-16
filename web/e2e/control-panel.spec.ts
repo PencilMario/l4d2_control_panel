@@ -662,9 +662,11 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   expect(importDialog.message()).toContain("不会自动应用到游戏目录");
   await importDialog.accept();
   await importAction;
-  await expect(page.getByRole("status")).toContainText(
-    "工作区已完全替换，请检查差异后应用更改。",
-  );
+  await expect(
+    page.getByText("工作区已完全替换，请检查差异后应用更改。", {
+      exact: true,
+    }),
+  ).toBeVisible();
   await expect(page.getByLabel("暂存更改状态")).toContainText("3 项更改未应用");
   tree = await privateTree(page, mobile);
   await expect(tree.getByRole("treeitem", { name: "cfg", exact: true })).toHaveCount(0);

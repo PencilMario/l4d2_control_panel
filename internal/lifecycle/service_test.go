@@ -2,10 +2,13 @@ package lifecycle
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -216,6 +219,50 @@ func TestStopUsesSupervisorBeforeDocker(t *testing.T) {
 	got, _ := db.Instance(context.Background(), "abc")
 	if engine.execOperation != "stop" || !engine.stopped || got.ActualState != domain.StateStopped {
 		t.Fatalf("engine=%#v instance=%#v", engine, got)
+	}
+}
+
+func TestRestartContinuesWhenSupervisorAlreadyStoppedContainer(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	instance := domain.Instance{ID: "abc", NodeID: "local", Name: "one", ContainerID: "container-1", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime:v1", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}
+	if err := db.CreateInstance(context.Background(), instance); err != nil {
+		t.Fatal(err)
+	}
+	started := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1.44/containers/json":
+			_ = json.NewEncoder(w).Encode([]docker.Container{})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1.44/containers/container-1/exec":
+			_ = json.NewEncoder(w).Encode(map[string]string{"Id": "exec-stop"})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1.44/exec/exec-stop/start":
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1.44/containers/container-1/stop":
+			w.WriteHeader(http.StatusNotModified)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1.44/containers/container-1/start":
+			started = true
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	service := New(db, docker.NewEngine(server.URL), freePorts{}, root)
+	if err := service.Restart(context.Background(), instance.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.Instance(context.Background(), instance.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !started || got.DesiredState != domain.StateRunning || got.ActualState != domain.StateRunning {
+		t.Fatalf("started=%v instance=%#v", started, got)
 	}
 }
 

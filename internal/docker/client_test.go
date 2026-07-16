@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -40,6 +42,54 @@ func TestUnixEngineUsesSocketTransport(t *testing.T) {
 	}
 	if out.Name != "unix" {
 		t.Fatalf("name = %q", out.Name)
+	}
+}
+
+func TestUnixEngineAttachSupervisorUsesSocketTransport(t *testing.T) {
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("l4d2-attach-%d.sock", time.Now().UnixNano()))
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/exec") {
+			_ = json.NewEncoder(w).Encode(map[string]string{"Id": "exec-attach"})
+			return
+		}
+		if r.URL.Path != "/v1.44/exec/exec-attach/start" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		hijacker := w.(http.Hijacker)
+		conn, rw, err := hijacker.Hijack()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = rw.WriteString("HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+		_ = rw.Flush()
+		go func() {
+			defer conn.Close()
+			line, _ := bufio.NewReader(conn).ReadString('\n')
+			_, _ = io.WriteString(conn, "echo:"+line)
+		}()
+	}))
+	server.Listener = listener
+	server.Start()
+	defer server.Close()
+
+	stream, err := NewEngine("unix://"+socketPath).AttachSupervisor(context.Background(), "container-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	_, _ = io.WriteString(stream, "status\n")
+	raw := make([]byte, len("echo:status\n"))
+	if _, err := io.ReadFull(stream, raw); err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "echo:status\n" {
+		t.Fatalf("got %q", raw)
 	}
 }
 
@@ -373,6 +423,32 @@ func TestPingReadsDockerInfo(t *testing.T) {
 	info, err := NewEngine(server.URL).Info(context.Background())
 	if err != nil || info.ServerVersion != "29.0" || info.ContainersRunning != 3 {
 		t.Fatalf("info=%#v err=%v", info, err)
+	}
+}
+
+func TestStopTreatsAlreadyStoppedContainerAsSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1.44/containers/container-1/stop" {
+			t.Fatalf("request=%s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer server.Close()
+
+	if err := NewEngine(server.URL).Stop(context.Background(), "container-1", 15); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStopPropagatesDockerFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "proxy failed", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	err := NewEngine(server.URL).Stop(context.Background(), "container-1", 15)
+	if err == nil || !strings.Contains(err.Error(), "502 Bad Gateway") {
+		t.Fatalf("err=%v", err)
 	}
 }
 
