@@ -15,6 +15,7 @@
 
 ## Implementation Plans
 
+- [Frontend motion and asynchronous action guards](plans/2026-07-16-frontend-motion-and-action-guards.md)
 - [Private files ZIP import and export](plans/2026-07-16-private-files-zip-import-export.md)
 - [Player match summary and operations view](plans/2026-07-16-player-match-operations.md)
 - [Instance selective game and plugin package reinstall](plans/2026-07-15-instance-selective-reinstall.md)
