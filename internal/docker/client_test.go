@@ -309,7 +309,7 @@ func TestGameInstallBootstrapsWindowsBeforeLinuxWithoutValidate(t *testing.T) {
 	joined := strings.Join(created.Cmd, " ")
 	windows := strings.Index(joined, "+@sSteamCmdForcePlatformType windows")
 	linux := strings.Index(joined, "+@sSteamCmdForcePlatformType linux")
-	if windows < 0 || linux < 0 || windows >= linux || !strings.Contains(joined, "+app_update 222860 +@sSteamCmdForcePlatformType linux +app_update 222860 +quit") || strings.Contains(joined, "validate") {
+	if windows < 0 || linux < 0 || windows >= linux || !strings.Contains(joined, "+login anonymous +app_info_update 1 +app_update 222860 +@sSteamCmdForcePlatformType linux +app_update 222860 +quit") || strings.Contains(joined, "validate") {
 		t.Fatalf("command=%q", joined)
 	}
 }
