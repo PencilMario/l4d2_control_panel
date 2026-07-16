@@ -1156,6 +1156,50 @@ func TestScheduleAcceptsSnakeCaseJSONAndRejectsUnknownFields(t *testing.T) {
 	})
 }
 
+func TestScheduleUpdateAndDeletePreserveSingleRecord(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	schedules := scheduler.NewService(db, fakeScheduleDispatcher{})
+	defer schedules.Stop()
+	s = New(db, s.auth, WithScheduler(schedules))
+	cookie := loginCookie(t, s)
+
+	created := authenticatedJSON(t, s, cookie, http.MethodPost, "/api/schedules", `{"instance_id":"abc","type":"game_update","cron":"0 4 * * *","timezone":"Asia/Hong_Kong","online_policy":"skip","enabled":true,"payload":"{}","last_run":"2026-07-15T20:00:00Z"}`)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", created.Code, created.Body.String())
+	}
+	var task domain.ScheduledTask
+	if err := json.Unmarshal(created.Body.Bytes(), &task); err != nil {
+		t.Fatal(err)
+	}
+	updatedBody := fmt.Sprintf(`{"id":%q,"instance_id":"abc","type":"game_update","cron":"30 5 * * *","timezone":"Asia/Hong_Kong","online_policy":"wait","enabled":false,"payload":"{}","last_run":"2026-07-15T20:00:00Z"}`, task.ID)
+	updated := authenticatedJSON(t, s, cookie, http.MethodPost, "/api/schedules", updatedBody)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("update: %d %s", updated.Code, updated.Body.String())
+	}
+
+	listed := authenticatedJSON(t, s, cookie, http.MethodGet, "/api/schedules", "")
+	var tasks []domain.ScheduledTask
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list: %d %s", listed.Code, listed.Body.String())
+	}
+	if err := json.Unmarshal(listed.Body.Bytes(), &tasks); err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].ID != task.ID || tasks[0].Type != "game_update" || tasks[0].Payload != "{}" || tasks[0].Cron != "30 5 * * *" || tasks[0].OnlinePolicy != "wait" || tasks[0].Enabled || tasks[0].LastRun.UTC().Format(time.RFC3339) != "2026-07-15T20:00:00Z" || tasks[0].NextRun.IsZero() {
+		t.Fatalf("tasks=%#v", tasks)
+	}
+
+	deleted := authenticatedJSON(t, s, cookie, http.MethodDelete, "/api/schedules/"+task.ID, "")
+	if deleted.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d %s", deleted.Code, deleted.Body.String())
+	}
+	listed = authenticatedJSON(t, s, cookie, http.MethodGet, "/api/schedules", "")
+	if listed.Code != http.StatusOK || strings.TrimSpace(listed.Body.String()) != "[]" {
+		t.Fatalf("list after delete: %d %s", listed.Code, listed.Body.String())
+	}
+}
+
 func TestGitHubSourceCRUD(t *testing.T) {
 	s, db := testServer(t)
 	defer db.Close()

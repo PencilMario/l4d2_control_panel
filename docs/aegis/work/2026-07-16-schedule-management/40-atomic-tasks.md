@@ -6,6 +6,7 @@
 - [x] Implement accessible detailed help and delete dialogs.
 - [x] Replace the inline `App.tsx` schedule implementation.
 - [x] Add responsive schedule list, editor, and help-dialog styling.
-- [ ] Add scheduler/API update and delete regression coverage.
-- [ ] Extend desktop/mobile Playwright schedule journey and layout checks.
-- [ ] Run full Go/frontend/build/E2E verification and record evidence.
+- [x] Add scheduler/API update and delete regression coverage.
+- [x] Extend desktop/mobile Playwright schedule journey and layout checks.
+- [ ] Integrate the concurrent `main` Job-history fix and rerun final verification.
+- [ ] Record final combined evidence and cleanup state.

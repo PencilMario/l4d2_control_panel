@@ -811,10 +811,67 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await waitForJob(page, fullJob.ID);
 
   await page.getByRole("button", { name: "计划任务" }).click();
-  await page.getByLabel("Cron").fill(mobile ? "15 4 * * *" : "0 4 * * *");
+  const initialCron = mobile ? "15 4 * * *" : "0 4 * * *";
+  const editedCron = mobile ? "45 4 * * *" : "30 4 * * *";
+  await page.getByLabel("Cron").fill(initialCron);
   await page.getByRole("button", { name: "保存计划" }).click();
   await expect(page.getByRole("status")).toContainText("计划已保存");
-  await expect(page.getByText(mobile ? "15 4 * * *" : "0 4 * * *")).toBeVisible();
+  await expect(page.getByText(initialCron)).toBeVisible();
+
+  await page.getByRole("button", { name: "任务说明" }).click();
+  const helpDialog = page.getByRole("dialog", { name: "计划任务类型说明" });
+  await expect(helpDialog).toContainText("GitHub Release 完整更新");
+  await expect(helpDialog).toContainText("已经排队或正在执行的任务");
+  const helpLayout = await helpDialog.evaluate((dialog) => {
+    const viewportWidth = document.documentElement.clientWidth;
+    const box = dialog.getBoundingClientRect();
+    const controlsFit = Array.from(dialog.querySelectorAll("button")).every((button) => {
+      const control = button.getBoundingClientRect();
+      return control.left >= -1 && control.right <= viewportWidth + 1;
+    });
+    return {
+      left: box.left,
+      right: box.right,
+      scrollWidth: dialog.scrollWidth,
+      clientWidth: dialog.clientWidth,
+      controlsFit,
+    };
+  });
+  expect(helpLayout.left).toBeGreaterThanOrEqual(0);
+  expect(helpLayout.right).toBeLessThanOrEqual(mobile ? 390 : 1280);
+  expect(helpLayout.scrollWidth).toBeLessThanOrEqual(helpLayout.clientWidth + 1);
+  expect(helpLayout.controlsFit).toBe(true);
+  await helpDialog.getByRole("button", { name: "关闭任务说明" }).click();
+
+  await page.getByRole("button", { name: "编辑 游戏更新" }).click();
+  await expect(page.getByLabel("任务", { exact: true })).toBeDisabled();
+  await expect(page.getByLabel("实例", { exact: true })).toBeDisabled();
+  await page.getByLabel("Cron").fill(editedCron);
+  await page.getByLabel("在线玩家策略").selectOption("wait");
+  await page.getByLabel("启用计划").uncheck();
+  await page.getByRole("button", { name: "保存修改" }).click();
+  await expect(page.getByRole("status")).toContainText("计划已更新");
+  await expect(page.getByText(editedCron)).toBeVisible();
+
+  const scheduleLayout = await page.locator(".schedule-page").evaluate((stage) => ({
+    scrollWidth: stage.scrollWidth,
+    clientWidth: stage.clientWidth,
+    controlsFit: Array.from(stage.querySelectorAll("button, input, select")).every(
+      (control) => control.scrollWidth <= control.clientWidth + 1,
+    ),
+  }));
+  expect(scheduleLayout.scrollWidth).toBeLessThanOrEqual(scheduleLayout.clientWidth + 1);
+  expect(scheduleLayout.controlsFit).toBe(true);
+
+  await page.getByRole("button", { name: "总览" }).click();
+  await page.getByRole("button", { name: "计划任务" }).click();
+  await expect(page.getByText(editedCron)).toBeVisible();
+  await expect(page.getByText("停用", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "删除 游戏更新" }).click();
+  const deleteDialog = page.getByRole("dialog", { name: "删除游戏更新计划？" });
+  await expect(deleteDialog).toContainText("已经排队或正在执行的任务不会被取消");
+  await deleteDialog.getByRole("button", { name: "确认删除计划" }).click();
+  await expect(page.getByText("暂无计划任务")).toBeVisible();
 
   await page.getByRole("button", { name: "任务", exact: true }).click();
   await expect(page.getByText("SSE / LIVE")).toBeVisible();
