@@ -22,6 +22,19 @@ export type JobEvent = {
   Message: string;
   CreatedAt: string;
 };
+export type JobLogLevel = "output" | "info" | "warn" | "error";
+export type JobLogRecord = {
+  seq: number;
+  timestamp: string;
+  source: string;
+  level: JobLogLevel;
+  message: string;
+};
+export type JobLogPage = {
+  records: JobLogRecord[];
+  next_seq: number;
+  truncated: boolean;
+};
 async function request(path: string, init: RequestInit) {
   const response = await fetch(path, {
     credentials: "same-origin",

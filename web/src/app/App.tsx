@@ -30,6 +30,7 @@ import {
 import { sha256 } from "@noble/hashes/sha2.js";
 import { api, normalizeInstance, type Job } from "../api/client";
 import { JobsPage } from "./JobsPage";
+import { JobLogsPage } from "./JobLogsPage";
 import {
   InstanceConfigModal,
   type ConfigurableInstance,
@@ -103,7 +104,7 @@ type Props = {
   initialPackages?: PackageVersion[];
   onAction?: (id: string, action: string) => void;
 };
-type Page = "overview" | "private" | "content" | "jobs" | "schedules" | "settings";
+type Page = "overview" | "private" | "content" | "jobs" | "joblogs" | "schedules" | "settings";
 type HealthState = {
   status: "checking" | "online" | "error";
   message: string;
@@ -267,6 +268,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
   const mountedRef = useRef(true);
   const [pending, setPending] = useState<Instance | null>(null);
   const [page, setPage] = useState<Page>("overview");
+  const [logJob, setLogJob] = useState<Job | null>(null);
   const [terminal, setTerminal] = useState<Instance | null>(null);
   const [playersTarget, setPlayersTarget] = useState<Instance | null>(null);
   const [job, setJob] = useState<Job | null>(null);
@@ -629,8 +631,8 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
             内容仓库
           </Nav>
           <Nav
-            active={page === "jobs"}
-            onClick={() => setPage("jobs")}
+            active={page === "jobs" || page === "joblogs"}
+            onClick={() => { setLogJob(null); setPage("jobs"); }}
             icon={<ListTodo />}
           >
             任务
@@ -677,6 +679,8 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
                   ? "内容仓库"
                   : page === "jobs"
                     ? "持久任务流水"
+                    : page === "joblogs"
+                      ? "任务实时日志"
                     : page === "schedules"
                       ? "自动维护计划"
                       : "系统与凭据"}
@@ -730,7 +734,8 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
             queue={queue}
           />
         )}
-        {page === "jobs" && <JobsPage />}
+        {page === "jobs" && <JobsPage onOpenLogs={(selected) => { setLogJob(selected); setPage("joblogs"); }} />}
+        {page === "joblogs" && logJob ? <JobLogsPage job={logJob} onBack={() => setPage("jobs")} /> : null}
         {page === "schedules" && (
           <SchedulesPage instances={instances} packages={packages} />
         )}{" "}

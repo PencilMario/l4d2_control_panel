@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ChevronDown, Clock3, RotateCw } from "lucide-react";
+import { ChevronDown, Clock3, ExternalLink, RotateCw } from "lucide-react";
 import { api, type Job, type JobEvent } from "../api/client";
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "interrupted"]);
@@ -20,7 +20,7 @@ const EVENT_LABELS: Record<string, string> = {
   snapshot: "历史快照",
 };
 
-export function JobsPage() {
+export function JobsPage({ onOpenLogs }: { onOpenLogs?: (job: Job) => void }) {
   const [items, setItems] = useState<Job[]>([]);
   const [jobsError, setJobsError] = useState("");
   const [expandedID, setExpandedID] = useState("");
@@ -177,7 +177,17 @@ export function JobsPage() {
                       </button>
                     </div>
                   ) : detail ? (
-                    <JobLog detail={detail} />
+                    <>
+                      {onOpenLogs ? (
+                        <div className="job-log-actions">
+                          <button type="button" onClick={() => onOpenLogs(detail)}>
+                            <ExternalLink aria-hidden="true" />
+                            打开完整日志
+                          </button>
+                        </div>
+                      ) : null}
+                      <JobLog detail={detail} />
+                    </>
                   ) : (
                     <div className="job-log-loading">暂无任务日志</div>
                   )}
