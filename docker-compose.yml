@@ -75,6 +75,8 @@ services:
       L4D2_PANEL_SECURE_COOKIE: ${L4D2_PANEL_SECURE_COOKIE:-true}
     ports:
       - "${L4D2_PANEL_HTTP_PORT:-18081}:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ${L4D2_PANEL_DATA_ROOT:-/srv/l4d2-panel}:${L4D2_PANEL_DATA_ROOT:-/srv/l4d2-panel}
       - panel-proxy-run:/run/l4d2-panel

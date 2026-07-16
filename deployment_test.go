@@ -60,6 +60,8 @@ func TestControlServicesUseSharedUnixProxyAndPublishOnlyPanel(t *testing.T) {
 	assertContains(t, panel, `ports:
       - "${L4D2_PANEL_HTTP_PORT:-18081}:8080"`, "Panel published HTTP port")
 	assertContains(t, panel, "L4D2_PANEL_GAME_HOST: ${L4D2_PANEL_GAME_HOST:?", "required SRCDS host")
+	assertContains(t, panel, `extra_hosts:
+      - "host.docker.internal:host-gateway"`, "Panel host gateway mapping for A2S")
 	assertContains(t, panel, "HTTPS_PROXY: ${L4D2_PANEL_DOWNLOAD_PROXY:-}", "Panel download proxy")
 
 	for _, retired := range []string{"LISTEN_ADDR", "23750", "tcp://socket-proxy"} {

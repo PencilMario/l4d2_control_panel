@@ -34,7 +34,7 @@ The overview samples each instance every five seconds and keeps the latest 720 o
 For direct HTTP access, set `L4D2_PANEL_SECURE_COOKIE=false`. Keep the default
 `true` when the Panel is served through HTTPS.
 
-`L4D2_PANEL_GAME_HOST` is intentionally required. Some Source servers bind UDP on all interfaces but do not answer A2S sent to loopback; the Panel uses this address for health and player queries.
+`L4D2_PANEL_GAME_HOST` is intentionally required. When the Panel runs in the provided Docker Compose stack, use `host.docker.internal`; Compose maps it to the host gateway so the bridge-networked Panel can query host-network SRCDS UDP ports. Loopback and host external addresses may not return A2S traffic correctly from the Panel container.
 
 Put HTTPS in front of the Panel. For example, Caddy can proxy WebSocket and SSE traffic without extra directives:
 
