@@ -1560,7 +1560,7 @@ function SettingsPage() {
     e.preventDefault();
     const limit = Number(draftJobLimit);
     if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
-      setSettingsError("成功任务保留数量必须为 1 至 500 的整数");
+      setSettingsError("已完成任务保留数量必须为 1 至 500 的整数");
       return;
     }
     setSettingsError("");
@@ -1627,9 +1627,9 @@ function SettingsPage() {
       <form className="control-form" onSubmit={saveJobSettings}>
         <p className="eyebrow">JOB RECORDS</p>
         <h2>任务记录</h2>
-        <p>仅限制成功任务；失败和中断任务不会自动删除。</p>
+        <p>除正在运行的任务外，所有已结束任务共用此保留上限。</p>
         <label>
-          成功任务保留数量
+          已完成任务保留数量
           <input
             type="number"
             min={1}

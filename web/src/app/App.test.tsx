@@ -965,7 +965,7 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
-  it("loads and updates the successful job retention limit", async () => {
+  it("loads and updates the completed job retention limit", async () => {
     const fetchMock = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
         const path = String(input);
@@ -983,13 +983,13 @@ describe("App", () => {
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "系统设置" }));
     const input = await screen.findByRole("spinbutton", {
-      name: "成功任务保留数量",
+      name: "已完成任务保留数量",
     });
     expect(input).toHaveValue(25);
     expect(input).toHaveAttribute("min", "1");
     expect(input).toHaveAttribute("max", "500");
     expect(
-      screen.getByText("仅限制成功任务；失败和中断任务不会自动删除。"),
+      screen.getByText("除正在运行的任务外，所有已结束任务共用此保留上限。"),
     ).toBeVisible();
 
     await userEvent.clear(input);
@@ -1055,7 +1055,7 @@ describe("App", () => {
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "系统设置" }));
     const input = await screen.findByRole("spinbutton", {
-      name: "成功任务保留数量",
+      name: "已完成任务保留数量",
     });
     await userEvent.clear(input);
     await userEvent.type(input, "40");

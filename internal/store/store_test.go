@@ -350,13 +350,13 @@ func TestSaveJobWithEventPersistsSnapshotAndEvent(t *testing.T) {
 	}
 }
 
-func TestSuccessfulJobLimitPrunesOnlyOldestSucceeded(t *testing.T) {
+func TestCompletedJobLimitPrunesOldestTerminalJobsAndKeepsRunning(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	limit, err := s.SuccessfulJobLimit()
+	limit, err := s.CompletedJobLimit()
 	if err != nil || limit != 25 {
 		t.Fatalf("default limit=%d err=%v", limit, err)
 	}
@@ -372,6 +372,13 @@ func TestSuccessfulJobLimitPrunesOnlyOldestSucceeded(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	interruptedAt := base.Add(3 * time.Minute)
+	if err := s.SaveJobWithEvent(domain.JobRecord{
+		ID: "interrupted", Type: "fixture", Status: "interrupted", Error: "restart",
+		CreatedAt: base, UpdatedAt: interruptedAt, StartedAt: &base, FinishedAt: &interruptedAt,
+	}, domain.JobEvent{Kind: "interrupted", Message: "restart", CreatedAt: interruptedAt}); err != nil {
+		t.Fatal(err)
+	}
 	failedAt := base.Add(4 * time.Minute)
 	if err := s.SaveJobWithEvent(domain.JobRecord{
 		ID: "failed", Type: "fixture", Status: "failed", Error: "boom",
@@ -379,25 +386,34 @@ func TestSuccessfulJobLimitPrunesOnlyOldestSucceeded(t *testing.T) {
 	}, domain.JobEvent{Kind: "failed", Message: "boom", CreatedAt: failedAt}); err != nil {
 		t.Fatal(err)
 	}
-
-	if err := s.SetSuccessfulJobLimit(2); err != nil {
+	runningAt := base.Add(5 * time.Minute)
+	if err := s.SaveJobWithEvent(domain.JobRecord{
+		ID: "running", Type: "fixture", Status: "running",
+		CreatedAt: base, UpdatedAt: runningAt, StartedAt: &base,
+	}, domain.JobEvent{Kind: "progress", Message: "working", CreatedAt: runningAt}); err != nil {
 		t.Fatal(err)
 	}
-	limit, err = s.SuccessfulJobLimit()
+
+	if err := s.SetCompletedJobLimit(2); err != nil {
+		t.Fatal(err)
+	}
+	limit, err = s.CompletedJobLimit()
 	if err != nil || limit != 2 {
 		t.Fatalf("saved limit=%d err=%v", limit, err)
 	}
 	assertStoredJob(t, s, "oldest-succeeded", false)
-	assertStoredJob(t, s, "middle-succeeded", true)
-	assertStoredJob(t, s, "newest-succeeded", true)
+	assertStoredJob(t, s, "middle-succeeded", false)
+	assertStoredJob(t, s, "newest-succeeded", false)
+	assertStoredJob(t, s, "interrupted", true)
 	assertStoredJob(t, s, "failed", true)
+	assertStoredJob(t, s, "running", true)
 	events, err := s.JobEvents("oldest-succeeded")
 	if err != nil || len(events) != 0 {
 		t.Fatalf("deleted job events=%#v err=%v", events, err)
 	}
 }
 
-func TestSuccessfulJobLimitUsesStableIDOrderForEqualFinishTimes(t *testing.T) {
+func TestCompletedJobLimitUsesStableIDOrderForEqualFinishTimes(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -411,7 +427,7 @@ func TestSuccessfulJobLimitUsesStableIDOrderForEqualFinishTimes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := s.SetSuccessfulJobLimit(2); err != nil {
+	if err := s.SetCompletedJobLimit(2); err != nil {
 		t.Fatal(err)
 	}
 	assertStoredJob(t, s, "success-a", false)
@@ -419,7 +435,7 @@ func TestSuccessfulJobLimitUsesStableIDOrderForEqualFinishTimes(t *testing.T) {
 	assertStoredJob(t, s, "success-c", true)
 }
 
-func TestSuccessfulJobLimitRollsBackSettingWhenPruneFails(t *testing.T) {
+func TestCompletedJobLimitRollsBackSettingWhenPruneFails(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -439,11 +455,11 @@ BEFORE DELETE ON jobs WHEN OLD.status='succeeded'
 BEGIN SELECT RAISE(ABORT,'delete blocked'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetSuccessfulJobLimit(1); err == nil {
+	if err := s.SetCompletedJobLimit(1); err == nil {
 		t.Fatal("expected pruning failure")
 	}
-	limit, err := s.SuccessfulJobLimit()
-	if err != nil || limit != DefaultSuccessfulJobLimit {
+	limit, err := s.CompletedJobLimit()
+	if err != nil || limit != DefaultCompletedJobLimit {
 		t.Fatalf("limit=%d err=%v", limit, err)
 	}
 	assertStoredJob(t, s, "older-success", true)
@@ -476,13 +492,13 @@ func TestRecoverJobsRecordsInterruptedEventAndFinishTime(t *testing.T) {
 	}
 }
 
-func TestPruneSuccessfulJobsUsesSavedLimit(t *testing.T) {
+func TestPruneCompletedJobsUsesSavedLimit(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if err := s.SetSuccessfulJobLimit(1); err != nil {
+	if err := s.SetCompletedJobLimit(1); err != nil {
 		t.Fatal(err)
 	}
 	base := time.Date(2026, 7, 16, 5, 0, 0, 0, time.UTC)
@@ -494,26 +510,26 @@ func TestPruneSuccessfulJobsUsesSavedLimit(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := s.PruneSuccessfulJobs(); err != nil {
+	if err := s.PruneCompletedJobs(); err != nil {
 		t.Fatal(err)
 	}
 	assertStoredJob(t, s, "older-success", false)
 	assertStoredJob(t, s, "newer-success", true)
 }
 
-func TestSuccessfulJobLimitRejectsOutOfRangeValues(t *testing.T) {
+func TestCompletedJobLimitRejectsOutOfRangeValues(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
 	for _, value := range []int{0, 501} {
-		if err := s.SetSuccessfulJobLimit(value); err == nil {
+		if err := s.SetCompletedJobLimit(value); err == nil {
 			t.Fatalf("limit %d was accepted", value)
 		}
 	}
-	limit, err := s.SuccessfulJobLimit()
-	if err != nil || limit != DefaultSuccessfulJobLimit {
+	limit, err := s.CompletedJobLimit()
+	if err != nil || limit != DefaultCompletedJobLimit {
 		t.Fatalf("limit=%d err=%v", limit, err)
 	}
 }

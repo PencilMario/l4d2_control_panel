@@ -93,13 +93,13 @@ func TestPersistentManagerRecordsLifecycleEvents(t *testing.T) {
 	}
 }
 
-func TestPersistentManagerPrunesSuccessfulJobsUsingGlobalLimit(t *testing.T) {
+func TestPersistentManagerPrunesTerminalJobsAfterFailureUsingGlobalLimit(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if err := db.SetSuccessfulJobLimit(1); err != nil {
+	if err := db.SetCompletedJobLimit(1); err != nil {
 		t.Fatal(err)
 	}
 	manager := NewPersistentManager(db)
@@ -108,7 +108,9 @@ func TestPersistentManagerPrunesSuccessfulJobsUsingGlobalLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	wait(t, manager, first.ID)
-	second, err := manager.Start(context.Background(), "b", "install", func(context.Context, Reporter) error { return nil })
+	second, err := manager.Start(context.Background(), "b", "install", func(context.Context, Reporter) error {
+		return errors.New("install failed")
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +121,7 @@ func TestPersistentManagerPrunesSuccessfulJobsUsingGlobalLimit(t *testing.T) {
 	if _, found := manager.Get(first.ID); found {
 		t.Fatal("oldest successful job remained accessible")
 	}
-	if job, found := manager.Get(second.ID); !found || job.Status != Succeeded {
+	if job, found := manager.Get(second.ID); !found || job.Status != Failed {
 		t.Fatalf("newest job=%#v found=%v", job, found)
 	}
 }
@@ -212,7 +214,16 @@ func TestPersistentManagerMarksStaleRunningJobInterrupted(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	if err := db.SetCompletedJobLimit(1); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC()
+	olderFinished := now.Add(-time.Minute)
+	if err := db.SaveJob(domain.JobRecord{
+		ID: "older-failed", Status: "failed", Error: "boom", CreatedAt: olderFinished, UpdatedAt: olderFinished, FinishedAt: &olderFinished,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	record := domain.JobRecord{ID: "stale", InstanceID: "abc", Type: "install", Status: "running", CreatedAt: now, UpdatedAt: now}
 	if err := db.SaveJob(record); err != nil {
 		t.Fatal(err)
@@ -221,6 +232,9 @@ func TestPersistentManagerMarksStaleRunningJobInterrupted(t *testing.T) {
 	job, ok := manager.Get("stale")
 	if !ok || job.Status != Interrupted || job.Error == "" {
 		t.Fatalf("job=%#v ok=%v", job, ok)
+	}
+	if _, ok := manager.Get("older-failed"); ok {
+		t.Fatal("older terminal job remained after startup recovery")
 	}
 }
 func TestReporterPersistsProgress(t *testing.T) {

@@ -78,7 +78,14 @@ func NewPersistentManager(repo Repository) *Manager {
 	m := NewManager()
 	m.repo = repo
 	if recovery, ok := repo.(interface{ RecoverJobs() error }); ok {
-		_ = recovery.RecoverJobs()
+		if err := recovery.RecoverJobs(); err != nil {
+			log.Printf("recover jobs: %v", err)
+		}
+	}
+	if pruner, ok := repo.(interface{ PruneCompletedJobs() error }); ok {
+		if err := pruner.PruneCompletedJobs(); err != nil {
+			log.Printf("prune completed jobs after recovery: %v", err)
+		}
 	}
 	return m
 }
@@ -175,9 +182,9 @@ func (m *Manager) setStatus(id string, status Status, percent int, message strin
 	var pruneErr error
 	if m.repo != nil {
 		persistErr = m.repo.SaveJobWithEvent(toRecord(j), event)
-		if persistErr == nil && status == Succeeded {
-			if pruner, ok := m.repo.(interface{ PruneSuccessfulJobs() error }); ok {
-				pruneErr = pruner.PruneSuccessfulJobs()
+		if persistErr == nil && (status == Succeeded || status == Failed || status == Interrupted) {
+			if pruner, ok := m.repo.(interface{ PruneCompletedJobs() error }); ok {
+				pruneErr = pruner.PruneCompletedJobs()
 			}
 		}
 	}
@@ -195,7 +202,7 @@ func (m *Manager) setStatus(id string, status Status, percent int, message strin
 		return persistErr
 	}
 	if pruneErr != nil {
-		log.Printf("prune successful jobs: %v", pruneErr)
+		log.Printf("prune completed jobs: %v", pruneErr)
 	}
 	return nil
 }
