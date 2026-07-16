@@ -1,17 +1,17 @@
 # TodoCheckpointDraft
 
-- Current todo: integrate the tested schedule component into `App.tsx` and add responsive styles.
-- Active slice: Task 2 App integration.
-- Completed: repository investigation, design/plan, isolated baseline, Task 1 RED/GREEN component implementation.
-- Evidence refs: `10-baseline-readset.md`; focused Vitest RED on missing component; focused GREEN with 5/5 tests.
+- Current todo: add backend contract regression and real desktop/mobile browser coverage.
+- Active slice: Task 3 backend and E2E verification.
+- Completed: investigation/design/plan, isolated baseline, Task 1 component RED/GREEN, Task 2 App integration and responsive styling.
+- Evidence refs: focused component 5/5; component plus App 46/46; full frontend 101/101; production build exit 0.
 - Blocked on: nothing.
-- Next: replace the inline schedule owner, add CSS, and run App/full frontend verification.
+- Next: add schedule update/delete Go tests, extend Playwright journey, then run the full verification matrix.
 
 # DriftCheckDraft
 
 - Original intent: preserved.
 - Compatibility boundary: existing schedule API and dispatcher remain canonical.
-- New owner/fallback: `SchedulesPage.tsx` is tested but not yet on the main render path; the old inline page retires in Task 2.
+- New owner/fallback: `SchedulesPage.tsx` is now the only schedule UI owner; the old inline implementation and arrow row are retired.
 - Retirement track: explicit in the plan.
-- Evidence state: Task 1 RED/GREEN present; integration, build, backend, and browser evidence remain.
+- Evidence state: frontend integration/build evidence present; backend and browser evidence remain.
 - Decision: continue.

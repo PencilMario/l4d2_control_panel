@@ -10,7 +10,6 @@ import {
   Activity,
   Box,
   CalendarClock,
-  ChevronRight,
   CircleStop,
   Database,
   Files,
@@ -38,6 +37,7 @@ import {
   type PackageVersion,
 } from "./InstanceConfigModal";
 import { PrivateFilesPage } from "./PrivateFilesPage";
+import { SchedulesPage } from "./SchedulesPage";
 import { useConsoleFollow } from "./useConsoleFollow";
 import {
   PerformancePanel,
@@ -682,7 +682,9 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
           />
         )}
         {page === "jobs" && <JobsPage />}
-        {page === "schedules" && <SchedulesPage instances={instances} />}{" "}
+        {page === "schedules" && (
+          <SchedulesPage instances={instances} packages={packages} />
+        )}{" "}
         {page === "settings" && <SettingsPage />}{" "}
         {job && <JobStrip job={job} />}
       </main>
@@ -1366,148 +1368,6 @@ function ContentPage({
     </div>
   );
 }
-type ScheduledTask = {
-  id: string;
-  type: string;
-  cron: string;
-  timezone: string;
-  enabled: boolean;
-};
-
-const normalizeScheduledTask = (value: any): ScheduledTask => ({
-  id: value.id ?? value.ID,
-  type: value.type ?? value.Type,
-  cron: value.cron ?? value.Cron,
-  timezone: value.timezone ?? value.Timezone,
-  enabled: value.enabled ?? value.Enabled,
-});
-
-function SchedulesPage({ instances }: { instances: Instance[] }) {
-  const [tasks, setTasks] = useState<ScheduledTask[]>([]);
-  const [scheduleError, setScheduleError] = useState("");
-  const [scheduleStatus, setScheduleStatus] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [taskType, setTaskType] = useState("game_update");
-  const [sources, setSources] = useState<GitHubSource[]>([]);
-  const releaseTask = ["release_check", "release_hot", "release_full"].includes(taskType);
-  const needsInstance = !["release_check", "cleanup"].includes(taskType);
-  const load = async () => {
-    const [items, sourceItems] = await Promise.all([
-      api<any[]>("/api/schedules"),
-      api<GitHubSource[]>("/api/github-sources"),
-    ]);
-    setTasks(items.map(normalizeScheduledTask));
-    setSources(Array.isArray(sourceItems) ? sourceItems : []);
-  };
-  useEffect(() => {
-    load().catch((reason) => setScheduleError(errorMessage(reason)));
-  }, []);
-  const submit = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const data = new FormData(e.currentTarget);
-    setScheduleError("");
-    setScheduleStatus("正在保存计划…");
-    setSubmitting(true);
-    try {
-      await api("/api/schedules", {
-        method: "POST",
-        body: JSON.stringify({
-          instance_id: needsInstance ? data.get("instance") : "",
-          type: taskType,
-          cron: data.get("cron"),
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          online_policy: needsInstance ? data.get("policy") : "force",
-          enabled: true,
-          payload: releaseTask
-            ? JSON.stringify({ source_id: data.get("source") })
-            : "{}",
-        }),
-      });
-      await load();
-      setScheduleStatus("计划已保存");
-    } catch (reason) {
-      setScheduleStatus("");
-      setScheduleError(errorMessage(reason));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-  return (
-    <div className="schedule-layout">
-      <form className="control-form" onSubmit={submit}>
-        <p className="eyebrow">NEW SCHEDULE</p>
-        <h2>添加维护窗口</h2>
-        <label>
-          任务
-          <select
-            aria-label="任务"
-            name="type"
-            value={taskType}
-            onChange={(event) => setTaskType(event.target.value)}
-          >
-            <option value="game_update">游戏更新</option>
-            <option value="package_hot">插件热更新</option>
-            <option value="package_full">插件完整更新</option>
-            <option value="release_check">仅同步 GitHub 源</option>
-            <option value="release_hot">GitHub Release 热更新</option>
-            <option value="release_full">GitHub Release 完整更新</option>
-            <option value="backup">备份</option>
-            <option value="cleanup">清理</option>
-          </select>
-        </label>
-        {needsInstance ? (
-          <label>
-            实例
-            <select name="instance">
-              {instances.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
-            </select>
-          </label>
-        ) : null}
-        {releaseTask ? (
-          <label>
-            GitHub 源
-            <select aria-label="GitHub 源" name="source" required>
-              {sources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}
-            </select>
-          </label>
-        ) : null}
-        <label>
-          Cron
-          <input name="cron" defaultValue="0 4 * * *" />
-        </label>
-        {needsInstance ? (
-          <label>
-            在线玩家策略
-            <select name="policy"><option value="skip">跳过</option><option value="wait">等待</option><option value="force">强制执行</option></select>
-          </label>
-        ) : null}
-        {scheduleError && (
-          <div className="error" role="alert">
-            {scheduleError}
-          </div>
-        )}
-        {scheduleStatus && (
-          <div className="operation-status" role="status">
-            {scheduleStatus}
-          </div>
-        )}
-        <button className="create" disabled={submitting || (needsInstance && !instances.length) || (releaseTask && !sources.length)}>
-          保存计划
-        </button>
-      </form>
-      <Panel title="执行计划">
-        {tasks.map((x) => (
-          <Row
-            key={x.id}
-            name={x.type}
-            meta={`${x.cron} · ${x.timezone} · ${x.enabled ? "启用" : "停用"}`}
-          />
-        ))}
-        {!tasks.length && <div className="empty">暂无计划任务</div>}
-      </Panel>
-    </div>
-  );
-}
 function PlayersModal({
   instance,
   close,
@@ -1836,17 +1696,6 @@ function Panel({
       </div>
       {children}
     </section>
-  );
-}
-function Row({ name, meta }: { name: string; meta: string }) {
-  return (
-    <div className="data-row">
-      <div>
-        <b>{name}</b>
-        <small>{meta}</small>
-      </div>
-      <ChevronRight />
-    </div>
   );
 }
 function Confirm({
