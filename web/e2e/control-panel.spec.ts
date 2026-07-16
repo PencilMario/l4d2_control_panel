@@ -948,6 +948,29 @@ test("real HTTP administration journey survives refresh and streams recovery sta
     fullPage: true,
   });
 
+  await failedLog.getByRole("button", { name: "打开完整日志" }).click();
+  const liveLogLayout = await page.evaluate(() => {
+    const wrapBox = document
+      .querySelector(".task-log-output-wrap")!
+      .getBoundingClientRect();
+    const outputBox = document
+      .querySelector(".task-log-output")!
+      .getBoundingClientRect();
+    return {
+      outputHeight: outputBox.height,
+      wrapBottomGap: wrapBox.bottom - outputBox.bottom,
+    };
+  });
+  expect(liveLogLayout.outputHeight).toBe(360);
+  expect(liveLogLayout.wrapBottomGap).toBeLessThanOrEqual(1);
+  await page.screenshot({
+    path: testInfo.outputPath("task-live-logs.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "返回任务列表" }).click();
+  await failedJob.click();
+  await expect(failedJob).toHaveAttribute("aria-expanded", "true");
+
   const latestJob = page.locator(".activity");
   await expect.soft(latestJob).toContainText("任务已成功完成");
   await expect.soft(latestJob).not.toContainText("后台任务持久化执行中");

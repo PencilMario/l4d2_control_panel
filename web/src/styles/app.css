@@ -2456,6 +2456,11 @@ textarea:focus-visible {
   color: #ffd58a;
   font-size: 12px;
 }
+.task-log-output-wrap {
+  position: relative;
+  min-width: 0;
+  align-self: start;
+}
 .task-log-output {
   min-width: 0;
   min-height: 360px;

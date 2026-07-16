@@ -82,4 +82,20 @@ describe("JobLogsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "下载完整日志" }));
     await waitFor(() => expect(click).toHaveBeenCalled());
   });
+
+  it("anchors the resume control to the log output", async () => {
+    render(<JobLogsPage job={job} onBack={vi.fn()} />);
+    const output = (await screen.findByText("Downloading update")).closest("pre")!;
+    Object.defineProperties(output, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 360 },
+      scrollTop: { configurable: true, writable: true, value: 0 },
+    });
+    fireEvent.scroll(output);
+    FakeEventSource.latest?.emit({ seq: 3, timestamp: "2026-07-16T10:00:02Z", source: "steamcmd", level: "output", message: "More output" });
+
+    const resume = await screen.findByRole("button", { name: "恢复跟随 · 1 条新日志" });
+    expect(output.parentElement).toHaveClass("task-log-output-wrap");
+    expect(output.parentElement).toContainElement(resume);
+  });
 });

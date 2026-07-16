@@ -157,22 +157,24 @@ export function JobLogsPage({ job, onBack }: Props) {
         <span>{visible.length} / {records.length} 条</span>
       </div>
       {truncated ? <div className="task-log-truncated">早期日志已因 10 MiB 上限截断</div> : null}
-      <pre className="task-log-output" ref={follow.outputRef} onScroll={onScroll} tabIndex={0}>
-        {visible.map((record) => (
-          <span className={`task-log-line ${record.level}`} key={record.seq}>
-            <time>{formatTime(record.timestamp)}</time>
-            <b>{record.source}</b>
-            <i>{LEVEL_LABELS[record.level]}</i>
-            <code>{record.message}</code>
-          </span>
-        ))}
-        {visible.length === 0 ? <span className="task-log-empty">没有符合条件的日志</span> : null}
-      </pre>
-      {unread > 0 ? (
-        <button className="task-log-resume" type="button" onClick={resume}>
-          <StepForward aria-hidden="true" />恢复跟随 · {unread} 条新日志
-        </button>
-      ) : null}
+      <div className="task-log-output-wrap">
+        <pre className="task-log-output" ref={follow.outputRef} onScroll={onScroll} tabIndex={0}>
+          {visible.map((record) => (
+            <span className={`task-log-line ${record.level}`} key={record.seq}>
+              <time>{formatTime(record.timestamp)}</time>
+              <b>{record.source}</b>
+              <i>{LEVEL_LABELS[record.level]}</i>
+              <code>{record.message}</code>
+            </span>
+          ))}
+          {visible.length === 0 ? <span className="task-log-empty">没有符合条件的日志</span> : null}
+        </pre>
+        {unread > 0 ? (
+          <button className="task-log-resume" type="button" onClick={resume}>
+            <StepForward aria-hidden="true" />恢复跟随 · {unread} 条新日志
+          </button>
+        ) : null}
+      </div>
     </section>
   );
 }
