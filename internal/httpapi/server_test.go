@@ -27,6 +27,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/metrics"
 	"github.com/not0721here/l4d2-control-panel/internal/players"
@@ -34,6 +35,53 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 	"github.com/not0721here/l4d2-control-panel/internal/updates"
 )
+
+func TestJobLogHistoryStreamAndDownload(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	logs, err := joblogs.Open(t.TempDir(), joblogs.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logs.Close()
+	now := time.Now().UTC()
+	if err := db.SaveJob(domain.JobRecord{ID: "job-logs", InstanceID: "abc", Type: "start", Status: "running", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = logs.Append(context.Background(), "job-logs", "task", joblogs.Info, "started")
+	_, _ = logs.Append(context.Background(), "job-logs", "steamcmd", joblogs.Output, "downloading")
+	s = New(db, s.auth, WithJobLogs(logs))
+	cookie := loginCookie(t, s)
+
+	history := authenticatedJSON(t, s, cookie, http.MethodGet, "/api/jobs/job-logs/logs?source=steamcmd&level=output", "")
+	if history.Code != http.StatusOK || !strings.Contains(history.Body.String(), `"message":"downloading"`) || strings.Contains(history.Body.String(), `"message":"started"`) {
+		t.Fatalf("history=%d %s", history.Code, history.Body.String())
+	}
+
+	downloadRequest := httptest.NewRequest(http.MethodGet, "/api/jobs/job-logs/logs/download", nil)
+	downloadRequest.AddCookie(cookie)
+	download := httptest.NewRecorder()
+	s.Handler().ServeHTTP(download, downloadRequest)
+	if download.Code != http.StatusOK || !strings.Contains(download.Header().Get("Content-Disposition"), "job-job-logs.jsonl") || !strings.Contains(download.Body.String(), "downloading") {
+		t.Fatalf("download=%d headers=%v body=%s", download.Code, download.Header(), download.Body.String())
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	streamRequest := httptest.NewRequest(http.MethodGet, "/api/jobs/job-logs/logs/stream?after_seq=1", nil).WithContext(ctx)
+	streamRequest.AddCookie(cookie)
+	stream := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		s.Handler().ServeHTTP(stream, streamRequest)
+		close(done)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	<-done
+	if !strings.Contains(stream.Body.String(), "id: 2") || !strings.Contains(stream.Body.String(), "event: job-log") {
+		t.Fatalf("stream=%q", stream.Body.String())
+	}
+}
 
 type fakeLifecycle struct{ action string }
 

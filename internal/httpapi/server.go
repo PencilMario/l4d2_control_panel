@@ -25,6 +25,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/metrics"
 	"github.com/not0721here/l4d2-control-panel/internal/players"
@@ -44,6 +45,7 @@ type Server struct {
 	router            http.Handler
 	lifecycle         Lifecycle
 	jobs              *jobs.Manager
+	jobLogs           *joblogs.Manager
 	console           ConsoleAttacher
 	players           PlayerService
 	uploads           *content.UploadManager
@@ -78,6 +80,8 @@ type Option func(*Server)
 func WithOperations(lifecycle Lifecycle, manager *jobs.Manager) Option {
 	return func(s *Server) { s.lifecycle = lifecycle; s.jobs = manager }
 }
+
+func WithJobLogs(manager *joblogs.Manager) Option { return func(s *Server) { s.jobLogs = manager } }
 
 type ConsoleAttacher interface {
 	AttachSupervisor(context.Context, string) (io.ReadWriteCloser, error)
@@ -161,6 +165,9 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Delete("/api/instances/{id}", s.deleteInstance)
 		r.Post("/api/instances/{id}/actions", s.instanceAction)
 		r.Get("/api/jobs/{id}", s.getJob)
+		r.Get("/api/jobs/{id}/logs", s.jobLogHistory)
+		r.Get("/api/jobs/{id}/logs/stream", s.jobLogStream)
+		r.Get("/api/jobs/{id}/logs/download", s.downloadJobLog)
 		r.Get("/api/jobs", s.listJobs)
 		r.Get("/api/jobs/events", s.jobEvents)
 		r.Get("/api/instances/{id}/console", s.consoleSocket)
@@ -218,6 +225,156 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 	})
 	s.router = r
 	return s
+}
+
+func (s *Server) jobLogHistory(w http.ResponseWriter, r *http.Request) {
+	jobID := chi.URLParam(r, "id")
+	if !s.jobExists(jobID) {
+		writeError(w, http.StatusNotFound, "job_not_found", "job not found")
+		return
+	}
+	if s.jobLogs == nil {
+		writeError(w, http.StatusServiceUnavailable, "job_logs_unavailable", "job logs unavailable")
+		return
+	}
+	query, err := parseJobLogQuery(r)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_job_log_query", err.Error())
+		return
+	}
+	page, err := s.jobLogs.Read(r.Context(), jobID, query)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "job_logs_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+func (s *Server) jobLogStream(w http.ResponseWriter, r *http.Request) {
+	jobID := chi.URLParam(r, "id")
+	if !s.jobExists(jobID) {
+		writeError(w, http.StatusNotFound, "job_not_found", "job not found")
+		return
+	}
+	if s.jobLogs == nil {
+		writeError(w, http.StatusServiceUnavailable, "job_logs_unavailable", "job logs unavailable")
+		return
+	}
+	afterSeq, err := parseUintQuery(r.URL.Query().Get("after_seq"))
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_job_log_query", "after_seq must be an unsigned integer")
+		return
+	}
+	if header := r.Header.Get("Last-Event-ID"); header != "" {
+		if value, parseErr := strconv.ParseUint(header, 10, 64); parseErr == nil && value > afterSeq {
+			afterSeq = value
+		}
+	}
+	replay, stream, cancel, err := s.jobLogs.Subscribe(r.Context(), jobID, afterSeq)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "job_logs_error", err.Error())
+		return
+	}
+	defer cancel()
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "stream_unavailable", "streaming unavailable")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	send := func(record joblogs.Record) bool {
+		raw, marshalErr := json.Marshal(record)
+		if marshalErr != nil {
+			return false
+		}
+		if _, writeErr := fmt.Fprintf(w, "id: %d\nevent: job-log\ndata: %s\n\n", record.Seq, raw); writeErr != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+	for _, record := range replay {
+		if !send(record) {
+			return
+		}
+	}
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case record, open := <-stream:
+			if !open || !send(record) {
+				return
+			}
+		}
+	}
+}
+
+func (s *Server) downloadJobLog(w http.ResponseWriter, r *http.Request) {
+	jobID := chi.URLParam(r, "id")
+	if !s.jobExists(jobID) {
+		writeError(w, http.StatusNotFound, "job_not_found", "job not found")
+		return
+	}
+	if s.jobLogs == nil {
+		writeError(w, http.StatusServiceUnavailable, "job_logs_unavailable", "job logs unavailable")
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="job-%s.jsonl"`, jobID))
+	if err := s.jobLogs.Snapshot(r.Context(), jobID, w); err != nil {
+		writeError(w, http.StatusInternalServerError, "job_logs_error", err.Error())
+	}
+}
+
+func (s *Server) jobExists(jobID string) bool {
+	_, found, err := s.store.LoadJob(jobID)
+	return err == nil && found
+}
+
+func parseJobLogQuery(r *http.Request) (joblogs.Query, error) {
+	after, err := parseUintQuery(r.URL.Query().Get("after_seq"))
+	if err != nil {
+		return joblogs.Query{}, errors.New("after_seq must be an unsigned integer")
+	}
+	before, err := parseUintQuery(r.URL.Query().Get("before_seq"))
+	if err != nil {
+		return joblogs.Query{}, errors.New("before_seq must be an unsigned integer")
+	}
+	limit := 200
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		value, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || value < 1 || value > 1000 {
+			return joblogs.Query{}, errors.New("limit must be between 1 and 1000")
+		}
+		limit = value
+	}
+	sources := map[string]bool{}
+	for _, source := range r.URL.Query()["source"] {
+		if source != "" {
+			sources[source] = true
+		}
+	}
+	levels := map[joblogs.Level]bool{}
+	for _, raw := range r.URL.Query()["level"] {
+		level := joblogs.Level(raw)
+		switch level {
+		case joblogs.Output, joblogs.Info, joblogs.Warn, joblogs.Error:
+			levels[level] = true
+		default:
+			return joblogs.Query{}, errors.New("invalid log level")
+		}
+	}
+	return joblogs.Query{AfterSeq: after, BeforeSeq: before, Limit: limit, Sources: sources, Levels: levels}, nil
+}
+
+func parseUintQuery(raw string) (uint64, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	return strconv.ParseUint(raw, 10, 64)
 }
 
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
