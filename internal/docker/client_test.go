@@ -35,7 +35,7 @@ func TestFollowLogsDecodesMultiplexedFramesAndPartialLines(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
 		_, _ = w.Write(bytes.Join([][]byte{
-			dockerLogFrame(1, "first\npart"),
+			dockerLogFrame(1, "2026-07-16T11:42:13.357043779Z first\npart"),
 			dockerLogFrame(2, "warning\n"),
 			dockerLogFrame(1, "ial\nlast"),
 		}, nil))

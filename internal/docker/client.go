@@ -343,13 +343,13 @@ func (e *Engine) FollowLogs(ctx context.Context, containerID string, emit func(s
 			index := bytes.IndexByte(raw, '\n')
 			if index < 0 {
 				if final && len(raw) > 0 {
-					line := strings.TrimSuffix(string(raw), "\r")
+					line := stripDockerLogTimestamp(strings.TrimSuffix(string(raw), "\r"))
 					buffer.Reset()
 					return emit(line)
 				}
 				return nil
 			}
-			line := strings.TrimSuffix(string(raw[:index]), "\r")
+			line := stripDockerLogTimestamp(strings.TrimSuffix(string(raw[:index]), "\r"))
 			buffer.Next(index + 1)
 			if err := emit(line); err != nil {
 				return err
@@ -387,6 +387,17 @@ func (e *Engine) FollowLogs(ctx context.Context, containerID string, emit func(s
 		}
 	}
 	return nil
+}
+
+func stripDockerLogTimestamp(line string) string {
+	prefix, remainder, found := strings.Cut(line, " ")
+	if !found {
+		return line
+	}
+	if _, err := time.Parse(time.RFC3339Nano, prefix); err != nil {
+		return line
+	}
+	return remainder
 }
 
 func (e *Engine) HasMaintenance(ctx context.Context, instanceID string) (bool, error) {
