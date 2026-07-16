@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
@@ -12,7 +13,46 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
-type Store struct{ db *sql.DB }
+type Store struct {
+	db            *sql.DB
+	prunedHookMu  sync.RWMutex
+	prunedJobHook func([]string)
+}
+
+func (s *Store) SetPrunedJobHook(hook func([]string)) {
+	s.prunedHookMu.Lock()
+	s.prunedJobHook = hook
+	s.prunedHookMu.Unlock()
+}
+
+func (s *Store) notifyPrunedJobs(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	s.prunedHookMu.RLock()
+	hook := s.prunedJobHook
+	s.prunedHookMu.RUnlock()
+	if hook != nil {
+		hook(append([]string(nil), ids...))
+	}
+}
+
+func (s *Store) JobIDs(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM jobs`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+	return ids, rows.Err()
+}
 
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
@@ -339,15 +379,20 @@ func (s *Store) LoadJob(id string) (domain.JobRecord, bool, error) {
 	return v, true, nil
 }
 func (s *Store) RecoverJobs() error {
+	_, err := s.RecoverJobsWithIDs()
+	return err
+}
+
+func (s *Store) RecoverJobsWithIDs() ([]string, error) {
 	const message = "Panel restarted while this job was active; inspect the managed container and retry or roll back"
 	tx, err := s.db.Begin()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback()
 	rows, err := tx.Query(`SELECT id,stage,percent FROM jobs WHERE status IN ('pending','running') ORDER BY id`)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	type staleJob struct {
 		id, stage string
@@ -358,27 +403,34 @@ func (s *Store) RecoverJobs() error {
 		var job staleJob
 		if err := rows.Scan(&job.id, &job.stage, &job.percent); err != nil {
 			rows.Close()
-			return err
+			return nil, err
 		}
 		stale = append(stale, job)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return err
+		return nil, err
 	}
 	if err := rows.Close(); err != nil {
-		return err
+		return nil, err
 	}
 	finished := time.Now().UTC().Format(time.RFC3339Nano)
 	for _, job := range stale {
 		if _, err := tx.Exec(`UPDATE jobs SET status='interrupted',error=?,updated_at=?,finished_at=? WHERE id=?`, message, finished, finished, job.id); err != nil {
-			return err
+			return nil, err
 		}
 		if _, err := tx.Exec(`INSERT INTO job_events(job_id,kind,stage,percent,message,created_at) VALUES(?,?,?,?,?,?)`, job.id, "interrupted", job.stage, job.percent, message, finished); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(stale))
+	for index, job := range stale {
+		ids[index] = job.id
+	}
+	return ids, nil
 }
 func (s *Store) Jobs(ctx context.Context, limit int) ([]domain.JobRecord, error) {
 	if limit < 1 || limit > 500 {

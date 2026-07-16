@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
 )
 
 type Status string
@@ -30,6 +31,7 @@ type Job struct {
 }
 type Reporter interface {
 	Progress(stage string, percent int, message string)
+	Log(source string, level joblogs.Level, message string)
 }
 type reporter struct {
 	m  *Manager
@@ -53,7 +55,12 @@ func (r reporter) Progress(stage string, percent int, message string) {
 	r.m.mu.Unlock()
 	if persistErr != nil {
 		log.Printf("persist job progress %s: %v", j.ID, persistErr)
+		return
 	}
+	r.m.appendLog(j.ID, "task", joblogs.Info, message)
+}
+func (r reporter) Log(source string, level joblogs.Level, message string) {
+	r.m.appendLog(r.id, source, level, message)
 }
 
 type Manager struct {
@@ -62,7 +69,19 @@ type Manager struct {
 	events map[string][]domain.JobEvent
 	locks  map[string]*sync.Mutex
 	repo   Repository
+	logs   LogSink
 	wg     sync.WaitGroup
+}
+
+type LogSink interface {
+	Append(context.Context, string, string, joblogs.Level, string) (joblogs.Record, error)
+	Finalize(context.Context, string) error
+}
+
+type Option func(*Manager)
+
+func WithLogSink(sink LogSink) Option {
+	return func(manager *Manager) { manager.logs = sink }
 }
 
 type Repository interface {
@@ -71,13 +90,34 @@ type Repository interface {
 	JobEvents(string) ([]domain.JobEvent, error)
 }
 
-func NewManager() *Manager {
-	return &Manager{jobs: map[string]Job{}, events: map[string][]domain.JobEvent{}, locks: map[string]*sync.Mutex{}}
+func NewManager(options ...Option) *Manager {
+	m := &Manager{jobs: map[string]Job{}, events: map[string][]domain.JobEvent{}, locks: map[string]*sync.Mutex{}}
+	for _, option := range options {
+		option(m)
+	}
+	return m
 }
-func NewPersistentManager(repo Repository) *Manager {
-	m := NewManager()
+func NewPersistentManager(repo Repository, options ...Option) *Manager {
+	m := NewManager(options...)
 	m.repo = repo
-	if recovery, ok := repo.(interface{ RecoverJobs() error }); ok {
+	if recovery, ok := repo.(interface{ RecoverJobsWithIDs() ([]string, error) }); ok {
+		ids, err := recovery.RecoverJobsWithIDs()
+		if err != nil {
+			log.Printf("recover jobs: %v", err)
+		} else {
+			for _, id := range ids {
+				record, found, loadErr := repo.LoadJob(id)
+				if loadErr != nil {
+					log.Printf("load recovered job %s: %v", id, loadErr)
+					continue
+				}
+				if found {
+					m.appendLog(id, "task", joblogs.Error, record.Error)
+					m.finalizeLog(id)
+				}
+			}
+		}
+	} else if recovery, ok := repo.(interface{ RecoverJobs() error }); ok {
 		if err := recovery.RecoverJobs(); err != nil {
 			log.Printf("recover jobs: %v", err)
 		}
@@ -108,6 +148,7 @@ func (m *Manager) Start(ctx context.Context, instanceID, kind string, fn func(co
 	}
 	m.wg.Add(1)
 	m.mu.Unlock()
+	m.appendLog(j.ID, "task", joblogs.Info, event.Message)
 	go func() {
 		defer m.wg.Done()
 		lock.Lock()
@@ -204,7 +245,35 @@ func (m *Manager) setStatus(id string, status Status, percent int, message strin
 	if pruneErr != nil {
 		log.Printf("prune completed jobs: %v", pruneErr)
 	}
+	switch status {
+	case Running:
+		m.appendLog(id, "task", joblogs.Info, event.Message)
+	case Succeeded:
+		m.appendLog(id, "task", joblogs.Info, event.Message)
+		m.finalizeLog(id)
+	case Failed, Interrupted:
+		m.appendLog(id, "task", joblogs.Error, event.Message)
+		m.finalizeLog(id)
+	}
 	return nil
+}
+
+func (m *Manager) appendLog(jobID, source string, level joblogs.Level, message string) {
+	if m.logs == nil || message == "" {
+		return
+	}
+	if _, err := m.logs.Append(context.Background(), jobID, source, level, message); err != nil {
+		log.Printf("append job log %s: %v", jobID, err)
+	}
+}
+
+func (m *Manager) finalizeLog(jobID string) {
+	if m.logs == nil {
+		return
+	}
+	if err := m.logs.Finalize(context.Background(), jobID); err != nil {
+		log.Printf("finalize job log %s: %v", jobID, err)
+	}
 }
 func (m *Manager) Get(id string) (Job, bool) {
 	m.mu.RLock()

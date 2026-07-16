@@ -12,6 +12,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/health"
 	"github.com/not0721here/l4d2-control-panel/internal/httpapi"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/lifecycle"
 	"github.com/not0721here/l4d2-control-panel/internal/maintenance"
@@ -95,6 +96,33 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	jobLogManager, err := joblogs.Open(filepath.Join(cfg.PanelDir, "job-logs"), joblogs.Options{Redactor: joblogs.NewRedactor(func() []string {
+		values := []string{os.Getenv("L4D2_PANEL_ADMIN_PASSWORD")}
+		for _, name := range []string{"steam_username", "steam_password", "github_token"} {
+			if value, found, getErr := secretService.Get(context.Background(), name); getErr == nil && found {
+				values = append(values, value)
+			}
+		}
+		return values
+	})})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer jobLogManager.Close()
+	jobIDs, err := db.JobIDs(context.Background())
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := jobLogManager.CleanupOrphans(context.Background(), jobIDs); err != nil {
+		log.Printf("cleanup orphan job logs: %v", err)
+	}
+	db.SetPrunedJobHook(func(ids []string) {
+		for _, id := range ids {
+			if deleteErr := jobLogManager.Delete(context.Background(), id); deleteErr != nil {
+				log.Printf("delete pruned job log %s: %v", id, deleteErr)
+			}
+		}
+	})
 	dockerHost := os.Getenv("DOCKER_HOST")
 	if dockerHost == "" {
 		dockerHost = "unix:///run/l4d2-panel/proxy.sock"
@@ -129,7 +157,7 @@ func main() {
 	} else if len(unknown) > 0 {
 		log.Printf("found %d unclaimed managed containers", len(unknown))
 	}
-	jobManager := jobs.NewPersistentManager(db)
+	jobManager := jobs.NewPersistentManager(db, jobs.WithLogSink(jobLogManager))
 	playerService := players.NewService(db, a2s.Client{}, engine, cfg.GameHost)
 	performanceSampler := metrics.New(db, engine, trafficClient, playerService, nil)
 	uploadManager, err := content.NewUploadManager(cfg.DataRoot)

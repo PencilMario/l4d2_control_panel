@@ -4,13 +4,70 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 )
+
+type recordedLogCall struct {
+	kind, jobID, source, message string
+	level                        joblogs.Level
+}
+
+type recordingLogSink struct {
+	mu    sync.Mutex
+	calls []recordedLogCall
+}
+
+func (s *recordingLogSink) Append(_ context.Context, jobID, source string, level joblogs.Level, message string) (joblogs.Record, error) {
+	s.mu.Lock()
+	s.calls = append(s.calls, recordedLogCall{kind: "append", jobID: jobID, source: source, level: level, message: message})
+	s.mu.Unlock()
+	return joblogs.Record{}, nil
+}
+
+func (s *recordingLogSink) Finalize(_ context.Context, jobID string) error {
+	s.mu.Lock()
+	s.calls = append(s.calls, recordedLogCall{kind: "finalize", jobID: jobID})
+	s.mu.Unlock()
+	return nil
+}
+
+func TestManagerWritesTaskLifecycleAndReporterLogs(t *testing.T) {
+	sink := &recordingLogSink{}
+	m := NewManager(WithLogSink(sink))
+	job, err := m.Start(context.Background(), "a", "install", func(_ context.Context, reporter Reporter) error {
+		reporter.Progress("download", 40, "downloading")
+		reporter.Log("steamcmd", joblogs.Output, "raw output")
+		return errors.New("download interrupted")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wait(t, m, job.ID)
+	if err := m.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	wants := []recordedLogCall{
+		{kind: "append", jobID: job.ID, source: "task", level: joblogs.Info, message: "Task queued"},
+		{kind: "append", jobID: job.ID, source: "task", level: joblogs.Info, message: "Task started"},
+		{kind: "append", jobID: job.ID, source: "task", level: joblogs.Info, message: "downloading"},
+		{kind: "append", jobID: job.ID, source: "steamcmd", level: joblogs.Output, message: "raw output"},
+		{kind: "append", jobID: job.ID, source: "task", level: joblogs.Error, message: "download interrupted"},
+		{kind: "finalize", jobID: job.ID},
+	}
+	if !reflect.DeepEqual(sink.calls, wants) {
+		t.Fatalf("calls=%#v want=%#v", sink.calls, wants)
+	}
+}
 
 func TestManagerSerializesMutationPerInstance(t *testing.T) {
 	m := NewManager()

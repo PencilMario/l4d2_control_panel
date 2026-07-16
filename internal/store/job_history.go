@@ -22,6 +22,7 @@ const (
 
 type jobExecer interface {
 	Exec(string, ...any) (sql.Result, error)
+	Query(string, ...any) (*sql.Rows, error)
 }
 
 func migrateJobHistory(db *sql.DB) error {
@@ -184,10 +185,15 @@ ON CONFLICT(name) DO UPDATE SET value=excluded.value,updated_at=excluded.updated
 		completedJobLimitKey, strconv.Itoa(limit), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return err
 	}
-	if err := pruneCompletedJobs(tx, limit); err != nil {
+	deleted, err := pruneCompletedJobs(tx, limit)
+	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.notifyPrunedJobs(deleted)
+	return nil
 }
 
 func (s *Store) PruneCompletedJobs() error {
@@ -200,10 +206,15 @@ func (s *Store) PruneCompletedJobs() error {
 		return err
 	}
 	defer tx.Rollback()
-	if err := pruneCompletedJobs(tx, limit); err != nil {
+	deleted, err := pruneCompletedJobs(tx, limit)
+	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.notifyPrunedJobs(deleted)
+	return nil
 }
 
 func validateCompletedJobLimit(limit int) error {
@@ -213,15 +224,28 @@ func validateCompletedJobLimit(limit int) error {
 	return nil
 }
 
-func pruneCompletedJobs(exec jobExecer, limit int) error {
-	_, err := exec.Exec(`DELETE FROM jobs
+func pruneCompletedJobs(exec jobExecer, limit int) ([]string, error) {
+	rows, err := exec.Query(`DELETE FROM jobs
 WHERE status IN ('succeeded','failed','interrupted') AND id NOT IN (
  SELECT id FROM jobs
  WHERE status IN ('succeeded','failed','interrupted')
  ORDER BY COALESCE(NULLIF(finished_at,''),updated_at) DESC,id DESC
  LIMIT ?
-)`, limit)
-	return err
+)
+RETURNING id`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	deleted := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		deleted = append(deleted, id)
+	}
+	return deleted, rows.Err()
 }
 
 func saveJob(exec jobExecer, v domain.JobRecord) error {

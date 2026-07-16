@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -515,6 +516,32 @@ func TestPruneCompletedJobsUsesSavedLimit(t *testing.T) {
 	}
 	assertStoredJob(t, s, "older-success", false)
 	assertStoredJob(t, s, "newer-success", true)
+}
+
+func TestPruneCompletedJobsNotifiesDeletedIDsAfterCommit(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.SetCompletedJobLimit(1); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for index, id := range []string{"older", "newer"} {
+		finished := now.Add(time.Duration(index) * time.Second)
+		if err := s.SaveJobWithEvent(domain.JobRecord{ID: id, Status: "succeeded", CreatedAt: finished, UpdatedAt: finished, FinishedAt: &finished}, domain.JobEvent{Kind: "succeeded", CreatedAt: finished}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var deleted []string
+	s.SetPrunedJobHook(func(ids []string) { deleted = append(deleted, ids...) })
+	if err := s.PruneCompletedJobs(); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(deleted, []string{"older"}) {
+		t.Fatalf("deleted=%v", deleted)
+	}
 }
 
 func TestCompletedJobLimitRejectsOutOfRangeValues(t *testing.T) {
