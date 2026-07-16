@@ -11,6 +11,7 @@
 - [Player match summary and operations view](specs/2026-07-16-player-match-operations-design.md)
 - [Private files ZIP import and export](specs/2026-07-16-private-files-zip-import-export-design.md)
 - [Schedule management and task descriptions](specs/2026-07-16-schedule-management-design.md)
+- [Frontend motion and asynchronous action guards](specs/2026-07-16-frontend-motion-and-action-guards-design.md)
 
 ## Implementation Plans
 
