@@ -707,6 +707,75 @@ describe("App", () => {
     ).toBeInTheDocument();
     vi.unstubAllGlobals();
   });
+  it("prevents duplicate login submissions while authentication is pending", async () => {
+    const login = deferred<Response>();
+    let loginPosts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          loginPosts += 1;
+          return login.promise;
+        }
+        return new Response("{}", {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+    render(<App />);
+    const button = await screen.findByRole("button", { name: "进入作战室" });
+    await userEvent.type(screen.getByLabelText("管理员密码"), "secret");
+
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    expect(loginPosts).toBe(1);
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-busy", "true");
+  });
+  it("locks a pending lifecycle action without blocking another instance", async () => {
+    const firstAction = deferred<Response>();
+    const posts: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        if (init?.method === "POST") {
+          posts.push(path);
+          if (path.includes("/instances/1/")) return firstAction.promise;
+          return new Response('{"ID":"job-2","Status":"pending"}', {
+            status: 202,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response('{"ID":"job-2","Status":"succeeded"}', {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+    render(
+      <App
+        initialInstances={[
+          { ...instance, actual_state: "stopped" },
+          { ...instance, id: "2", name: "黎明战役", actual_state: "stopped" },
+        ]}
+      />,
+    );
+    const firstCard = screen.getByText("深夜战役").closest("article")!;
+    const secondCard = screen.getByText("黎明战役").closest("article")!;
+    const firstButton = within(firstCard).getByRole("button", { name: "启动" });
+    const secondButton = within(secondCard).getByRole("button", { name: "启动" });
+
+    fireEvent.click(firstButton);
+    fireEvent.click(firstButton);
+
+    expect(posts.filter((path) => path.includes("/instances/1/"))).toHaveLength(1);
+    expect(firstButton).toBeDisabled();
+    expect(firstButton).toHaveAttribute("aria-busy", "true");
+    expect(secondButton).toBeEnabled();
+  });
   it("opens private files as an independent main navigation page", async () => {
     vi.stubGlobal(
       "fetch",

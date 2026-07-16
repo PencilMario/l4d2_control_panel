@@ -252,6 +252,8 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
   );
   const pollControllers = useRef(new globalThis.Map<string, AbortController>());
   const pollTimers = useRef(new globalThis.Map<string, number>());
+  const actionLocks = useRef(new Set<string>());
+  const [pendingActions, setPendingActions] = useState(new Set<string>());
   useEffect(() => () => {
     for (const controller of pollControllers.current.values()) controller.abort();
     for (const timer of pollTimers.current.values()) window.clearTimeout(timer);
@@ -480,17 +482,28 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
     return pollJob(created.ID);
   };
   const action = async (id: string, kind: string) => {
-    if (onAction) {
-      onAction(id, kind);
-      return;
-    }
+    const key = `${id}:${kind}`;
+    if (actionLocks.current.has(key)) return;
+    actionLocks.current.add(key);
+    setPendingActions((current) => new Set(current).add(key));
     try {
+      if (onAction) {
+        onAction(id, kind);
+        return;
+      }
       await queue(`/api/instances/${id}/actions`, {
         action: kind,
         confirm: kind !== "start",
       });
     } catch (e) {
       setError(errorMessage(e));
+    } finally {
+      actionLocks.current.delete(key);
+      setPendingActions((current) => {
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
     }
   };
   const pollJob = (id: string) =>
@@ -658,6 +671,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
             packages={packages}
             running={running}
             performanceHistory={performanceHistory}
+            pendingActions={pendingActions}
             setPending={setPending}
             action={action}
             setTerminal={setTerminal}
@@ -715,8 +729,13 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
 function Login({ onSuccess }: { onSuccess: () => void }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
     try {
       await api("/api/auth/login", {
         method: "POST",
@@ -725,6 +744,9 @@ function Login({ onSuccess }: { onSuccess: () => void }) {
       onSuccess();
     } catch (err) {
       setError(errorMessage(err));
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
     }
   };
   return (
@@ -746,7 +768,10 @@ function Login({ onSuccess }: { onSuccess: () => void }) {
           />
         </label>
         {error && <div className="form-error">{error}</div>}
-        <button>进入作战室</button>
+        <button disabled={submitting} aria-busy={submitting}>
+          {submitting ? <RefreshCw /> : null}
+          {submitting ? "正在认证…" : "进入作战室"}
+        </button>
       </form>
     </div>
   );
@@ -774,6 +799,7 @@ function Overview({
   packages,
   running,
   performanceHistory,
+  pendingActions,
   setPending,
   action,
   setTerminal,
@@ -786,6 +812,7 @@ function Overview({
   packages: PackageVersion[];
   running: number;
   performanceHistory: Record<string, PerformanceHistoryPoint[]>;
+  pendingActions: Set<string>;
   setPending: (v: Instance) => void;
   action: (id: string, a: string) => void;
   setTerminal: (v: Instance) => void;
@@ -872,6 +899,8 @@ function Overview({
               x.observed_max_players === undefined
                 ? x.max_players
                 : x.observed_max_players;
+            const starting = pendingActions.has(`${x.id}:start`);
+            const stopping = pendingActions.has(`${x.id}:stop`);
             return (
               <article className={`card ${state}`} key={x.id}>
                 <div className="card-top">
@@ -951,15 +980,21 @@ function Overview({
                   {containerRunning ? (
                     <button
                       aria-label={`停止 ${x.name}`}
+                      disabled={stopping}
+                      aria-busy={stopping}
                       onClick={() => setPending(x)}
                     >
-                      <CircleStop />
-                      停止
+                      {stopping ? <RefreshCw /> : <CircleStop />}
+                      {stopping ? "停止中" : "停止"}
                     </button>
                   ) : (
-                    <button onClick={() => action(x.id, "start")}>
-                      <Play />
-                      启动
+                    <button
+                      disabled={starting}
+                      aria-busy={starting}
+                      onClick={() => void action(x.id, "start")}
+                    >
+                      {starting ? <RefreshCw /> : <Play />}
+                      {starting ? "启动中" : "启动"}
                     </button>
                   )}
                   <button onClick={() => setTerminal(x)}>
