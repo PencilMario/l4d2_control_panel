@@ -902,7 +902,7 @@ test("real HTTP administration journey survives refresh and streams recovery sta
 
   await page.getByRole("button", { name: "系统设置" }).click();
   const retentionLimit = page.getByRole("spinbutton", {
-    name: "成功任务保留数量",
+    name: "已完成任务保留数量",
   });
   await expect(retentionLimit).toHaveValue("40");
   await retentionLimit.fill("25");

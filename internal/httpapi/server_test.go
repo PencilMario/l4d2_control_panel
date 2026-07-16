@@ -1278,9 +1278,21 @@ func TestJobSettingsReadUpdateAndPrune(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	interruptedAt := base.Add(3 * time.Minute)
+	if err := db.SaveJob(domain.JobRecord{
+		ID: "kept-interrupted", Status: "interrupted", CreatedAt: base, UpdatedAt: interruptedAt, FinishedAt: &interruptedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	failedAt := base.Add(4 * time.Minute)
 	if err := db.SaveJob(domain.JobRecord{
 		ID: "kept-failure", Status: "failed", CreatedAt: base, UpdatedAt: failedAt, FinishedAt: &failedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runningAt := base.Add(5 * time.Minute)
+	if err := db.SaveJob(domain.JobRecord{
+		ID: "kept-running", Status: "running", CreatedAt: base, UpdatedAt: runningAt, StartedAt: &base,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1295,8 +1307,17 @@ func TestJobSettingsReadUpdateAndPrune(t *testing.T) {
 	if _, found, err := db.LoadJob("old-success"); err != nil || found {
 		t.Fatalf("old success found=%v err=%v", found, err)
 	}
+	if _, found, err := db.LoadJob("new-success"); err != nil || found {
+		t.Fatalf("new success found=%v err=%v", found, err)
+	}
+	if _, found, err := db.LoadJob("kept-interrupted"); err != nil || !found {
+		t.Fatalf("interrupted found=%v err=%v", found, err)
+	}
 	if _, found, err := db.LoadJob("kept-failure"); err != nil || !found {
 		t.Fatalf("failure found=%v err=%v", found, err)
+	}
+	if _, found, err := db.LoadJob("kept-running"); err != nil || !found {
+		t.Fatalf("running found=%v err=%v", found, err)
 	}
 }
 
@@ -1304,7 +1325,7 @@ func TestJobSettingsRejectInvalidValuesWithoutChangingStoredLimit(t *testing.T) 
 	s, db := testServer(t)
 	defer db.Close()
 	cookie := loginCookie(t, s)
-	if err := db.SetSuccessfulJobLimit(40); err != nil {
+	if err := db.SetCompletedJobLimit(40); err != nil {
 		t.Fatal(err)
 	}
 	for _, body := range []string{
@@ -1321,7 +1342,7 @@ func TestJobSettingsRejectInvalidValuesWithoutChangingStoredLimit(t *testing.T) 
 		if w.Code != http.StatusUnprocessableEntity {
 			t.Fatalf("body=%s status=%d response=%s", body, w.Code, w.Body.String())
 		}
-		limit, err := db.SuccessfulJobLimit()
+		limit, err := db.CompletedJobLimit()
 		if err != nil || limit != 40 {
 			t.Fatalf("body=%s limit=%d err=%v", body, limit, err)
 		}

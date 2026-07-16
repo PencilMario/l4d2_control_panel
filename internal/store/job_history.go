@@ -12,11 +12,12 @@ import (
 const (
 	jobHistoryMigrationVersion = 6
 
-	DefaultSuccessfulJobLimit = 25
-	MinSuccessfulJobLimit     = 1
-	MaxSuccessfulJobLimit     = 500
+	DefaultCompletedJobLimit = 25
+	MinCompletedJobLimit     = 1
+	MaxCompletedJobLimit     = 500
 
-	successfulJobLimitKey = "successful_job_limit"
+	// Keep the original key so existing installations retain their configured value.
+	completedJobLimitKey = "successful_job_limit"
 )
 
 type jobExecer interface {
@@ -153,24 +154,24 @@ func (s *Store) SaveJobWithEvent(record domain.JobRecord, event domain.JobEvent)
 	return tx.Commit()
 }
 
-func (s *Store) SuccessfulJobLimit() (int, error) {
+func (s *Store) CompletedJobLimit() (int, error) {
 	var raw string
-	err := s.db.QueryRow(`SELECT value FROM system_settings WHERE name=?`, successfulJobLimitKey).Scan(&raw)
+	err := s.db.QueryRow(`SELECT value FROM system_settings WHERE name=?`, completedJobLimitKey).Scan(&raw)
 	if err == sql.ErrNoRows {
-		return DefaultSuccessfulJobLimit, nil
+		return DefaultCompletedJobLimit, nil
 	}
 	if err != nil {
 		return 0, err
 	}
 	limit, err := strconv.Atoi(raw)
-	if err != nil || limit < MinSuccessfulJobLimit || limit > MaxSuccessfulJobLimit {
-		return 0, fmt.Errorf("invalid stored successful job limit %q", raw)
+	if err != nil || limit < MinCompletedJobLimit || limit > MaxCompletedJobLimit {
+		return 0, fmt.Errorf("invalid stored completed job limit %q", raw)
 	}
 	return limit, nil
 }
 
-func (s *Store) SetSuccessfulJobLimit(limit int) error {
-	if err := validateSuccessfulJobLimit(limit); err != nil {
+func (s *Store) SetCompletedJobLimit(limit int) error {
+	if err := validateCompletedJobLimit(limit); err != nil {
 		return err
 	}
 	tx, err := s.db.Begin()
@@ -180,17 +181,17 @@ func (s *Store) SetSuccessfulJobLimit(limit int) error {
 	defer tx.Rollback()
 	if _, err := tx.Exec(`INSERT INTO system_settings(name,value,updated_at) VALUES(?,?,?)
 ON CONFLICT(name) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
-		successfulJobLimitKey, strconv.Itoa(limit), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		completedJobLimitKey, strconv.Itoa(limit), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return err
 	}
-	if err := pruneSuccessfulJobs(tx, limit); err != nil {
+	if err := pruneCompletedJobs(tx, limit); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-func (s *Store) PruneSuccessfulJobs() error {
-	limit, err := s.SuccessfulJobLimit()
+func (s *Store) PruneCompletedJobs() error {
+	limit, err := s.CompletedJobLimit()
 	if err != nil {
 		return err
 	}
@@ -199,24 +200,24 @@ func (s *Store) PruneSuccessfulJobs() error {
 		return err
 	}
 	defer tx.Rollback()
-	if err := pruneSuccessfulJobs(tx, limit); err != nil {
+	if err := pruneCompletedJobs(tx, limit); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-func validateSuccessfulJobLimit(limit int) error {
-	if limit < MinSuccessfulJobLimit || limit > MaxSuccessfulJobLimit {
-		return fmt.Errorf("successful job limit must be between %d and %d", MinSuccessfulJobLimit, MaxSuccessfulJobLimit)
+func validateCompletedJobLimit(limit int) error {
+	if limit < MinCompletedJobLimit || limit > MaxCompletedJobLimit {
+		return fmt.Errorf("completed job limit must be between %d and %d", MinCompletedJobLimit, MaxCompletedJobLimit)
 	}
 	return nil
 }
 
-func pruneSuccessfulJobs(exec jobExecer, limit int) error {
+func pruneCompletedJobs(exec jobExecer, limit int) error {
 	_, err := exec.Exec(`DELETE FROM jobs
-WHERE status='succeeded' AND id NOT IN (
+WHERE status IN ('succeeded','failed','interrupted') AND id NOT IN (
  SELECT id FROM jobs
- WHERE status='succeeded'
+ WHERE status IN ('succeeded','failed','interrupted')
  ORDER BY COALESCE(NULLIF(finished_at,''),updated_at) DESC,id DESC
  LIMIT ?
 )`, limit)

@@ -230,16 +230,16 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 }
 
 type jobSettingsResponse struct {
-	SuccessfulJobLimit int `json:"successful_job_limit"`
+	CompletedJobLimit int `json:"successful_job_limit"`
 }
 
 func (s *Server) jobSettings(w http.ResponseWriter, _ *http.Request) {
-	limit, err := s.store.SuccessfulJobLimit()
+	limit, err := s.store.CompletedJobLimit()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "settings_error", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, jobSettingsResponse{SuccessfulJobLimit: limit})
+	writeJSON(w, http.StatusOK, jobSettingsResponse{CompletedJobLimit: limit})
 }
 
 func (s *Server) setJobSettings(w http.ResponseWriter, r *http.Request) {
@@ -254,11 +254,11 @@ func (s *Server) setJobSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "invalid_job_settings", "request body must contain exactly one job settings object")
 		return
 	}
-	if input.SuccessfulJobLimit < store.MinSuccessfulJobLimit || input.SuccessfulJobLimit > store.MaxSuccessfulJobLimit {
+	if input.CompletedJobLimit < store.MinCompletedJobLimit || input.CompletedJobLimit > store.MaxCompletedJobLimit {
 		writeError(w, http.StatusUnprocessableEntity, "invalid_job_limit", "successful_job_limit must be between 1 and 500")
 		return
 	}
-	if err := s.store.SetSuccessfulJobLimit(input.SuccessfulJobLimit); err != nil {
+	if err := s.store.SetCompletedJobLimit(input.CompletedJobLimit); err != nil {
 		writeError(w, http.StatusInternalServerError, "settings_error", err.Error())
 		return
 	}
