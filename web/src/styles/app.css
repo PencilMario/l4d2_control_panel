@@ -10,6 +10,10 @@
   --acid: #b6f23b;
   --amber: #ffb536;
   --red: #ff5c4d;
+  --motion-fast: 160ms;
+  --motion-base: 220ms;
+  --motion-slow: 280ms;
+  --motion-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 * {
   box-sizing: border-box;
@@ -22,6 +26,38 @@ body {
 button,
 a {
   font: inherit;
+}
+button,
+a,
+input,
+select,
+textarea,
+.card,
+.data-panel,
+.data-row,
+.source-card,
+.job-row,
+.private-tree-row,
+.schedule-item {
+  transition:
+    color var(--motion-fast) var(--motion-ease),
+    background-color var(--motion-fast) var(--motion-ease),
+    border-color var(--motion-fast) var(--motion-ease),
+    box-shadow var(--motion-base) var(--motion-ease),
+    opacity var(--motion-fast) var(--motion-ease),
+    transform var(--motion-base) var(--motion-ease);
+}
+button svg,
+a svg {
+  transition: transform var(--motion-base) var(--motion-ease);
+}
+button:not(:disabled):active,
+a:active {
+  transform: translateY(1px) scale(0.985);
+}
+button:not(:disabled):hover svg,
+a:hover svg {
+  transform: translateY(-1px);
 }
 .shell {
   min-height: 100vh;
@@ -261,6 +297,16 @@ header > div > p:last-child {
   border: 1px solid var(--line);
   padding: 20px;
   overflow: hidden;
+}
+.card:hover {
+  z-index: 1;
+  border-color: #46534e;
+  background: linear-gradient(145deg, #18211d, #111714);
+  box-shadow: 0 16px 36px #0008;
+  transform: translateY(-3px);
+}
+.card:hover:before {
+  box-shadow: 0 0 18px currentColor;
 }
 .card:before {
   content: "";
@@ -577,6 +623,11 @@ header > div > p:last-child {
   max-width: 430px;
   padding: 30px;
   box-shadow: 0 30px 90px #000;
+  animation: modal-enter var(--motion-slow) var(--motion-ease) both;
+}
+.modal-wrap,
+.private-snapshot-backdrop {
+  animation: backdrop-enter var(--motion-base) ease-out both;
 }
 .danger-icon {
   display: inline-grid;
@@ -919,6 +970,16 @@ nav button.active {
 button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+  transform: none;
+}
+button[aria-busy="true"],
+[role="button"][aria-busy="true"] {
+  cursor: wait;
+}
+button[aria-busy="true"] svg,
+[role="button"][aria-busy="true"] svg,
+.is-spinning {
+  animation: busy-spin 900ms linear infinite;
 }
 button:focus-visible,
 a:focus-visible,
@@ -1660,6 +1721,8 @@ textarea:focus-visible {
 }
 .job-row:hover {
   background: #121b17;
+  box-shadow: inset 3px 0 #3d4e46;
+  transform: translateX(2px);
 }
 .job-row:focus-visible {
   position: relative;
@@ -1962,6 +2025,9 @@ textarea:focus-visible {
 .private-tree-row.selected {
   background: #1a231f;
   box-shadow: inset 2px 0 var(--acid);
+}
+.private-tree-row:hover {
+  background: #151e1a;
 }
 .private-tree-select {
   display: flex;
@@ -2279,5 +2345,38 @@ textarea:focus-visible {
     gap: 0;
     padding: 10px;
     font-size: 0;
+  }
+}
+
+@keyframes busy-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes modal-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes backdrop-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
   }
 }
