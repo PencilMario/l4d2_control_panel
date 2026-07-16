@@ -8,5 +8,5 @@
 - [x] Add responsive schedule list, editor, and help-dialog styling.
 - [x] Add scheduler/API update and delete regression coverage.
 - [x] Extend desktop/mobile Playwright schedule journey and layout checks.
-- [ ] Integrate the concurrent `main` Job-history fix and rerun final verification.
-- [ ] Record final combined evidence and cleanup state.
+- [x] Integrate the concurrent `main` Job-history fix and rerun final verification.
+- [x] Record final combined evidence and cleanup state.
