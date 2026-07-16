@@ -934,6 +934,10 @@ test("real HTTP administration journey survives refresh and streams recovery sta
     "justify-content",
     "flex-start",
   );
+  await expect(failedLog.locator(".job-log-actions")).toHaveCSS(
+    "padding-top",
+    "12px",
+  );
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= window.innerWidth,

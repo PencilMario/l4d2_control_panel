@@ -2517,6 +2517,7 @@ textarea:focus-visible {
 .job-log-actions {
   display: flex;
   justify-content: flex-start;
+  padding-top: 12px;
   margin-bottom: 10px;
 }
 .job-log-actions button {
