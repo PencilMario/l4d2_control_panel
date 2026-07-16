@@ -180,7 +180,11 @@ export function JobsPage({ onOpenLogs }: { onOpenLogs?: (job: Job) => void }) {
                     <>
                       {onOpenLogs ? (
                         <div className="job-log-actions">
-                          <button type="button" onClick={() => onOpenLogs(detail)}>
+                          <button
+                            className="create"
+                            type="button"
+                            onClick={() => onOpenLogs(detail)}
+                          >
                             <ExternalLink aria-hidden="true" />
                             打开完整日志
                           </button>

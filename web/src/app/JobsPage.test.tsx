@@ -258,7 +258,7 @@ describe("JobsPage", () => {
       }),
     );
 
-    render(<JobsPage />);
+    render(<JobsPage onOpenLogs={() => {}} />);
     await userEvent.click(
       await screen.findByRole("button", {
         name: "查看 game_update 任务日志，任务 ID job-one",
@@ -267,6 +267,9 @@ describe("JobsPage", () => {
     expect(
       await screen.findByRole("region", { name: "game_update 任务日志" }),
     ).toHaveTextContent("job-one complete");
+    expect(screen.getByRole("button", { name: "打开完整日志" })).toHaveClass(
+      "create",
+    );
 
     await userEvent.click(
       screen.getByRole("button", {
