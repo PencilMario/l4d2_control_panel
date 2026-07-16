@@ -13,3 +13,11 @@ describe("shared interaction motion", () => {
     expect(css).toContain("@media (prefers-reduced-motion: reduce)");
   });
 });
+
+describe("schedule help dialog layout", () => {
+  it("overrides the compact modal width limit for long task descriptions", () => {
+    const rule = css.match(/\.schedule-help-dialog\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(rule).toContain("max-width: none");
+  });
+});

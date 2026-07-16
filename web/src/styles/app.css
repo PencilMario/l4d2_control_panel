@@ -1342,6 +1342,7 @@ textarea:focus-visible {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   width: min(980px, calc(100% - 32px));
+  max-width: none;
   max-height: min(88vh, 900px);
   overflow: hidden;
 }
