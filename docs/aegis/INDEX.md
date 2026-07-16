@@ -10,6 +10,7 @@
 - [Instance selective game and plugin package reinstall](specs/2026-07-15-instance-selective-reinstall-design.md)
 - [Player match summary and operations view](specs/2026-07-16-player-match-operations-design.md)
 - [Private files ZIP import and export](specs/2026-07-16-private-files-zip-import-export-design.md)
+- [Schedule management and task descriptions](specs/2026-07-16-schedule-management-design.md)
 
 ## Implementation Plans
 
