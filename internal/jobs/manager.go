@@ -65,7 +65,7 @@ func (r reporter) Progress(stage string, percent int, message string) {
 		log.Printf("persist job progress %s: %v", j.ID, persistErr)
 		return
 	}
-	r.m.appendLog(j.ID, "task", joblogs.Info, message)
+	r.m.appendLog(j.ID, stage, joblogs.Info, message)
 }
 func (r reporter) Log(source string, level joblogs.Level, message string) {
 	r.m.appendLog(r.id, source, level, message)

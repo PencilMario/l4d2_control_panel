@@ -59,7 +59,7 @@ func TestManagerWritesTaskLifecycleAndReporterLogs(t *testing.T) {
 	wants := []recordedLogCall{
 		{kind: "append", jobID: job.ID, source: "task", level: joblogs.Info, message: "Task queued"},
 		{kind: "append", jobID: job.ID, source: "task", level: joblogs.Info, message: "Task started"},
-		{kind: "append", jobID: job.ID, source: "task", level: joblogs.Info, message: "downloading"},
+		{kind: "append", jobID: job.ID, source: "download", level: joblogs.Info, message: "downloading"},
 		{kind: "append", jobID: job.ID, source: "steamcmd", level: joblogs.Output, message: "raw output"},
 		{kind: "append", jobID: job.ID, source: "task", level: joblogs.Error, message: "download interrupted"},
 		{kind: "finalize", jobID: job.ID},
