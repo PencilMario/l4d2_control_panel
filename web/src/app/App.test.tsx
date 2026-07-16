@@ -633,6 +633,98 @@ describe("App", () => {
     await userEvent.click(screen.getByRole("button", { name: "确认停止" }));
     expect(onAction).toHaveBeenCalledWith("1", "stop");
   });
+  it("requires the instance name before permanently deleting its container and data", async () => {
+    const requests: Array<{ path: string; method: string; body: unknown }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        const method = init?.method || "GET";
+        requests.push({
+          path,
+          method,
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        });
+        if (path === "/api/instances/1" && method === "DELETE") {
+          return Response.json(
+            { ID: "delete-job", Status: "pending" },
+            { status: 202 },
+          );
+        }
+        if (path === "/api/jobs/delete-job") {
+          return Response.json({ ID: "delete-job", Status: "succeeded" });
+        }
+        if (path === "/api/instances") return Response.json([]);
+        if (path === "/api/packages") return Response.json([]);
+        return Response.json({});
+      }),
+    );
+
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(
+      screen.getByRole("button", { name: "删除实例 深夜战役" }),
+    );
+    const dialog = screen.getByRole("dialog", { name: "永久删除 深夜战役？" });
+    expect(dialog).toHaveTextContent("游戏容器");
+    expect(dialog).toHaveTextContent("数据目录");
+    const confirm = within(dialog).getByRole("button", { name: "永久删除" });
+    expect(confirm).toBeDisabled();
+
+    await userEvent.type(within(dialog).getByLabelText("输入实例名称确认"), "深夜");
+    expect(confirm).toBeDisabled();
+    await userEvent.clear(within(dialog).getByLabelText("输入实例名称确认"));
+    await userEvent.type(within(dialog).getByLabelText("输入实例名称确认"), "深夜战役");
+    expect(confirm).toBeEnabled();
+    await userEvent.click(confirm);
+
+    await waitFor(() =>
+      expect(requests).toContainEqual({
+        path: "/api/instances/1",
+        method: "DELETE",
+        body: { confirm: true, delete_data: true },
+      }),
+    );
+    expect(await screen.findByText("尚无实例。创建第一个 Host 网络服务器。")).toBeVisible();
+  });
+  it("prevents duplicate instance deletion and keeps the dialog open on failure", async () => {
+    const deletion = deferred<Response>();
+    let deleteRequests = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === "/api/instances/1" && init?.method === "DELETE") {
+          deleteRequests += 1;
+          return deletion.promise;
+        }
+        return Response.json([]);
+      }),
+    );
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(
+      screen.getByRole("button", { name: "删除实例 深夜战役" }),
+    );
+    const dialog = screen.getByRole("dialog", { name: "永久删除 深夜战役？" });
+    await userEvent.type(
+      within(dialog).getByLabelText("输入实例名称确认"),
+      "深夜战役",
+    );
+    const confirm = within(dialog).getByRole("button", { name: "永久删除" });
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+
+    expect(deleteRequests).toBe(1);
+    expect(confirm).toBeDisabled();
+    expect(confirm).toHaveAttribute("aria-busy", "true");
+    deletion.resolve(
+      Response.json(
+        { error: { message: "实例维护任务仍在运行" } },
+        { status: 409 },
+      ),
+    );
+    expect(await screen.findByText("实例维护任务仍在运行")).toBeVisible();
+    expect(screen.getByRole("dialog", { name: "永久删除 深夜战役？" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "深夜战役" })).toBeVisible();
+  });
   it("submits SourceTV and plugin ports when creating an instance", async () => {
     let submitted: Record<string, unknown> | undefined;
     vi.stubGlobal(

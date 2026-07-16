@@ -1008,6 +1008,67 @@ test("real HTTP administration journey survives refresh and streams recovery sta
     fullPage: true,
   });
 
+  await page.getByRole("button", { name: "总览" }).click();
+  const deleteCard = instanceCard(secondInstanceName);
+  await deleteCard
+    .getByRole("button", { name: `删除实例 ${secondInstanceName}` })
+    .click();
+  const instanceDeleteDialog = page.getByRole("dialog", {
+    name: `永久删除 ${secondInstanceName}？`,
+  });
+  const permanentDelete = instanceDeleteDialog.getByRole("button", {
+    name: "永久删除",
+  });
+  await expect(permanentDelete).toBeDisabled();
+  await instanceDeleteDialog.getByLabel("输入实例名称确认").fill("wrong name");
+  await expect(permanentDelete).toBeDisabled();
+  await instanceDeleteDialog
+    .getByLabel("输入实例名称确认")
+    .fill(secondInstanceName);
+  await expect(permanentDelete).toBeEnabled();
+  await instanceDeleteDialog.evaluate((dialog) =>
+    Promise.all(dialog.getAnimations().map((animation) => animation.finished)),
+  );
+  const deleteDialogLayout = await instanceDeleteDialog.evaluate((dialog) => {
+    const box = dialog.getBoundingClientRect();
+    return {
+      left: box.left,
+      top: box.top,
+      right: box.right,
+      bottom: box.bottom,
+      scrollWidth: dialog.scrollWidth,
+      clientWidth: dialog.clientWidth,
+    };
+  });
+  expect.soft(deleteDialogLayout.left).toBeGreaterThanOrEqual(0);
+  expect.soft(deleteDialogLayout.top).toBeGreaterThanOrEqual(0);
+  expect.soft(deleteDialogLayout.right).toBeLessThanOrEqual(
+    page.viewportSize()!.width,
+  );
+  expect.soft(deleteDialogLayout.bottom).toBeLessThanOrEqual(
+    page.viewportSize()!.height,
+  );
+  expect.soft(deleteDialogLayout.scrollWidth).toBeLessThanOrEqual(
+    deleteDialogLayout.clientWidth,
+  );
+  await page.screenshot({
+    path: testInfo.outputPath(`${testInfo.project.name}-instance-delete.png`),
+    fullPage: false,
+  });
+  const deleteRequest = page.waitForRequest((request) =>
+    request.method() === "DELETE" &&
+    new URL(request.url()).pathname.endsWith(
+      `/api/instances/${savedAssignments.second.id}`,
+    ),
+  );
+  await permanentDelete.click();
+  const submittedDelete = await deleteRequest;
+  expect(await submittedDelete.postDataJSON()).toEqual({
+    confirm: true,
+    delete_data: true,
+  });
+  await expect(deleteCard).toHaveCount(0, { timeout: 20_000 });
+
   await page.getByRole("button", { name: "系统设置" }).click();
   const retentionLimit = page.getByRole("spinbutton", {
     name: "已完成任务保留数量",

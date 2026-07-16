@@ -24,6 +24,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   TerminalSquare,
+  Trash2,
   Users,
   X,
 } from "lucide-react";
@@ -510,13 +511,31 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
       queueLocks.current.delete(key);
     }
   };
-  const queueAndWait = async (path: string, body: unknown) => {
+  const queueAndWait = async (
+    path: string,
+    body: unknown,
+    method = "POST",
+  ) => {
     const created = await api<Job>(path, {
-      method: "POST",
+      method,
       body: JSON.stringify(body),
     });
     setJob(created);
     return pollJob(created.ID);
+  };
+  const permanentlyDeleteInstance = async (id: string) => {
+    try {
+      await queueAndWait(
+        `/api/instances/${id}`,
+        { confirm: true, delete_data: true },
+        "DELETE",
+      );
+      await loadInstances();
+      return true;
+    } catch (reason) {
+      setError(errorMessage(reason));
+      return false;
+    }
   };
   const action = async (id: string, kind: string) => {
     const key = `${id}:${kind}`;
@@ -717,6 +736,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
             setPlayers={setPlayersTarget}
             queue={queue}
             reload={loadInstances}
+            deleteInstance={permanentlyDeleteInstance}
             acceptJob={(next) => {
               setJob(next);
               void pollJob(next.ID).catch(() => undefined);
@@ -846,6 +866,7 @@ function Overview({
   setPlayers,
   queue,
   reload,
+  deleteInstance,
   acceptJob,
 }: {
   instances: Instance[];
@@ -859,12 +880,14 @@ function Overview({
   setPlayers: (v: Instance) => void;
   queue: (path: string, body: any) => Promise<void>;
   reload: () => Promise<void>;
+  deleteInstance: (id: string) => Promise<boolean>;
   acceptJob: (job: Job) => void;
 }) {
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Instance | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [reinstalling, setReinstalling] = useState<Instance | null>(null);
+  const [deleting, setDeleting] = useState<Instance | null>(null);
   const packagesByID = new globalThis.Map(
     packages.map((item) => [item.id, item]),
   );
@@ -948,14 +971,24 @@ function Overview({
                     <i></i>
                     {stateLabel(state)}
                   </span>
-                  <button
-                    className="icon-btn"
-                    aria-label={`配置 ${x.name}`}
-                    title="实例配置"
-                    onClick={() => setEditing(x)}
-                  >
-                    <SlidersHorizontal />
-                  </button>
+                  <div className="card-tools">
+                    <button
+                      className="icon-btn"
+                      aria-label={`配置 ${x.name}`}
+                      title="实例配置"
+                      onClick={() => setEditing(x)}
+                    >
+                      <SlidersHorizontal />
+                    </button>
+                    <button
+                      className="icon-btn danger"
+                      aria-label={`删除实例 ${x.name}`}
+                      title="永久删除实例"
+                      onClick={() => setDeleting(x)}
+                    >
+                      <Trash2 />
+                    </button>
+                  </div>
                 </div>
                 <h3>{x.name}</h3>
                 <p className="endpoint">
@@ -1102,6 +1135,17 @@ function Overview({
           }}
         />
       )}
+      {deleting ? (
+        <DeleteInstanceDialog
+          instance={deleting}
+          close={() => setDeleting(null)}
+          onConfirm={async () => {
+            const succeeded = await deleteInstance(deleting.id);
+            if (succeeded) setDeleting(null);
+            return succeeded;
+          }}
+        />
+      ) : null}
     </>
   );
 }
@@ -1925,6 +1969,81 @@ function ConfirmationDialog({
           >
             {submitting ? <RefreshCw /> : null}
             {submitting ? "处理中…" : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DeleteInstanceDialog({
+  instance,
+  close,
+  onConfirm,
+}: {
+  instance: Instance;
+  close: () => void;
+  onConfirm: () => Promise<boolean>;
+}) {
+  const [confirmationName, setConfirmationName] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+  const confirmed = confirmationName === instance.name;
+  const confirm = async () => {
+    if (!confirmed || submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    try {
+      await onConfirm();
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  };
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !submitting) close();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [close, submitting]);
+  return (
+    <div className="modal-wrap">
+      <div
+        className="modal instance-delete-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="instance-delete-title"
+      >
+        <span className="danger-icon"><Trash2 /></span>
+        <p className="eyebrow">PERMANENT DELETION</p>
+        <h2 id="instance-delete-title">永久删除 {instance.name}？</h2>
+        <p>此操作不可恢复，将永久删除：</p>
+        <ul>
+          <li>实例记录和托管游戏容器</li>
+          <li>游戏文件、私有配置、插件、存档和备份</li>
+          <li>实例数据目录和控制台数据</li>
+        </ul>
+        <label>
+          <span>输入实例名称 <b>{instance.name}</b> 确认</span>
+          <input
+            autoFocus
+            aria-label="输入实例名称确认"
+            disabled={submitting}
+            value={confirmationName}
+            onChange={(event) => setConfirmationName(event.target.value)}
+          />
+        </label>
+        <div>
+          <button disabled={submitting} onClick={close}>取消</button>
+          <button
+            className="danger"
+            disabled={!confirmed || submitting}
+            aria-busy={submitting}
+            onClick={() => void confirm()}
+          >
+            {submitting ? <RefreshCw /> : <Trash2 />}
+            {submitting ? "删除中…" : "永久删除"}
           </button>
         </div>
       </div>
