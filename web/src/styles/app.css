@@ -438,6 +438,10 @@ header > div > p:last-child {
   white-space: nowrap;
 }
 .performance-metric b {
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
   font: 600 12px/1.2 monospace;
 }
 .performance-metric em {

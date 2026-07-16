@@ -360,6 +360,12 @@ test("real HTTP administration journey survives refresh and streams recovery sta
     const chartBox = element.querySelector(".performance-chart")!.getBoundingClientRect();
     const modesBox = element.querySelector(".performance-modes")!.getBoundingClientRect();
     const actionsBox = element.querySelector(".actions")!.getBoundingClientRect();
+    const memoryMetric = Array.from(
+      element.querySelectorAll(".performance-metric"),
+    ).find((metric) => metric.querySelector("small")?.textContent === "内存");
+    const memoryValue = memoryMetric?.querySelector("b");
+    if (!memoryValue) throw new Error("memory metric value not found");
+    const memoryStyle = getComputedStyle(memoryValue);
     return {
       cardLeft: cardBox.left,
       cardRight: cardBox.right,
@@ -372,6 +378,15 @@ test("real HTTP administration journey survives refresh and streams recovery sta
       modesRight: modesBox.right,
       actionsLeft: actionsBox.left,
       actionsRight: actionsBox.right,
+      memoryValue: {
+        text: memoryValue.textContent,
+        clientWidth: memoryValue.clientWidth,
+        scrollWidth: memoryValue.scrollWidth,
+        clientHeight: memoryValue.clientHeight,
+        scrollHeight: memoryValue.scrollHeight,
+        textOverflow: memoryStyle.textOverflow,
+        whiteSpace: memoryStyle.whiteSpace,
+      },
       modeButtons: Array.from(element.querySelectorAll(".performance-modes button")).map(
         (button) => ({ ...bounds(button), textFits: button.scrollWidth <= button.clientWidth }),
       ),
@@ -413,6 +428,11 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   expect.soft(cardLayout.modesRight).toBeLessThanOrEqual(cardLayout.cardRight);
   expect.soft(cardLayout.actionsLeft).toBeGreaterThanOrEqual(cardLayout.cardLeft);
   expect.soft(cardLayout.actionsRight).toBeLessThanOrEqual(cardLayout.cardRight);
+  expect.soft(cardLayout.memoryValue.text).toBe("768 MiB / 2 GiB (37.5%)");
+  expect.soft(cardLayout.memoryValue.scrollWidth).toBeLessThanOrEqual(cardLayout.memoryValue.clientWidth);
+  expect.soft(cardLayout.memoryValue.scrollHeight).toBeLessThanOrEqual(cardLayout.memoryValue.clientHeight);
+  expect.soft(cardLayout.memoryValue.textOverflow).not.toBe("ellipsis");
+  expect.soft(cardLayout.memoryValue.whiteSpace).not.toBe("nowrap");
   expect.soft(cardLayout.modeButtons).toHaveLength(4);
   expect.soft(cardLayout.actionButtons.length).toBeGreaterThan(0);
   for (const button of [...cardLayout.modeButtons, ...cardLayout.actionButtons]) {
