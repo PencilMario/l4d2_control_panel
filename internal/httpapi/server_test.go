@@ -1622,6 +1622,82 @@ func TestDeleteVPKDecodesEscapedRouteName(t *testing.T) {
 	}
 }
 
+type vpkRestartRegistrar struct {
+	calls       int
+	publication string
+	count       int
+	err         error
+}
+
+func (r *vpkRestartRegistrar) Register(_ context.Context, publication string) (int, error) {
+	r.calls++
+	r.publication = publication
+	return r.count, r.err
+}
+
+func TestCompleteVPKRegistersOnlyNewPublication(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	uploads, err := content.NewUploadManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registrar := &vpkRestartRegistrar{count: 2}
+	s = New(db, s.auth, WithContent(uploads, nil, nil, nil, nil), WithVPKRestartRegistrar(registrar))
+	cookie := loginCookie(t, s)
+	data := []byte("new-shared-vpk")
+	digest := sha256.Sum256(data)
+	hash := hex.EncodeToString(digest[:])
+	complete := func(name string) *httptest.ResponseRecorder {
+		session, beginErr := uploads.Begin(name, int64(len(data)), hash)
+		if beginErr != nil {
+			t.Fatal(beginErr)
+		}
+		if _, writeErr := uploads.Write(session.ID, 0, bytes.NewReader(data)); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/content/vpk/uploads/"+session.ID+"/complete", strings.NewReader(`{}`))
+		req.AddCookie(cookie)
+		response := httptest.NewRecorder()
+		s.Handler().ServeHTTP(response, req)
+		return response
+	}
+	first := complete("first.vpk")
+	if first.Code != http.StatusOK || !strings.Contains(first.Body.String(), `"restart_instances":2`) || !strings.Contains(first.Body.String(), `"duplicate":false`) {
+		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
+	}
+	second := complete("copy.vpk")
+	if second.Code != http.StatusOK || !strings.Contains(second.Body.String(), `"duplicate":true`) {
+		t.Fatalf("second status=%d body=%s", second.Code, second.Body.String())
+	}
+	if registrar.calls != 1 || registrar.publication != hash {
+		t.Fatalf("registrar=%#v", registrar)
+	}
+}
+
+func TestCompleteVPKReportsRegistrationWarningWithoutRollingBack(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	uploads, _ := content.NewUploadManager(t.TempDir())
+	registrar := &vpkRestartRegistrar{err: errors.New("registration unavailable")}
+	s = New(db, s.auth, WithContent(uploads, nil, nil, nil, nil), WithVPKRestartRegistrar(registrar))
+	data := []byte("published")
+	digest := sha256.Sum256(data)
+	hash := hex.EncodeToString(digest[:])
+	session, _ := uploads.Begin("maps.vpk", int64(len(data)), hash)
+	_, _ = uploads.Write(session.ID, 0, bytes.NewReader(data))
+	req := httptest.NewRequest(http.MethodPost, "/api/content/vpk/uploads/"+session.ID+"/complete", strings.NewReader(`{}`))
+	req.AddCookie(loginCookie(t, s))
+	response := httptest.NewRecorder()
+	s.Handler().ServeHTTP(response, req)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"restart_warning":"registration unavailable"`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if _, err := uploads.Path("maps.vpk"); err != nil {
+		t.Fatalf("published VPK rolled back: %v", err)
+	}
+}
+
 func TestCleanVPKRequiresConfirmation(t *testing.T) {
 	s, db := testServer(t)
 	defer db.Close()
