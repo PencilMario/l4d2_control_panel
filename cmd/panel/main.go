@@ -159,7 +159,7 @@ func main() {
 	}
 	jobManager := jobs.NewPersistentManager(db, jobs.WithLogSink(jobLogManager))
 	playerService := players.NewService(db, a2s.Client{}, engine, cfg.GameHost)
-	performanceSampler := metrics.New(db, engine, trafficClient, playerService, nil)
+	performanceSampler := metrics.New(db, engine, trafficClient, playerService, nil).WithStorage(metrics.DirectoryStorage{Root: cfg.DataRoot})
 	uploadManager, err := content.NewUploadManager(cfg.DataRoot)
 	if err != nil {
 		log.Fatal(err)

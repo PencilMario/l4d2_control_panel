@@ -73,6 +73,10 @@ export type Instance = ConfigurableInstance & {
   uptime_seconds?: number | null;
   a2s_latency_ms?: number | null;
   image_size_bytes?: number | null;
+  game_size_bytes?: number | null;
+  private_size_bytes?: number | null;
+  backups_size_bytes?: number | null;
+  console_size_bytes?: number | null;
 };
 export type InstanceOverview = {
   actual_state: string;
@@ -99,6 +103,10 @@ export type InstanceOverview = {
   uptime_seconds: number | null;
   a2s_latency_ms: number | null;
   image_size_bytes?: number | null;
+  game_size_bytes?: number | null;
+  private_size_bytes?: number | null;
+  backups_size_bytes?: number | null;
+  console_size_bytes?: number | null;
   issues?: string[];
 };
 type Props = {
@@ -382,6 +390,10 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
             uptime_seconds: overview.uptime_seconds ?? null,
             a2s_latency_ms: overview.a2s_latency_ms ?? null,
             image_size_bytes: overview.image_size_bytes ?? null,
+            game_size_bytes: overview.game_size_bytes ?? null,
+            private_size_bytes: overview.private_size_bytes ?? null,
+            backups_size_bytes: overview.backups_size_bytes ?? null,
+            console_size_bytes: overview.console_size_bytes ?? null,
             memory:
               overview.memory_bytes === null
                 ? null

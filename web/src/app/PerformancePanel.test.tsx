@@ -142,7 +142,7 @@ describe("PerformancePanel", () => {
     expect(screen.getAllByText("0")).toHaveLength(1);
     expect(screen.getByText("1h 1m 1s")).toBeInTheDocument();
     expect(screen.getByText("0 ms")).toBeInTheDocument();
-    expect(screen.getByText("镜像大小")).toBeInTheDocument();
+    expect(screen.getByText("总占用")).toBeInTheDocument();
     expect(screen.getByText("5 GiB")).toBeInTheDocument();
     expect(screen.queryByText("玩家")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "网络" })).toHaveAttribute("aria-pressed", "false");

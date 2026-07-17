@@ -29,6 +29,10 @@ type RuntimeProvider interface {
 	Stats(context.Context, string) (docker.ResourceStats, error)
 	ImageSize(context.Context, string) (uint64, error)
 }
+type StorageProvider interface {
+	InstanceStorage(context.Context, string) (StorageUsage, error)
+}
+type StorageUsage struct{ Game, Private, Backups, Console uint64 }
 type TrafficProvider interface {
 	Register(context.Context, traffic.Session) error
 	Stop(context.Context, string, string) error
@@ -65,6 +69,10 @@ type Snapshot struct {
 	RunID                    string    `json:"run_id"`
 	ContainerRunning         *bool     `json:"container_running"`
 	ImageSizeBytes           *uint64   `json:"image_size_bytes"`
+	GameSizeBytes            *uint64   `json:"game_size_bytes"`
+	PrivateSizeBytes         *uint64   `json:"private_size_bytes"`
+	BackupsSizeBytes         *uint64   `json:"backups_size_bytes"`
+	ConsoleSizeBytes         *uint64   `json:"console_size_bytes"`
 	CPUPercent               *float64  `json:"cpu_percent"`
 	MemoryBytes              *uint64   `json:"memory_bytes"`
 	MemoryLimitBytes         *uint64   `json:"memory_limit_bytes"`
@@ -95,6 +103,7 @@ type counterSample struct {
 type Sampler struct {
 	instances InstanceSource
 	runtime   RuntimeProvider
+	storage   StorageProvider
 	traffic   TrafficProvider
 	players   PlayerProvider
 	clock     Clock
@@ -122,6 +131,7 @@ func New(instances InstanceSource, runtime RuntimeProvider, trafficProvider Traf
 	}
 	return &Sampler{instances: instances, runtime: runtime, traffic: trafficProvider, players: playerProvider, clock: clock, latest: map[string]Snapshot{}, history: map[string][]Snapshot{}, previous: map[string]counterSample{}, runs: map[string]string{}, trafficOwned: map[string]string{}, workerCount: maxConcurrentInstances, instanceTimeout: instanceTimeout, enumerationTimeout: instanceTimeout, cleanupTimeout: instanceTimeout, runtimeTimeout: time.Second, done: make(chan struct{})}
 }
+func (s *Sampler) WithStorage(provider StorageProvider) *Sampler { s.storage = provider; return s }
 
 func (s *Sampler) Start(ctx context.Context) {
 	s.startOnce.Do(func() {
@@ -231,6 +241,16 @@ func (s *Sampler) sampleInstance(ctx context.Context, instance domain.Instance) 
 	}
 	snapshot.ContainerRunning = boolptr(true)
 	snapshot.RunID = runtimeState.StartedAt.UTC().Format(time.RFC3339Nano)
+	if s.storage != nil {
+		if usage, err := s.storage.InstanceStorage(ctx, instance.ID); err == nil {
+			snapshot.GameSizeBytes = &usage.Game
+			snapshot.PrivateSizeBytes = &usage.Private
+			snapshot.BackupsSizeBytes = &usage.Backups
+			snapshot.ConsoleSizeBytes = &usage.Console
+		} else {
+			snapshot.Issues = append(snapshot.Issues, issue("storage", err))
+		}
+	}
 	uptime := now.Sub(runtimeState.StartedAt.UTC())
 	if uptime < 0 {
 		uptime = 0
@@ -302,6 +322,18 @@ type sourceResult struct {
 func mergeSnapshot(target *Snapshot, source Snapshot) {
 	if source.ImageSizeBytes != nil {
 		target.ImageSizeBytes = cloneUint64(source.ImageSizeBytes)
+	}
+	if source.GameSizeBytes != nil {
+		target.GameSizeBytes = cloneUint64(source.GameSizeBytes)
+	}
+	if source.PrivateSizeBytes != nil {
+		target.PrivateSizeBytes = cloneUint64(source.PrivateSizeBytes)
+	}
+	if source.BackupsSizeBytes != nil {
+		target.BackupsSizeBytes = cloneUint64(source.BackupsSizeBytes)
+	}
+	if source.ConsoleSizeBytes != nil {
+		target.ConsoleSizeBytes = cloneUint64(source.ConsoleSizeBytes)
 	}
 	if source.CPUPercent != nil {
 		target.CPUPercent = source.CPUPercent
@@ -553,6 +585,10 @@ func cloneString(v *string) *string {
 func cloneSnapshot(v Snapshot) Snapshot {
 	v.ContainerRunning = cloneBool(v.ContainerRunning)
 	v.ImageSizeBytes = cloneUint64(v.ImageSizeBytes)
+	v.GameSizeBytes = cloneUint64(v.GameSizeBytes)
+	v.PrivateSizeBytes = cloneUint64(v.PrivateSizeBytes)
+	v.BackupsSizeBytes = cloneUint64(v.BackupsSizeBytes)
+	v.ConsoleSizeBytes = cloneUint64(v.ConsoleSizeBytes)
 	v.CPUPercent = cloneFloat64(v.CPUPercent)
 	v.MemoryBytes = cloneUint64(v.MemoryBytes)
 	v.MemoryLimitBytes = cloneUint64(v.MemoryLimitBytes)

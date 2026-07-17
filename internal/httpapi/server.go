@@ -625,6 +625,10 @@ type instanceOverview struct {
 	ContainerRunning      bool                 `json:"container_running"`
 	ContainerRunningKnown bool                 `json:"container_running_known"`
 	ImageSizeBytes        *uint64              `json:"image_size_bytes"`
+	GameSizeBytes         *uint64              `json:"game_size_bytes"`
+	PrivateSizeBytes      *uint64              `json:"private_size_bytes"`
+	BackupsSizeBytes      *uint64              `json:"backups_size_bytes"`
+	ConsoleSizeBytes      *uint64              `json:"console_size_bytes"`
 	SampledAt             *time.Time           `json:"sampled_at"`
 	RunID                 *string              `json:"run_id"`
 	Map                   string               `json:"map,omitempty"`
@@ -686,7 +690,7 @@ func (s *Server) instanceOverview(w http.ResponseWriter, r *http.Request) {
 
 func overviewFromSnapshot(actualState domain.InstanceState, snapshot metrics.Snapshot) instanceOverview {
 	result := instanceOverview{
-		ActualState: actualState, ImageSizeBytes: snapshot.ImageSizeBytes, Players: snapshot.Players, MaxPlayers: snapshot.MaxPlayers,
+		ActualState: actualState, ImageSizeBytes: snapshot.ImageSizeBytes, GameSizeBytes: snapshot.GameSizeBytes, PrivateSizeBytes: snapshot.PrivateSizeBytes, BackupsSizeBytes: snapshot.BackupsSizeBytes, ConsoleSizeBytes: snapshot.ConsoleSizeBytes, Players: snapshot.Players, MaxPlayers: snapshot.MaxPlayers,
 		CPUPercent: snapshot.CPUPercent, MemoryBytes: snapshot.MemoryBytes, MemoryLimitBytes: snapshot.MemoryLimitBytes, MemoryPercent: snapshot.MemoryPercent,
 		NetworkRXBytesPerSec: snapshot.NetworkRXBytesPerSecond, NetworkTXBytesPerSec: snapshot.NetworkTXBytesPerSecond, NetworkRXBytes: snapshot.NetworkRXBytes, NetworkTXBytes: snapshot.NetworkTXBytes,
 		BlockReadBytesPerSec: snapshot.BlockReadBytesPerSecond, BlockWriteBytesPerSec: snapshot.BlockWriteBytesPerSecond, BlockReadBytes: snapshot.BlockReadBytes, BlockWriteBytes: snapshot.BlockWriteBytes,

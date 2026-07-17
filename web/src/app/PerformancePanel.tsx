@@ -11,6 +11,10 @@ import {
 
 export type PerformanceSnapshot = {
   image_size_bytes: number | null;
+  game_size_bytes?: number | null;
+  private_size_bytes?: number | null;
+  backups_size_bytes?: number | null;
+  console_size_bytes?: number | null;
   cpu_percent: number | null;
   memory_bytes: number | null;
   memory_limit_bytes: number | null;
@@ -64,8 +68,8 @@ const SNAPSHOT_KEYS: ReadonlyArray<keyof PerformanceSnapshot> = [
 const trim = (value: number, digits = 1) =>
   value.toFixed(digits).replace(/\.0+$|(?<=\.[0-9]*[1-9])0+$/, "");
 
-export function formatBytes(value: number | null): string {
-  if (value === null) return "--";
+export function formatBytes(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "--";
   const units = ["B", "KiB", "MiB", "GiB", "TiB"];
   let amount = value;
   let unit = 0;
@@ -193,7 +197,7 @@ function ChartTooltip({ active, payload, label, mode }: TooltipContentProps<any,
 }
 
 function Metric({ label, value, note }: { label: string; value: string; note?: string }) {
-  return <span className="performance-metric"><small>{label}</small><b>{value}</b>{note ? <em>{note}</em> : null}</span>;
+  return <span className="performance-metric" title={note}><small>{label}</small><b>{value}</b>{note ? <em>{note}</em> : null}</span>;
 }
 
 export type PerformancePanelProps = { snapshot: PerformanceSnapshot; history: PerformanceHistoryPoint[]; initialMode?: Mode; loading?: boolean };
@@ -219,7 +223,7 @@ export const PerformancePanel = memo(function PerformancePanel({ snapshot, histo
   return (
     <section className="performance-panel">
       <div className="performance-current">
-        <Metric label="镜像大小" value={formatBytes(snapshot.image_size_bytes)} />
+        <Metric label="总占用" value={formatBytes((snapshot.image_size_bytes ?? 0) + (snapshot.game_size_bytes ?? 0) + (snapshot.private_size_bytes ?? 0) + (snapshot.backups_size_bytes ?? 0) + (snapshot.console_size_bytes ?? 0))} note={`游戏 ${formatBytes(snapshot.game_size_bytes)} · 私有 ${formatBytes(snapshot.private_size_bytes)} · 备份 ${formatBytes(snapshot.backups_size_bytes)} · 日志 ${formatBytes(snapshot.console_size_bytes)} · 镜像 ${formatBytes(snapshot.image_size_bytes)}`} />
         <Metric label="CPU" value={formatPercent(snapshot.cpu_percent)} />
         <Metric label="内存" value={`${formatBytes(snapshot.memory_bytes)} / ${formatBytes(snapshot.memory_limit_bytes)} (${formatPercent(snapshot.memory_percent)})`} />
         <Metric label="下载" value={formatBytesPerSecond(snapshot.network_rx_bytes_per_sec)} note={`累计 ${formatBytes(snapshot.network_rx_bytes)}`} />
