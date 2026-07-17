@@ -30,6 +30,12 @@ type Instance struct {
 	CreatedAt, UpdatedAt                              time.Time
 }
 
+type VPKRestart struct {
+	InstanceID, ContainerID, PublicationID, Status string
+	Failures                                       int
+	CreatedAt, UpdatedAt                           time.Time
+}
+
 type JobRecord struct {
 	ID, InstanceID, Type, Stage, Message, Status, Error string
 	Percent                                             int

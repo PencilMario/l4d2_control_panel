@@ -37,6 +37,11 @@ CREATE TABLE IF NOT EXISTS github_sources (
  id TEXT PRIMARY KEY, name TEXT NOT NULL, repository TEXT NOT NULL,
  asset_pattern TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS shared_vpk_restarts (
+ instance_id TEXT PRIMARY KEY, container_id TEXT NOT NULL, publication_id TEXT NOT NULL,
+ status TEXT NOT NULL, failures INTEGER NOT NULL DEFAULT 0,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
 INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS instance_plugin_ports (
  instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,

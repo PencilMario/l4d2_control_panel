@@ -457,6 +457,55 @@ func (s *Store) Jobs(ctx context.Context, limit int) ([]domain.JobRecord, error)
 	}
 	return result, rows.Err()
 }
+
+func (s *Store) UpsertVPKRestart(ctx context.Context, v domain.VPKRestart) error {
+	now := time.Now().UTC()
+	if v.CreatedAt.IsZero() {
+		v.CreatedAt = now
+	}
+	v.UpdatedAt = now
+	if v.Status == "" {
+		v.Status = "waiting"
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO shared_vpk_restarts(instance_id,container_id,publication_id,status,failures,created_at,updated_at)
+VALUES(?,?,?,?,?,?,?) ON CONFLICT(instance_id) DO UPDATE SET publication_id=excluded.publication_id,updated_at=excluded.updated_at`,
+		v.InstanceID, v.ContainerID, v.PublicationID, v.Status, v.Failures, v.CreatedAt.Format(time.RFC3339Nano), v.UpdatedAt.Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *Store) PendingVPKRestarts(ctx context.Context) ([]domain.VPKRestart, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT instance_id,container_id,publication_id,status,failures,created_at,updated_at FROM shared_vpk_restarts WHERE status IN ('waiting','queued','retry') ORDER BY created_at,instance_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []domain.VPKRestart{}
+	for rows.Next() {
+		var v domain.VPKRestart
+		var created, updated string
+		if err := rows.Scan(&v.InstanceID, &v.ContainerID, &v.PublicationID, &v.Status, &v.Failures, &created, &updated); err != nil {
+			return nil, err
+		}
+		v.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		v.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+		result = append(result, v)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) ClaimVPKRestart(ctx context.Context, instanceID string) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE shared_vpk_restarts SET status='queued',updated_at=? WHERE instance_id=? AND status IN ('waiting','retry')`, time.Now().UTC().Format(time.RFC3339Nano), instanceID)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	return rows == 1, err
+}
+
+func (s *Store) UpdateVPKRestart(ctx context.Context, instanceID, status string, failures int) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE shared_vpk_restarts SET status=?,failures=?,updated_at=? WHERE instance_id=?`, status, failures, time.Now().UTC().Format(time.RFC3339Nano), instanceID)
+	return err
+}
 func (s *Store) RecordAudit(ctx context.Context, v domain.AuditRecord) error {
 	if v.CreatedAt.IsZero() {
 		v.CreatedAt = time.Now().UTC()
