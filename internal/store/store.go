@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -455,7 +457,30 @@ func (s *Store) Jobs(ctx context.Context, limit int) ([]domain.JobRecord, error)
 		v.FinishedAt = parseNullableTime(finished)
 		result = append(result, v)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	restarts, err := s.PendingVPKRestarts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, restart := range restarts {
+		stage, message := "waiting_players", "Waiting for the server to become empty"
+		if restart.Failures > 0 {
+			message = fmt.Sprintf("Player query failed %d/3; waiting to retry", restart.Failures)
+		}
+		if restart.Status == "queued" {
+			stage, message = "queued_restart", "Waiting for instance operations before restart"
+		} else if restart.Status == "retry" {
+			stage, message = "retry_restart", "Restart failed; waiting to retry"
+		}
+		result = append(result, domain.JobRecord{ID: "vpk-restart:" + restart.InstanceID, InstanceID: restart.InstanceID, Type: "shared_vpk_restart", Status: "pending", Stage: stage, Message: message, CreatedAt: restart.CreatedAt, UpdatedAt: restart.UpdatedAt})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
 }
 
 func (s *Store) UpsertVPKRestart(ctx context.Context, v domain.VPKRestart) error {

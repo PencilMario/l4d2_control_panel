@@ -86,6 +86,9 @@ export function JobsPage({ onOpenLogs }: { onOpenLogs?: (job: Job) => void }) {
   }, [details, expandedID, items, loadDetails, loadingID]);
 
   const toggle = (item: Job) => {
+    if (item.ID.startsWith("vpk-restart:")) {
+      return;
+    }
     if (expandedID === item.ID) {
       setExpandedID("");
       return;

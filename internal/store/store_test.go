@@ -636,6 +636,28 @@ func TestVPKRestartClaimIsConditional(t *testing.T) {
 	}
 }
 
+func TestJobsIncludesPendingVPKRestartProjection(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	if err := s.UpsertVPKRestart(ctx, domain.VPKRestart{InstanceID: "abc", ContainerID: "container", PublicationID: "hash", Status: "waiting"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateVPKRestart(ctx, "abc", "waiting", 2); err != nil {
+		t.Fatal(err)
+	}
+	items, err := s.Jobs(ctx, 100)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items=%#v err=%v", items, err)
+	}
+	if items[0].ID != "vpk-restart:abc" || items[0].Type != "shared_vpk_restart" || items[0].Status != "pending" || items[0].Stage != "waiting_players" || items[0].Message != "Player query failed 2/3; waiting to retry" {
+		t.Fatalf("job=%#v", items[0])
+	}
+}
+
 func assertStoredJob(t *testing.T, store *Store, id string, want bool) {
 	t.Helper()
 	_, found, err := store.LoadJob(id)
