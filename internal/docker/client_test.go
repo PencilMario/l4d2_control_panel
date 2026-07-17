@@ -221,6 +221,7 @@ func TestExtractConsoleResponseIgnoresHistoryAndEchoedMarkerCommands(t *testing.
 func TestGameUpdateUsesFixedSteamCMDMaintenanceContainer(t *testing.T) {
 	var created createRequest
 	var paths []string
+	root := t.TempDir()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.Method+" "+r.URL.Path)
 		switch {
@@ -239,7 +240,7 @@ func TestGameUpdateUsesFixedSteamCMDMaintenanceContainer(t *testing.T) {
 	}))
 	defer server.Close()
 	instance := domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"}
-	if err := NewEngine(server.URL).UpdateGame(context.Background(), t.TempDir(), instance); err != nil {
+	if err := NewEngine(server.URL).UpdateGame(context.Background(), root, instance); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Join(created.Entrypoint, " ") != "/home/steam/steamcmd/steamcmd.sh" || strings.Join(created.Cmd, " ") != "+@sSteamCmdForcePlatformType linux +force_install_dir /opt/l4d2/game +login anonymous +app_info_update 1 +app_update 222860 validate +quit" || created.HostConfig.NetworkMode != "bridge" || created.Labels[RoleLabel] != "maintenance" {
@@ -247,6 +248,38 @@ func TestGameUpdateUsesFixedSteamCMDMaintenanceContainer(t *testing.T) {
 	}
 	if len(paths) != 6 || !slices.Contains(paths, "GET /v1.44/containers/maintenance/logs") {
 		t.Fatalf("paths=%v", paths)
+	}
+	wantCache := filepath.Join(root, "panel", "steamcmd", "Steam") + ":/home/steam/Steam"
+	if !slices.Contains(created.HostConfig.Binds, wantCache) {
+		t.Fatalf("binds=%v want cache bind %q", created.HostConfig.Binds, wantCache)
+	}
+}
+
+func TestRunMaintenanceReturnsExitCodeAndRecentOutput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/json"):
+			_ = json.NewEncoder(w).Encode([]Container{})
+		case strings.HasSuffix(r.URL.Path, "/containers/create"):
+			_ = json.NewEncoder(w).Encode(map[string]string{"Id": "maintenance"})
+		case strings.HasSuffix(r.URL.Path, "/logs"):
+			w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
+			_, _ = w.Write(dockerLogFrame(2, "ERROR! Failed to install app '222860' (Missing configuration)\n"))
+		case strings.HasSuffix(r.URL.Path, "/wait"):
+			_ = json.NewEncoder(w).Encode(map[string]int{"StatusCode": 8})
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+
+	command := []string{steamCMDEntrypoint, "+login", "anonymous", "+quit"}
+	result, err := NewEngine(server.URL).runMaintenance(context.Background(), t.TempDir(), domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"}, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StatusCode != 8 || !strings.Contains(result.Output, "Missing configuration") {
+		t.Fatalf("result=%#v", result)
 	}
 }
 

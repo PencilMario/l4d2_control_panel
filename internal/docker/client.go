@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -26,6 +27,7 @@ import (
 
 const apiVersion = "/v1.44"
 const steamCMDEntrypoint = "/home/steam/steamcmd/steamcmd.sh"
+const maintenanceOutputLimit = 64 << 10
 
 type Engine struct {
 	base             string
@@ -231,6 +233,29 @@ type createRequest struct {
 	HostConfig hostConfig        `json:"HostConfig"`
 }
 
+type maintenanceResult struct {
+	StatusCode int
+	Output     string
+}
+
+type boundedOutput struct {
+	buffer bytes.Buffer
+}
+
+func (b *boundedOutput) Append(line string) {
+	b.buffer.WriteString(line)
+	b.buffer.WriteByte('\n')
+	if b.buffer.Len() <= maintenanceOutputLimit {
+		return
+	}
+	raw := b.buffer.Bytes()
+	trimmed := append([]byte(nil), raw[len(raw)-maintenanceOutputLimit:]...)
+	b.buffer.Reset()
+	_, _ = b.buffer.Write(trimmed)
+}
+
+func (b *boundedOutput) String() string { return b.buffer.String() }
+
 func (e *Engine) InstallGame(ctx context.Context, dataRoot string, instance domain.Instance) error {
 	login := e.steamLoginArgs()
 	command := []string{steamCMDEntrypoint}
@@ -243,23 +268,41 @@ func (e *Engine) InstallGame(ctx context.Context, dataRoot string, instance doma
 		command = append(command, login...)
 		command = append(command, "+app_info_update", "1", "+app_update", "222860", "+quit")
 	}
-	return e.runMaintenance(ctx, dataRoot, instance, command)
+	result, err := e.runMaintenance(ctx, dataRoot, instance, command)
+	if err != nil {
+		return err
+	}
+	if result.StatusCode != 0 {
+		return fmt.Errorf("steamcmd exited with code %d", result.StatusCode)
+	}
+	return nil
 }
 
 func (e *Engine) UpdateGame(ctx context.Context, dataRoot string, instance domain.Instance) error {
 	command := []string{steamCMDEntrypoint, "+@sSteamCmdForcePlatformType", "linux", "+force_install_dir", "/opt/l4d2/game"}
 	command = append(command, e.steamLoginArgs()...)
 	command = append(command, "+app_info_update", "1", "+app_update", "222860", "validate", "+quit")
-	return e.runMaintenance(ctx, dataRoot, instance, command)
-}
-
-func (e *Engine) runMaintenance(ctx context.Context, dataRoot string, instance domain.Instance, command []string) error {
-	maintenance, err := e.maintenanceContainers(ctx, instance.ID)
+	result, err := e.runMaintenance(ctx, dataRoot, instance, command)
 	if err != nil {
 		return err
 	}
+	if result.StatusCode != 0 {
+		return fmt.Errorf("steamcmd exited with code %d", result.StatusCode)
+	}
+	return nil
+}
+
+func (e *Engine) runMaintenance(ctx context.Context, dataRoot string, instance domain.Instance, command []string) (maintenanceResult, error) {
+	steamCache := filepath.Join(dataRoot, "panel", "steamcmd", "Steam")
+	if err := os.MkdirAll(steamCache, 0o750); err != nil {
+		return maintenanceResult{}, err
+	}
+	maintenance, err := e.maintenanceContainers(ctx, instance.ID)
+	if err != nil {
+		return maintenanceResult{}, err
+	}
 	if len(maintenance) > 1 {
-		return fmt.Errorf("multiple maintenance containers found for instance %s", instance.ID)
+		return maintenanceResult{}, fmt.Errorf("multiple maintenance containers found for instance %s", instance.ID)
 	}
 
 	containerID := ""
@@ -267,28 +310,30 @@ func (e *Engine) runMaintenance(ctx context.Context, dataRoot string, instance d
 		containerID = maintenance[0].ID
 		if maintenance[0].State == "created" {
 			if err := e.Start(ctx, containerID); err != nil {
-				return err
+				return maintenanceResult{}, err
 			}
 		}
 	} else {
-		body := createRequest{Image: instance.RuntimeImage, Entrypoint: command[:1], Env: e.runtimeEnv(nil), Cmd: command[1:], User: "steam", Labels: map[string]string{ManagedLabel: "true", InstanceLabel: instance.ID, RoleLabel: "maintenance"}, HostConfig: hostConfig{Binds: []string{filepath.Join(dataRoot, "instances", instance.ID, "game") + ":/opt/l4d2/game"}, NetworkMode: "bridge", SecurityOpt: []string{"no-new-privileges"}}}
+		body := createRequest{Image: instance.RuntimeImage, Entrypoint: command[:1], Env: e.runtimeEnv(nil), Cmd: command[1:], User: "steam", Labels: map[string]string{ManagedLabel: "true", InstanceLabel: instance.ID, RoleLabel: "maintenance"}, HostConfig: hostConfig{Binds: []string{filepath.Join(dataRoot, "instances", instance.ID, "game") + ":/opt/l4d2/game", steamCache + ":/home/steam/Steam"}, NetworkMode: "bridge", SecurityOpt: []string{"no-new-privileges"}}}
 		var created struct {
 			ID string `json:"Id"`
 		}
 		name := "l4d2-update-" + instance.ID + "-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
 		if err := e.do(ctx, http.MethodPost, "/containers/create", url.Values{"name": []string{name}}, body, &created); err != nil {
-			return err
+			return maintenanceResult{}, err
 		}
 		containerID = created.ID
 		if err := e.Start(ctx, containerID); err != nil {
-			return err
+			return maintenanceResult{}, err
 		}
 	}
+	var output boundedOutput
 	logCtx, cancelLogs := context.WithCancel(ctx)
 	logErrors := make(chan error, 1)
 	go func() {
 		logErrors <- e.FollowLogs(logCtx, containerID, func(line string) error {
 			jobs.LogContext(ctx, "steamcmd", joblogs.Output, line)
+			output.Append(line)
 			return nil
 		})
 	}()
@@ -298,7 +343,7 @@ func (e *Engine) runMaintenance(ctx context.Context, dataRoot string, instance d
 	}
 	if err := e.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(containerID)+"/wait", url.Values{"condition": []string{"not-running"}}, nil, &result); err != nil {
 		cancelLogs()
-		return err
+		return maintenanceResult{}, err
 	}
 	select {
 	case logErr := <-logErrors:
@@ -312,12 +357,9 @@ func (e *Engine) runMaintenance(ctx context.Context, dataRoot string, instance d
 	}
 	cancelLogs()
 	if err := e.do(context.WithoutCancel(ctx), http.MethodDelete, "/containers/"+url.PathEscape(containerID), url.Values{"force": []string{"true"}, "v": []string{"false"}}, nil, nil); err != nil {
-		return err
+		return maintenanceResult{}, err
 	}
-	if result.StatusCode != 0 {
-		return fmt.Errorf("steamcmd exited with code %d", result.StatusCode)
-	}
-	return nil
+	return maintenanceResult{StatusCode: result.StatusCode, Output: output.String()}, nil
 }
 
 func (e *Engine) FollowLogs(ctx context.Context, containerID string, emit func(string) error) error {
