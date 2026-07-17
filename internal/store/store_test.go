@@ -585,6 +585,79 @@ func TestJobsIncludesExecutionTimes(t *testing.T) {
 	}
 }
 
+func TestVPKRestartUpsertPreservesOriginalContainerAndRecovers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "panel.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	first := domain.VPKRestart{InstanceID: "abc", ContainerID: "container-1", PublicationID: "hash-1", Status: "waiting"}
+	if err := s.UpsertVPKRestart(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertVPKRestart(ctx, domain.VPKRestart{InstanceID: "abc", ContainerID: "container-2", PublicationID: "hash-2", Status: "waiting"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	items, err := s.PendingVPKRestarts(ctx)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items=%#v err=%v", items, err)
+	}
+	if items[0].ContainerID != "container-1" || items[0].PublicationID != "hash-2" || items[0].Status != "waiting" {
+		t.Fatalf("item=%#v", items[0])
+	}
+}
+
+func TestVPKRestartClaimIsConditional(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	if err := s.UpsertVPKRestart(ctx, domain.VPKRestart{InstanceID: "abc", ContainerID: "container-1", PublicationID: "hash", Status: "waiting"}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.ClaimVPKRestart(ctx, "abc")
+	if err != nil || !claimed {
+		t.Fatalf("first claim=%v err=%v", claimed, err)
+	}
+	claimed, err = s.ClaimVPKRestart(ctx, "abc")
+	if err != nil || claimed {
+		t.Fatalf("second claim=%v err=%v", claimed, err)
+	}
+}
+
+func TestJobsIncludesPendingVPKRestartProjection(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	if err := s.UpsertVPKRestart(ctx, domain.VPKRestart{InstanceID: "abc", ContainerID: "container", PublicationID: "hash", Status: "waiting"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateVPKRestart(ctx, "abc", "waiting", 2); err != nil {
+		t.Fatal(err)
+	}
+	items, err := s.Jobs(ctx, 100)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items=%#v err=%v", items, err)
+	}
+	if items[0].ID != "vpk-restart:abc" || items[0].Type != "shared_vpk_restart" || items[0].Status != "pending" || items[0].Stage != "waiting_players" || items[0].Message != "Player query failed 2/3; waiting to retry" {
+		t.Fatalf("job=%#v", items[0])
+	}
+}
+
 func assertStoredJob(t *testing.T, store *Store, id string, want bool) {
 	t.Helper()
 	_, found, err := store.LoadJob(id)

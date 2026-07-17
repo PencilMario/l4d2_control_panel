@@ -103,6 +103,8 @@ shared-vpk/
 
 Rebuilding or deleting a game container preserves these directories unless the administrator explicitly confirms data deletion. Content precedence is `package < shared VPK < private overlay`.
 
+After a new shared VPK is published, each running instance receives one deferred restart task. The task waits indefinitely while players are online and restarts the instance when it becomes empty. Three consecutive player-query failures are treated as an abnormal state and trigger the restart. Stopped or uninstalled instances are not started automatically; multiple VPK uploads merge into the same per-instance task.
+
 ## Runtime and security checks
 
 Before exposing a new host, verify:

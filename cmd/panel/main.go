@@ -26,6 +26,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 	"github.com/not0721here/l4d2-control-panel/internal/traffic"
 	"github.com/not0721here/l4d2-control-panel/internal/updates"
+	"github.com/not0721here/l4d2-control-panel/internal/vpkrestart"
 	"log"
 	"net/http"
 	"os"
@@ -159,6 +160,8 @@ func main() {
 	}
 	jobManager := jobs.NewPersistentManager(db, jobs.WithLogSink(jobLogManager))
 	playerService := players.NewService(db, a2s.Client{}, engine, cfg.GameHost)
+	vpkRestartCoordinator := vpkrestart.New(db, playerService, life, jobManager)
+	vpkRestartCoordinator.Start(context.Background())
 	performanceSampler := metrics.New(db, engine, trafficClient, playerService, nil).WithStorage(metrics.DirectoryStorage{Root: cfg.DataRoot})
 	uploadManager, err := content.NewUploadManager(cfg.DataRoot)
 	if err != nil {
@@ -180,7 +183,11 @@ func main() {
 			log.Fatal("L4D2_PANEL_SECURE_COOKIE must be true or false")
 		}
 	}
-	api := httpapi.New(db, sessions, httpapi.WithOperations(life, jobManager), httpapi.WithJobLogs(jobLogManager), httpapi.WithConsole(engine), httpapi.WithPlayers(playerService), httpapi.WithContent(uploadManager, privateManager, packageManager, updatePipeline, updateCoordinator), httpapi.WithPrivateUploads(privateUploadManager), httpapi.WithGameUpdates(gameCoordinator), httpapi.WithScheduler(scheduleService), httpapi.WithSecrets(secretService), httpapi.WithResources(engine), httpapi.WithPerformance(performanceSampler), httpapi.WithSystem(engine), httpapi.WithSecureCookie(secureCookie))
+	api := httpapi.New(db, sessions, httpapi.WithOperations(life, jobManager), httpapi.WithJobLogs(jobLogManager), httpapi.WithConsole(engine), httpapi.WithPlayers(playerService), httpapi.WithContent(uploadManager, privateManager, packageManager, updatePipeline, updateCoordinator), httpapi.WithVPKRestartRegistrar(vpkRestartCoordinator), httpapi.WithPrivateUploads(privateUploadManager), httpapi.WithGameUpdates(gameCoordinator), httpapi.WithScheduler(scheduleService), httpapi.WithSecrets(secretService), httpapi.WithResources(engine), httpapi.WithPerformance(performanceSampler), httpapi.WithSystem(engine), httpapi.WithSecureCookie(secureCookie))
+	stopBackground := func() {
+		vpkRestartCoordinator.Stop()
+		scheduleService.Stop()
+	}
 	mux := http.NewServeMux()
 	mux.Handle("/api/", api.Handler())
 	web := os.Getenv("L4D2_PANEL_WEB_ROOT")
@@ -209,7 +216,7 @@ func main() {
 	case err := <-serverErrors:
 		drain, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		shutdownErr := shutdownPanel(drain, server, scheduleService.Stop, performanceSampler, jobManager)
+		shutdownErr := shutdownPanel(drain, server, stopBackground, performanceSampler, jobManager)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("panel server stopped: %v", errors.Join(err, shutdownErr))
 		} else if shutdownErr != nil {
@@ -219,7 +226,7 @@ func main() {
 		log.Printf("received %s; draining panel", received)
 		drain, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := shutdownPanel(drain, server, scheduleService.Stop, performanceSampler, jobManager); err != nil {
+		if err := shutdownPanel(drain, server, stopBackground, performanceSampler, jobManager); err != nil {
 			log.Printf("panel shutdown incomplete: %v", err)
 		}
 	}

@@ -62,6 +62,7 @@ type Server struct {
 	performance       PerformanceProvider
 	system            SystemProvider
 	secureCookie      bool
+	vpkRestarts       VPKRestartRegistrar
 }
 
 func WithPrivateUploads(manager *content.PrivateUploadManager) Option {
@@ -76,6 +77,14 @@ type Lifecycle interface {
 	Delete(context.Context, string, bool) error
 }
 type Option func(*Server)
+
+type VPKRestartRegistrar interface {
+	Register(context.Context, string) (int, error)
+}
+
+func WithVPKRestartRegistrar(registrar VPKRestartRegistrar) Option {
+	return func(s *Server) { s.vpkRestarts = registrar }
+}
 
 func WithOperations(lifecycle Lifecycle, manager *jobs.Manager) Option {
 	return func(s *Server) { s.lifecycle = lifecycle; s.jobs = manager }
@@ -1299,7 +1308,15 @@ func (s *Server) completeVPK(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 422, "upload_incomplete", err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"item": item, "duplicate": duplicate})
+	response := map[string]any{"item": item, "duplicate": duplicate}
+	if !duplicate && s.vpkRestarts != nil {
+		count, registerErr := s.vpkRestarts.Register(context.WithoutCancel(r.Context()), item.Hash)
+		response["restart_instances"] = count
+		if registerErr != nil {
+			response["restart_warning"] = registerErr.Error()
+		}
+	}
+	writeJSON(w, 200, response)
 }
 func (s *Server) renameVPK(w http.ResponseWriter, r *http.Request) {
 	var input struct {
