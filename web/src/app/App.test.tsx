@@ -1670,4 +1670,26 @@ describe("App", () => {
     expect(wholeRead).not.toHaveBeenCalled();
     expect(screen.getByRole("status")).toHaveTextContent("VPK 上传完成");
   });
+
+  it("shows upload byte totals and speed", async () => {
+    const calls: string[] = [];
+    let finishComplete!: () => void;
+    const complete = new Promise<void>((resolve) => { finishComplete = resolve; });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input); calls.push(path);
+      if (path === "/api/content/vpk/uploads") return new Response('{"id":"u1"}', { status: 201, headers: { "Content-Type": "application/json" } });
+      if (path.includes("/complete")) { await complete; return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }); }
+      return new Response(!init?.method ? "[]" : "{}", { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
+    const file = new File([new Uint8Array(2048)], "small.vpk");
+    fireEvent.change(screen.getByLabelText("上传 VPK"), { target: { files: [file] } });
+    await waitFor(() => expect(calls.some((x) => x.includes("/complete"))).toBe(true));
+    const status = screen.getByRole("status").textContent || "";
+    expect(status).toMatch(/0\.0 MB \/ 0\.0 MB/);
+    expect(status).toMatch(/(KiB|MiB)\/s/);
+    expect(calls.some((x) => x.includes("offset=0"))).toBe(true);
+    finishComplete();
+  });
 });

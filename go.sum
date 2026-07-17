@@ -1,3 +1,5 @@
+github.com/BenLubar/vpk v0.0.0-20190906201114-06714991d55b h1:yZ330yknExiAFjEY3bgS0l1MpEOc8ljywZlYCjKuLFo=
+github.com/BenLubar/vpk v0.0.0-20190906201114-06714991d55b/go.mod h1:BAxwcRtJecHA4kfapbqYYWuV/UrSNut4/d2cD4za/9k=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=

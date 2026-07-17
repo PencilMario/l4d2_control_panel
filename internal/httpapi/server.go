@@ -181,6 +181,7 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Patch("/api/content/vpk/uploads/{id}", s.writeVPK)
 		r.Post("/api/content/vpk/uploads/{id}/complete", s.completeVPK)
 		r.Post("/api/content/vpk/{name}/rename", s.renameVPK)
+		r.Post("/api/content/vpk/{name}/clean", s.cleanVPK)
 		r.Delete("/api/content/vpk/{name}", s.deleteVPK)
 		r.Put("/api/instances/{id}/private/*", s.savePrivate)
 		r.Get("/api/instances/{id}/private", s.listPrivate)
@@ -1335,6 +1336,29 @@ func (s *Server) deleteVPK(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(204)
+}
+func (s *Server) cleanVPK(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Confirm bool `json:"confirm"`
+	}
+	if decodeJSON(w, r, &input) != nil {
+		return
+	}
+	if !input.Confirm {
+		writeError(w, 428, "confirmation_required", "cleaning VPK requires confirmation")
+		return
+	}
+	name, err := decodedURLParam(r, "name")
+	if err != nil {
+		writeError(w, 400, "invalid_vpk_name", err.Error())
+		return
+	}
+	result, err := s.uploads.Clean(name)
+	if err != nil {
+		writeError(w, 422, "clean_failed", err.Error())
+		return
+	}
+	writeJSON(w, 200, result)
 }
 
 func decodedURLParam(r *http.Request, name string) (string, error) {

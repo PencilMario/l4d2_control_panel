@@ -1245,6 +1245,7 @@ function ContentPage({
   }, []);
   const uploadVPK = async (file: File) => {
     const hash = sha256.create();
+    const uploadStarted = performance.now();
     for (let offset = 0; offset < file.size; offset += VPK_CHUNK_SIZE) {
       const end = Math.min(offset + VPK_CHUNK_SIZE, file.size);
       const chunk = file.slice(offset, end);
@@ -1272,8 +1273,13 @@ function ContentPage({
           body: chunk,
         },
       );
+      const elapsed = Math.max((performance.now() - uploadStarted) / 1000, 0.001);
+      const speed = end / elapsed;
+      const speedText = speed >= 1024 * 1024
+        ? `${(speed / (1024 * 1024)).toFixed(1)} MiB/s`
+        : `${(speed / 1024).toFixed(1)} KiB/s`;
       setVPKUploadStatus(
-        `正在上传 VPK · ${Math.round((end / file.size) * 100)}%`,
+        `正在上传 VPK · ${Math.round((end / file.size) * 100)}% · ${formatBytes(end)} / ${formatBytes(file.size)} · ${speedText}`,
       );
     }
     await api(`/api/content/vpk/uploads/${session.id ?? session.ID}/complete`, {
@@ -1315,6 +1321,14 @@ function ContentPage({
     }
     await api(`/api/content/vpk/${encodeURIComponent(name)}?confirm=true`, {
       method: "DELETE",
+    });
+    await loadVPK();
+  };
+  const cleanVPK = async (name: string) => {
+    if (!window.confirm(`清理 ${name} 中服务器不需要的资源并覆盖原文件？`)) return;
+    await api(`/api/content/vpk/${encodeURIComponent(name)}/clean`, {
+      method: "POST",
+      body: JSON.stringify({ confirm: true }),
     });
     await loadVPK();
   };
@@ -1375,6 +1389,9 @@ function ContentPage({
               </a>
               <button disabled={contentActions.pending.has(`vpk:rename:${x.name}`)} aria-busy={contentActions.pending.has(`vpk:rename:${x.name}`)} onClick={() => runContentAction(`vpk:rename:${x.name}`, () => renameVPK(x.name))}>
                 重命名
+              </button>
+              <button disabled={contentActions.pending.has(`vpk:clean:${x.name}`)} aria-busy={contentActions.pending.has(`vpk:clean:${x.name}`)} onClick={() => runContentAction(`vpk:clean:${x.name}`, () => cleanVPK(x.name))}>
+                清理资源
               </button>
               <button
                 className="danger"

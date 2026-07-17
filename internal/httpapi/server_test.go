@@ -1622,6 +1622,25 @@ func TestDeleteVPKDecodesEscapedRouteName(t *testing.T) {
 	}
 }
 
+func TestCleanVPKRequiresConfirmation(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	uploads, err := content.NewUploadManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s = New(db, s.auth, WithContent(uploads, nil, nil, nil, nil))
+	cookie := loginCookie(t, s)
+	r := httptest.NewRequest(http.MethodPost, "/api/content/vpk/maps.vpk/clean", strings.NewReader(`{"confirm":false}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusPreconditionRequired || !strings.Contains(w.Body.String(), `"code":"confirmation_required"`) {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestConsoleWebSocketProxiesSupervisorAttach(t *testing.T) {
 	s, db := testServer(t)
 	defer db.Close()
