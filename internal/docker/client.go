@@ -28,6 +28,8 @@ import (
 const apiVersion = "/v1.44"
 const steamCMDEntrypoint = "/home/steam/steamcmd/steamcmd.sh"
 const maintenanceOutputLimit = 64 << 10
+const anonymousInstallAttempts = 3
+const missingConfigurationMessage = "Failed to install app '222860' (Missing configuration)"
 
 type Engine struct {
 	base             string
@@ -256,10 +258,22 @@ func (b *boundedOutput) Append(line string) {
 
 func (b *boundedOutput) String() string { return b.buffer.String() }
 
+func maintenanceError(result maintenanceResult) error {
+	if result.StatusCode == 0 {
+		return nil
+	}
+	return fmt.Errorf("steamcmd exited with code %d", result.StatusCode)
+}
+
+func isMissingConfiguration(result maintenanceResult) bool {
+	return result.StatusCode != 0 && strings.Contains(result.Output, missingConfigurationMessage)
+}
+
 func (e *Engine) InstallGame(ctx context.Context, dataRoot string, instance domain.Instance) error {
 	login := e.steamLoginArgs()
 	command := []string{steamCMDEntrypoint}
-	if len(login) == 2 && login[1] == "anonymous" {
+	anonymous := len(login) == 2 && login[1] == "anonymous"
+	if anonymous {
 		command = append(command, "+@sSteamCmdForcePlatformType", "windows", "+force_install_dir", "/opt/l4d2/game")
 		command = append(command, login...)
 		command = append(command, "+app_info_update", "1", "+app_update", "222860", "+@sSteamCmdForcePlatformType", "linux", "+app_update", "222860", "+quit")
@@ -268,14 +282,27 @@ func (e *Engine) InstallGame(ctx context.Context, dataRoot string, instance doma
 		command = append(command, login...)
 		command = append(command, "+app_info_update", "1", "+app_update", "222860", "+quit")
 	}
-	result, err := e.runMaintenance(ctx, dataRoot, instance, command)
-	if err != nil {
-		return err
+	attempts := 1
+	if anonymous {
+		attempts = anonymousInstallAttempts
 	}
-	if result.StatusCode != 0 {
-		return fmt.Errorf("steamcmd exited with code %d", result.StatusCode)
+	for attempt := 1; attempt <= attempts; attempt++ {
+		result, err := e.runMaintenance(ctx, dataRoot, instance, command)
+		if err != nil {
+			return err
+		}
+		if result.StatusCode == 0 {
+			return nil
+		}
+		if !anonymous || !isMissingConfiguration(result) {
+			return maintenanceError(result)
+		}
+		if attempt == attempts {
+			return fmt.Errorf("steamcmd first install failed after %d attempts: exited with code %d", attempts, result.StatusCode)
+		}
+		jobs.LogContext(ctx, "steamcmd", joblogs.Warn, fmt.Sprintf("SteamCMD configuration missing during first install; retrying attempt %d of %d", attempt+1, attempts))
 	}
-	return nil
+	return errors.New("steamcmd first install retry loop exhausted")
 }
 
 func (e *Engine) UpdateGame(ctx context.Context, dataRoot string, instance domain.Instance) error {
@@ -286,10 +313,7 @@ func (e *Engine) UpdateGame(ctx context.Context, dataRoot string, instance domai
 	if err != nil {
 		return err
 	}
-	if result.StatusCode != 0 {
-		return fmt.Errorf("steamcmd exited with code %d", result.StatusCode)
-	}
-	return nil
+	return maintenanceError(result)
 }
 
 func (e *Engine) runMaintenance(ctx context.Context, dataRoot string, instance domain.Instance, command []string) (maintenanceResult, error) {

@@ -347,6 +347,123 @@ func TestGameInstallBootstrapsWindowsBeforeLinuxWithoutValidate(t *testing.T) {
 	}
 }
 
+func TestAnonymousInstallRetriesMissingConfigurationThenSucceeds(t *testing.T) {
+	createCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/json"):
+			_ = json.NewEncoder(w).Encode([]Container{})
+		case strings.HasSuffix(r.URL.Path, "/containers/create"):
+			createCount++
+			_ = json.NewEncoder(w).Encode(map[string]string{"Id": fmt.Sprintf("maintenance-%d", createCount)})
+		case strings.HasSuffix(r.URL.Path, "/logs"):
+			w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
+			if strings.Contains(r.URL.Path, "maintenance-1") {
+				_, _ = w.Write(dockerLogFrame(2, "ERROR! Failed to install app '222860' (Missing configuration)\n"))
+			}
+		case strings.HasSuffix(r.URL.Path, "/wait"):
+			status := 0
+			if strings.Contains(r.URL.Path, "maintenance-1") {
+				status = 8
+			}
+			_ = json.NewEncoder(w).Encode(map[string]int{"StatusCode": status})
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+
+	err := NewEngine(server.URL).InstallGame(context.Background(), t.TempDir(), domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if createCount != 2 {
+		t.Fatalf("createCount=%d", createCount)
+	}
+}
+
+func TestAnonymousInstallDoesNotRetryOtherFailure(t *testing.T) {
+	createCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/json"):
+			_ = json.NewEncoder(w).Encode([]Container{})
+		case strings.HasSuffix(r.URL.Path, "/containers/create"):
+			createCount++
+			_ = json.NewEncoder(w).Encode(map[string]string{"Id": "maintenance"})
+		case strings.HasSuffix(r.URL.Path, "/logs"):
+			w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
+			_, _ = w.Write(dockerLogFrame(2, "ERROR! Disk write failure\n"))
+		case strings.HasSuffix(r.URL.Path, "/wait"):
+			_ = json.NewEncoder(w).Encode(map[string]int{"StatusCode": 8})
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+
+	err := NewEngine(server.URL).InstallGame(context.Background(), t.TempDir(), domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"})
+	if err == nil || !strings.Contains(err.Error(), "steamcmd exited with code 8") {
+		t.Fatalf("err=%v", err)
+	}
+	if createCount != 1 {
+		t.Fatalf("createCount=%d", createCount)
+	}
+}
+
+func TestAnonymousInstallDoesNotRetryDockerFailure(t *testing.T) {
+	createCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/json"):
+			_ = json.NewEncoder(w).Encode([]Container{})
+		case strings.HasSuffix(r.URL.Path, "/containers/create"):
+			createCount++
+			http.Error(w, "docker unavailable", http.StatusServiceUnavailable)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+
+	err := NewEngine(server.URL).InstallGame(context.Background(), t.TempDir(), domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"})
+	if err == nil || !strings.Contains(err.Error(), "docker unavailable") {
+		t.Fatalf("err=%v", err)
+	}
+	if createCount != 1 {
+		t.Fatalf("createCount=%d", createCount)
+	}
+}
+
+func TestAnonymousInstallStopsAfterThreeMissingConfigurationFailures(t *testing.T) {
+	createCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/json"):
+			_ = json.NewEncoder(w).Encode([]Container{})
+		case strings.HasSuffix(r.URL.Path, "/containers/create"):
+			createCount++
+			_ = json.NewEncoder(w).Encode(map[string]string{"Id": fmt.Sprintf("maintenance-%d", createCount)})
+		case strings.HasSuffix(r.URL.Path, "/logs"):
+			w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
+			_, _ = w.Write(dockerLogFrame(2, "ERROR! Failed to install app '222860' (Missing configuration)\n"))
+		case strings.HasSuffix(r.URL.Path, "/wait"):
+			_ = json.NewEncoder(w).Encode(map[string]int{"StatusCode": 8})
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+
+	err := NewEngine(server.URL).InstallGame(context.Background(), t.TempDir(), domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"})
+	if err == nil || !strings.Contains(err.Error(), "after 3 attempts") || !strings.Contains(err.Error(), "code 8") {
+		t.Fatalf("err=%v", err)
+	}
+	if createCount != 3 {
+		t.Fatalf("createCount=%d", createCount)
+	}
+}
+
 func TestCredentialedGameInstallDoesNotValidate(t *testing.T) {
 	var created createRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
