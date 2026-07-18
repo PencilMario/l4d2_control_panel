@@ -25,18 +25,30 @@ export function tokenizeLog(input: string): LogToken[] {
   let emphasis = false;
   const activeClass = () => [color, emphasis ? 'log-token-emphasis' : ''].filter(Boolean).join(' ') || undefined;
   const emit = (text: string) => {
-    const regex = /(\b\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\b|\[\d{2}:\d{2}:\d{2}\])|(\[(?:plugin|module|source|sm)\]|\bplugin\s*:\s*[\w.-]+|\b(?:source|module)\/[\w.-]+)|(\b(?:ERROR|FATAL|WARN(?:ING)?|INFO|DEBUG|TRACE)\b)|(\b(?:SteamID|SteamId|UserID|userid)\s*[:=]?\s*[A-Za-z0-9_:.-]+)|(\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\b|\[[0-9A-Fa-f:]+\](?::\d{1,5})?|(?<![\w:])[0-9A-Fa-f]*:[0-9A-Fa-f:]+(?![\w:]))|([\w./\\-]+\.(?:sp|cpp|c|h|inc):\d+)/gi;
+    const regex = /(\bat\s+(?:async\s+)?[A-Z_$][\w.$:<>'~-]*\s+\([^()\r\n]+:\d+(?::\d+)?\))|(\[\d+\]\s+[^\r\n]*?\.sp::[A-Z_~][\w.~<>]*\s+\(line\s+\d+\))|((?<=")[^"<>\r\n]+(?=<\d+><STEAM_[01]:\d+:\d+>))|(\bSTEAM_[01]:\d+:\d+\b)|(\b\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\b|\[\d{2}:\d{2}:\d{2}\])|(\[(?:plugin|module|source|sm)\]|\bplugin\s*:\s*[\w.-]+|\b(?:source|module)\/[\w.-]+)|(\b(?:ERROR|FATAL|WARN(?:ING)?|INFO|DEBUG|TRACE|Exception|Error|panic)\b)|(\b(?:SteamID|SteamId|UserID|userid)\s*[:=]?\s*[A-Za-z0-9_:.-]+)|(\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\b|\[[0-9A-Fa-f:]+\](?::\d{1,5})?|(?<![\w:])[0-9A-Fa-f]*:[0-9A-Fa-f:]+(?![\w:]))|([\w./\\-]+\.(?:sp|cpp|c|h|inc):\d+)/gi;
     let cursor = 0;
     let match: RegExpExecArray | null;
     while ((match = regex.exec(text))) {
       if (match.index > cursor) output.push({ text: text.slice(cursor, match.index), className: activeClass() });
       let className = activeClass();
-      if (match[1]) className = 'log-token-timestamp';
-      else if (match[2]) className = /plugin|\[sm\]/i.test(match[2]) ? 'log-token-plugin' : 'log-token-module';
-      else if (match[3]) className = match[3].toUpperCase().startsWith('WARN') ? 'log-token-warn' : match[3].toUpperCase() === 'INFO' ? 'log-token-info' : 'log-token-error';
-      else if (match[4]) className = 'log-token-user';
-      else if (match[5] && validAddress(match[5])) className = 'log-token-address';
-      else if (match[6]) className = 'log-token-file';
+      if (match[1] || match[2]) className = 'log-token-stack';
+      else if (match[3]) className = 'log-token-player';
+      else if (match[4]) className = 'log-token-steamid';
+      else if (match[5]) className = 'log-token-timestamp';
+      else if (match[6]) className = /plugin|\[sm\]/i.test(match[6]) ? 'log-token-plugin' : 'log-token-module';
+      else if (match[7]) {
+        const keyword = match[7];
+        className = /^(exception|panic)$/i.test(keyword) || keyword === 'Error'
+          ? 'log-token-exception'
+          : keyword.toUpperCase().startsWith('WARN')
+            ? 'log-token-warn'
+            : keyword.toUpperCase() === 'INFO'
+              ? 'log-token-info'
+              : 'log-token-error';
+      }
+      else if (match[8]) className = 'log-token-user';
+      else if (match[9] && validAddress(match[9])) className = 'log-token-address';
+      else if (match[10]) className = 'log-token-file';
       output.push({ text: match[0], className });
       cursor = match.index + match[0].length;
     }

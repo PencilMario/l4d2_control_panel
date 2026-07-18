@@ -24,7 +24,7 @@ describe("schedule help dialog layout", () => {
 
 describe("game log highlighting", () => {
   it("styles structural tokens and every normal/bright ANSI foreground distinctly", () => {
-    for (const token of ["timestamp", "plugin", "module", "emphasis"]) {
+    for (const token of ["timestamp", "plugin", "module", "emphasis", "player", "exception", "stack"]) {
       expect(css).toMatch(new RegExp(`\\.log-token-${token}\\s*\\{`));
     }
 

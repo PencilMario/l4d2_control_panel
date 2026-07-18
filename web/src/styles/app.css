@@ -2649,6 +2649,10 @@ textarea:focus-visible {
 .log-token-plugin { color: var(--amber); }
 .log-token-module { color: #7ed1cf; }
 .log-token-emphasis { font-weight: 700; text-decoration: underline; text-decoration-thickness: 1px; }
+.log-token-player { color: #d8b4fe; }
+.log-token-exception { color: #ff7b72; font-weight: 700; }
+.log-token-stack { color: #a7b4ad; }
+.log-token-steamid { color: #83b9ef; }
 .log-token-address, .log-token-user, .log-token-file { color: #83b9ef; }
 .log-ansi-black { color: #6f7a75; }
 .log-ansi-bright-black { color: #9aa59f; }

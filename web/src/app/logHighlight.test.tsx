@@ -30,6 +30,40 @@ describe('log highlighting', () => {
     expect(tokenizeLog('999.1.2.3:70000 abc:def and 12:30:01').some((token) => token.className === 'log-token-address')).toBe(false);
   });
 
+  it('recognizes bare Steam IDs and keeps player names as independent tokens', () => {
+    const tokens = tokenizeLog('connected "Player Name<7><STEAM_1:0:42><Survivor>" (STEAM_0:1:1234)');
+
+    expect(tokens.filter((token) => token.className === 'log-token-player').map((token) => token.text)).toEqual(['Player Name']);
+    expect(tokens.filter((token) => token.className === 'log-token-steamid').map((token) => token.text)).toEqual([
+      'STEAM_1:0:42',
+      'STEAM_0:1:1234',
+    ]);
+    expect(tokens.map((token) => token.text).join('')).toBe('connected "Player Name<7><STEAM_1:0:42><Survivor>" (STEAM_0:1:1234)');
+  });
+
+  it('highlights exception keywords without consuming the rest of the line', () => {
+    const tokens = tokenizeLog('Exception: bad state; Error while loading; panic: stopped');
+
+    expect(tokens.filter((token) => token.className === 'log-token-exception').map((token) => token.text)).toEqual([
+      'Exception',
+      'Error',
+      'panic',
+    ]);
+    expect(tokens.some((token) => token.className === 'log-token-exception' && token.text.includes('bad state'))).toBe(false);
+  });
+
+  it('recognizes common call frames as bounded stack tokens', () => {
+    const javascript = '    at loadPlugin (src/plugins/loader.ts:42:7)';
+    const sourcePawn = '[3] addons/sourcemod/scripting/test.sp::OnPluginStart (line 128)';
+    const tokens = tokenizeLog(`${javascript}\n${sourcePawn}\nordinary output remains plain`);
+
+    expect(tokens.filter((token) => token.className === 'log-token-stack').map((token) => token.text)).toEqual([
+      'at loadPlugin (src/plugins/loader.ts:42:7)',
+      sourcePawn,
+    ]);
+    expect(tokens.find((token) => token.text.includes('ordinary output'))?.className).toBeUndefined();
+  });
+
   it('truncates the UTF-8 tail to at most one MiB of bytes', () => {
     const result = truncateForDisplay('界'.repeat(DISPLAY_PREVIEW_LIMIT));
     expect(result.truncated).toBe(true);
