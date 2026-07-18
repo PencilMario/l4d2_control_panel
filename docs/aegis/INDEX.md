@@ -27,6 +27,7 @@
 
 ## Active Work
 
+- [Game log layout alignment](work/2026-07-19-game-log-layout-alignment/30-plan.md)
 - [One-click deployment and update](work/2026-07-18-one-click-deploy-update/30-plan.md)
 - [Schedule management and task descriptions](work/2026-07-16-schedule-management/00-intent.md)
 - [Restart and Unix Socket console repair](work/2026-07-16-restart-console-unix-socket/00-intent.md)
