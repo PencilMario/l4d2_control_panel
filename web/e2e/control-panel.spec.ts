@@ -119,13 +119,23 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await expect(page.getByRole("heading", { name: "服务器作战室" })).toBeVisible();
 
   await page.evaluate(async () => {
-    const response = await fetch("/api/settings/jobs", {
+    const jobResponse = await fetch("/api/settings/jobs", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ successful_job_limit: 40 }),
     });
-    if (!response.ok) {
-      throw new Error(`reset job settings failed with HTTP ${response.status}`);
+    if (!jobResponse.ok) {
+      throw new Error(`reset job settings failed with HTTP ${jobResponse.status}`);
+    }
+    const gameLogResponse = await fetch("/api/settings/game-logs", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ retention_days: 14 }),
+    });
+    if (!gameLogResponse.ok) {
+      throw new Error(
+        `reset game log settings failed with HTTP ${gameLogResponse.status}`,
+      );
     }
   });
 

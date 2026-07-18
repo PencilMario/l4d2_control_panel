@@ -24,6 +24,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/gamelogs"
 	"github.com/not0721here/l4d2-control-panel/internal/httpapi"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/metrics"
 	"github.com/not0721here/l4d2-control-panel/internal/players"
@@ -282,6 +283,14 @@ type fixtureDispatcher struct{}
 
 func (fixtureDispatcher) Dispatch(context.Context, domain.ScheduledTask) error { return nil }
 
+func newFixtureJobServices(root string, db *store.Store) (*jobs.Manager, *joblogs.Manager, error) {
+	logManager, err := joblogs.Open(filepath.Join(root, "joblogs"), joblogs.Options{})
+	if err != nil {
+		return nil, nil, err
+	}
+	return jobs.NewPersistentManager(db, jobs.WithLogSink(logManager)), logManager, nil
+}
+
 func main() {
 	root, cleanup, err := fixtureRoot()
 	if err != nil {
@@ -321,7 +330,11 @@ func main() {
 		log.Fatal(err)
 	}
 	lifecycle := &fixtureLifecycle{db: db, root: root}
-	jobManager := jobs.NewPersistentManager(db)
+	jobManager, jobLogManager, err := newFixtureJobServices(root, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer jobLogManager.Close()
 	seedJobs(db)
 	gameLogManager := gamelogs.NewManager(root, gamelogs.Options{})
 	gameLogScheduler := gamelogs.NewScheduler(db, jobManager, gameLogManager)
@@ -340,6 +353,7 @@ func main() {
 		sessions,
 		httpapi.WithGameLogs(gameLogManager, gameLogScheduler),
 		httpapi.WithOperations(lifecycle, jobManager),
+		httpapi.WithJobLogs(jobLogManager),
 		httpapi.WithConsole(console),
 		httpapi.WithPlayers(fixturePlayers{}),
 		httpapi.WithContent(uploads, private, packages, pipeline, packageUpdates),

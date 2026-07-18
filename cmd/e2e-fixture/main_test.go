@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,10 +20,83 @@ import (
 	"github.com/google/uuid"
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/gamelogs"
 	"github.com/not0721here/l4d2-control-panel/internal/httpapi"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 	"github.com/not0721here/l4d2-control-panel/internal/updates"
 )
+
+func TestFixtureCleanupJobSummaryIsAvailableOverHTTP(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	jobManager, logManager, err := newFixtureJobServices(root, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logManager.Close()
+
+	id := uuid.NewString()
+	if err := db.CreateInstance(context.Background(), domain.Instance{ID: id, NodeID: "local", Name: "Cleanup logs", GamePort: 27015}); err != nil {
+		t.Fatal(err)
+	}
+	if err := seedGameLogs(root, id); err != nil {
+		t.Fatal(err)
+	}
+	scheduler := gamelogs.NewScheduler(db, jobManager, gamelogs.NewManager(root, gamelogs.Options{}))
+	result := scheduler.EnqueueAll(context.Background())
+	if result.Queued != 1 || len(result.JobIDs) != 1 {
+		t.Fatalf("enqueue result=%+v", result)
+	}
+	jobID := result.JobIDs[0]
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		job, ok := jobManager.Get(jobID)
+		if ok && job.Status == "succeeded" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("cleanup job did not succeed: job=%+v ok=%v", job, ok)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	sessions := auth.NewService()
+	if err := sessions.Bootstrap(fixturePassword); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(httpapi.New(db, sessions, httpapi.WithOperations(nil, jobManager), httpapi.WithJobLogs(logManager)).Handler())
+	defer server.Close()
+	client := server.Client()
+	login, err := client.Post(server.URL+"/api/auth/login", "application/json", strings.NewReader(`{"password":"correct horse battery staple"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer login.Body.Close()
+	if login.StatusCode != http.StatusOK || len(login.Cookies()) == 0 {
+		t.Fatalf("login status=%d", login.StatusCode)
+	}
+	request, err := http.NewRequest(http.MethodGet, server.URL+"/api/jobs/"+jobID+"/logs", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.AddCookie(login.Cookies()[0])
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || !bytes.Contains(body, []byte("Scanned=")) || !bytes.Contains(body, []byte("Deleted=")) || !bytes.Contains(body, []byte("ReleasedBytes=")) {
+		t.Fatalf("logs status=%d body=%s", response.StatusCode, body)
+	}
+}
 
 func TestPrivateLowerDiagnosticRejectsInstanceTraversal(t *testing.T) {
 	root := t.TempDir()
