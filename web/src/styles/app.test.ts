@@ -43,4 +43,13 @@ describe("game log highlighting", () => {
     expect(css).not.toMatch(/\.game-logs-tree-trigger\s*[,\{]/);
     expect(css).toMatch(/\.game-log-workspace\s*\{/);
   });
+
+  it("keeps long previews inside a bounded scrolling workspace", () => {
+    const workspace = css.match(/\.game-log-workspace\s*\{([^}]*)\}/)?.[1] ?? "";
+    const preview = css.match(/\.game-log-preview\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(workspace).toContain("min-height: 0");
+    expect(workspace).toContain("overflow: hidden");
+    expect(preview).toContain("min-height: 0");
+    expect(preview).toContain("overflow: auto");
+  });
 });
