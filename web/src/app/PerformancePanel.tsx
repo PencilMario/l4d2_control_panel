@@ -115,9 +115,20 @@ const seriesFor = (mode: Mode) => {
 
 type ChartPoint = { at: string; label: string; runId: string; synthetic?: boolean; cpu: number | null; memory: number | null; rx: number | null; tx: number | null; read: number | null; write: number | null };
 
+const formatChartTime = (value: string): string => {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
+};
+
 const chartPoint = (point: PerformanceHistoryPoint): ChartPoint => ({
     at: point.at,
-    label: new Date(point.at).toISOString().slice(11, 19),
+    label: formatChartTime(point.at),
     runId: point.run_id,
     cpu: point.cpu_percent,
     memory: point.memory_percent,
@@ -143,7 +154,7 @@ const gapPoint = (previous: ChartPoint, next: ChartPoint, index: number): ChartP
     : `__run_gap_${index}`;
   return {
     at: midpoint,
-    label: Number.isFinite(Date.parse(midpoint)) ? new Date(midpoint).toISOString().slice(11, 19) : "",
+    label: formatChartTime(midpoint),
     runId: "",
     synthetic: true,
     cpu: null,

@@ -1247,7 +1247,6 @@ function ContentPage({
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [sources, setSources] = useState<GitHubSource[]>([]);
   const [sourceEditor, setSourceEditor] = useState<GitHubSource | null>(null);
-	const [gamePolicy, setGamePolicy] = useState("wait");
   const contentActions = useAsyncLocks();
   const loadVPK = () => api<any[]>("/api/content/vpk").then(setVpks);
   const loadSources = () => api<GitHubSource[]>("/api/github-sources").then((items) => setSources(Array.isArray(items) ? items : []));
@@ -1372,32 +1371,6 @@ function ContentPage({
           ))}
         </select>
       </label>
-		<Panel
-			title="共享游戏本体"
-			action={
-				<button
-					className="danger"
-					disabled={contentActions.pending.has("game:update")}
-					aria-busy={contentActions.pending.has("game:update")}
-					onClick={() => {
-						if (!window.confirm("更新共享游戏本体？所有依赖实例均符合在线玩家策略后才会停止并更新。")) return;
-						void runContentAction("game:update", () => queue("/api/game/update", { confirm: true, online_policy: gamePolicy }));
-					}}
-				>
-					更新共享游戏本体
-				</button>
-			}
-		>
-			<label>
-				所有服务器在线玩家策略
-				<select aria-label="所有服务器在线玩家策略" value={gamePolicy} onChange={(event) => setGamePolicy(event.target.value)}>
-					<option value="skip">任一不符合则跳过</option>
-					<option value="wait">等待全部空服</option>
-					<option value="force">强制执行</option>
-				</select>
-			</label>
-			<p>该操作不绑定实例；任一活动服务器有玩家或查询失败时，等待/跳过策略会阻止整个更新。</p>
-		</Panel>
       <Panel
         title="共享 VPK"
         action={
