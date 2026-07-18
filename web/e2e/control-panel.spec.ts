@@ -290,7 +290,7 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await expect(card.getByRole("button", { name: `配置 ${instanceName}` })).toBeVisible();
 
   const performance = card.locator(".performance-panel");
-  await expect(performance).toContainText("镜像大小");
+  await expect(performance).toContainText("总占用");
   await expect(performance).toContainText("3 GiB");
   await expect(performance.getByText("玩家", { exact: true })).toHaveCount(0);
   await expect(performance).toContainText("12.5%");
