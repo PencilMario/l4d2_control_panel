@@ -23,8 +23,8 @@
 - [x] Task 2：安全文件树、尾部预览与下载源
 - [x] Task 3：保留设置与清理行为
 - [x] Task 4：清理任务与每日排队
-- [ ] Task 5：认证 HTTP API（active）
-- [ ] Task 6：安全高亮 React 查看器
+- [x] Task 5：认证 HTTP API
+- [ ] Task 6：安全高亮 React 查看器（active）
 - [ ] Task 7：导航、设置、E2E 与文档
 
 当前证据：
@@ -41,10 +41,12 @@
 - `go test -count=1 ./...` 与 `go vet ./...`：通过；Task 3 规格审查与代码质量审查均通过。
 - Task 4 commits：`1df49c0`、`ce86a5e`。
 - 目标任务/调度测试、`go vet` 与 diff 检查通过；规格审查与代码质量审查均通过。
+- Task 5 commits：`4e9d93d`、`be93c2f`、`b9e9965`。
+- `go test -count=1 ./internal/httpapi ./cmd/panel` 与相关 vet 通过；真实 HTTP 合约测试、规格审查、质量审查均通过。
 
 阻塞项：无。
 
-下一步：Task 5 实现代理增加认证日志树/预览/下载 API、保留设置与清理排队接口。
+下一步：Task 6 实现代理增加 ANSI/语义高亮 tokenizer 和实例日志 React 查看器。
 
 ## ResumeStateHint
 
@@ -63,3 +65,5 @@
 清理在删除前通过 `Lstat`/`SameFile` 复核身份，但跨平台 `Lstat -> Remove` 仍有极窄竞态；彻底消除需要平台专用目录句柄协议，当前作为有界残余保留。
 
 Task 4 残余：单 Panel 进程内由 Scheduler mutex 保证 `HasActiveJob` 与提交串行；多个独立 Panel 进程之间查询/提交不是数据库原子 claim，当前部署模型不支持多进程共享同一数据根。
+
+Task 5 非阻塞观察：路径校验对包含 `..` 的合法文件名偏保守；预览后端错误统一映射 404；设置持久化与清理排队故障解耦并由响应暴露统计。
