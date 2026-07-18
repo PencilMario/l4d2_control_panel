@@ -3,10 +3,10 @@ import React from 'react';
 export type LogToken = { text: string; className?: string };
 
 const ANSI_COLORS: Record<number, string> = {
-  30: 'log-ansi-black', 31: 'log-token-error', 32: 'log-token-info', 33: 'log-token-warn',
+  30: 'log-ansi-black', 31: 'log-ansi-red', 32: 'log-ansi-green', 33: 'log-ansi-yellow',
   34: 'log-ansi-blue', 35: 'log-ansi-magenta', 36: 'log-ansi-cyan', 37: 'log-ansi-white',
-  90: 'log-ansi-bright-black', 91: 'log-token-error', 92: 'log-token-info', 93: 'log-token-warn',
-  94: 'log-ansi-blue', 95: 'log-ansi-magenta', 96: 'log-ansi-cyan', 97: 'log-ansi-white',
+  90: 'log-ansi-bright-black', 91: 'log-ansi-bright-red', 92: 'log-ansi-bright-green', 93: 'log-ansi-bright-yellow',
+  94: 'log-ansi-bright-blue', 95: 'log-ansi-bright-magenta', 96: 'log-ansi-bright-cyan', 97: 'log-ansi-bright-white',
 };
 
 function validAddress(value: string) {

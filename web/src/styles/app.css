@@ -2632,4 +2632,45 @@ textarea:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
-.game-logs-shell{position:relative}.game-logs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);gap:16px;height:100%;min-height:420px}.game-logs-layout aside{border-right:1px solid var(--border,#ddd);overflow:auto}.game-logs-layout ul,.game-logs-drawer ul{list-style:none;padding:0}.game-logs-layout button,.game-logs-drawer button,.game-logs-tree-trigger{background:none;border:0;padding:6px;text-align:left;cursor:pointer}.game-log-file-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.game-log-file-head div{display:flex;min-width:0;flex-direction:column}.game-log-file-head small{color:var(--muted)}.game-logs-tree-trigger,.game-logs-drawer{display:none}.log-viewer{white-space:pre;overflow:auto;font-family:ui-monospace,monospace;line-height:1.45}.log-token-error{color:#d33}.log-token-warn{color:#a66b00}.log-token-info{color:#287a3d}.log-token-emphasis{font-weight:700}.log-ansi-black,.log-ansi-bright-black{color:#777}.log-ansi-blue{color:#5599df}.log-ansi-magenta{color:#c477cf}.log-ansi-cyan{color:#32a6a6}.log-ansi-white{color:#ddd}.log-token-address,.log-token-user,.log-token-file{color:#2768b3}@media(max-width:700px){.game-logs-layout{grid-template-columns:1fr}.game-logs-tree{display:none}.game-logs-tree-trigger{display:inline-grid;place-items:center}.game-logs-drawer{position:fixed;inset:0 auto 0 0;z-index:70;display:block;width:min(84vw,320px);padding:16px;overflow:auto;background:var(--surface,#101513);box-shadow:12px 0 30px #0008;transform:translateX(-105%);transition:transform .2s ease}.game-logs-drawer.open{transform:translateX(0)}.game-logs-drawer>div:first-child{display:flex;align-items:center;justify-content:space-between}}
+.game-logs-shell { position: relative; }
+.game-logs-layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 16px; height: 100%; min-height: 420px; }
+.game-logs-layout aside { overflow: auto; border-right: 1px solid var(--line); }
+.game-logs-layout ul, .game-logs-drawer ul { padding: 0; list-style: none; }
+.game-logs-layout button, .game-logs-drawer button, .game-logs-tree-trigger { padding: 6px; border: 0; background: none; text-align: left; cursor: pointer; }
+.game-log-file-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.game-log-file-head div { display: flex; min-width: 0; flex-direction: column; }
+.game-log-file-head small { color: var(--muted); }
+.game-logs-tree-trigger, .game-logs-drawer, .game-logs-drawer-overlay { display: none; }
+.log-viewer { overflow: auto; color: #d8e0db; font-family: ui-monospace, monospace; line-height: 1.45; white-space: pre; }
+.log-token-error { color: var(--red); }
+.log-token-warn { color: var(--amber); }
+.log-token-info { color: var(--acid); }
+.log-token-timestamp { color: var(--muted); }
+.log-token-plugin { color: var(--amber); }
+.log-token-module { color: #7ed1cf; }
+.log-token-emphasis { font-weight: 700; text-decoration: underline; text-decoration-thickness: 1px; }
+.log-token-address, .log-token-user, .log-token-file { color: #83b9ef; }
+.log-ansi-black { color: #6f7a75; }
+.log-ansi-bright-black { color: #9aa59f; }
+.log-ansi-red { color: #d85b52; }
+.log-ansi-bright-red { color: #ff8e84; }
+.log-ansi-green { color: #7da957; }
+.log-ansi-bright-green { color: var(--acid); }
+.log-ansi-yellow { color: #c79232; }
+.log-ansi-bright-yellow { color: var(--amber); }
+.log-ansi-blue { color: #5687b8; }
+.log-ansi-bright-blue { color: #83b9ef; }
+.log-ansi-magenta { color: #a875ad; }
+.log-ansi-bright-magenta { color: #d59add; }
+.log-ansi-cyan { color: #4e9b9b; }
+.log-ansi-bright-cyan { color: #7ed1cf; }
+.log-ansi-white { color: #c3ccc7; }
+.log-ansi-bright-white { color: #f2f6f3; }
+@media (max-width: 700px) {
+  .game-logs-layout { grid-template-columns: 1fr; }
+  .game-logs-tree { display: none; }
+  .game-logs-tree-trigger { display: inline-grid; place-items: center; }
+  .game-logs-drawer-overlay { position: fixed; z-index: 69; inset: 0; display: block; background: #050806b8; }
+  .game-logs-drawer { position: fixed; z-index: 70; inset: 0 auto 0 0; display: block; width: min(84vw, 320px); padding: 16px; overflow: auto; background: var(--panel); box-shadow: 12px 0 30px #0008; }
+  .game-logs-drawer > div:first-child { display: flex; align-items: center; justify-content: space-between; }
+}

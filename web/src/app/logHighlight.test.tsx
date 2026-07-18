@@ -5,7 +5,7 @@ import { DISPLAY_PREVIEW_LIMIT, HighlightedLog, tokenizeLog, truncateForDisplay 
 describe('log highlighting', () => {
   it('supports combined SGR emphasis, colors, and foreground reset', () => {
     const tokens = tokenizeLog('\x1b[1;31mbold red\x1b[39m bold\x1b[0m plain');
-    expect(tokens.find((token) => token.text === 'bold red')?.className).toContain('log-token-error');
+    expect(tokens.find((token) => token.text === 'bold red')?.className).toContain('log-ansi-red');
     expect(tokens.find((token) => token.text === 'bold red')?.className).toContain('log-token-emphasis');
     expect(tokens.find((token) => token.text === ' bold')?.className).toBe('log-token-emphasis');
     expect(tokens.find((token) => token.text === ' plain')?.className).toBeUndefined();
@@ -15,6 +15,8 @@ describe('log highlighting', () => {
     for (const code of [30, 31, 32, 33, 34, 35, 36, 37, 90, 91, 92, 93, 94, 95, 96, 97]) {
       expect(tokenizeLog(`\x1b[${code}mvalue\x1b[0m`)[0].className).toBeTruthy();
     }
+    expect(tokenizeLog('\x1b[31mnormal\x1b[0m')[0].className).toBe('log-ansi-red');
+    expect(tokenizeLog('\x1b[91mbright\x1b[0m')[0].className).toBe('log-ansi-bright-red');
   });
 
   it('recognizes bare IPv4, IPv6, optional ports, and common module/plugin forms', () => {

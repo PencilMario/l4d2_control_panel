@@ -67,15 +67,32 @@ describe('GameLogsPage', () => {
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:test');
   });
 
-  it('exposes mobile drawer state through aria-expanded', async () => {
+  it('renders an accessible mobile drawer only while open and restores focus on Escape', async () => {
     const api = vi.fn().mockResolvedValue([]);
     render(<GameLogsPage instanceID="i" api={api} />);
     const trigger = screen.getByRole('button', { name: 'Open log tree' });
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('dialog', { name: 'Log tree' })).toBeNull();
     fireEvent.click(trigger);
     expect(trigger).toHaveAttribute('aria-expanded', 'true');
-    fireEvent.click(screen.getByRole('button', { name: 'Close log tree' }));
+    const drawer = screen.getByRole('dialog', { name: 'Log tree' });
+    expect(drawer).toHaveAttribute('aria-modal', 'true');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Close log tree' })).toHaveFocus());
+    fireEvent.keyDown(document, { key: 'Escape' });
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('dialog', { name: 'Log tree' })).toBeNull();
+    expect(trigger).toHaveFocus();
+  });
+
+  it('closes the mobile drawer from its overlay and restores focus', async () => {
+    const api = vi.fn().mockResolvedValue([]);
+    render(<GameLogsPage instanceID="i" api={api} />);
+    const trigger = screen.getByRole('button', { name: 'Open log tree' });
+    fireEvent.click(trigger);
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Log tree' })).toBeTruthy());
+    fireEvent.click(screen.getByTestId('game-logs-drawer-overlay'));
+    expect(screen.queryByRole('dialog', { name: 'Log tree' })).toBeNull();
+    expect(trigger).toHaveFocus();
   });
 
   it('uses the sourcemod category in preview and download requests', async () => {

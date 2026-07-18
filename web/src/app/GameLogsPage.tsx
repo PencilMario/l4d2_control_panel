@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Download, Menu, RefreshCw, X } from 'lucide-react';
 import { api as defaultApi, apiBlob as defaultBlobApi } from '../api/client';
 import { HighlightedLog } from './logHighlight';
@@ -57,6 +57,8 @@ export function GameLogsPage({
   const [drawerOpen, setDrawerOpen] = useState(false);
   const treeAbort = useRef<AbortController | null>(null);
   const previewAbort = useRef<AbortController | null>(null);
+  const drawerRef = useRef<HTMLDivElement>(null);
+  const drawerTriggerRef = useRef<HTMLButtonElement>(null);
   const treeSequence = useRef(0);
   const previewSequence = useRef(0);
 
@@ -115,10 +117,25 @@ export function GameLogsPage({
     };
   }, [instanceID]);
 
+  const closeDrawer = useCallback(() => {
+    setDrawerOpen(false);
+    drawerTriggerRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (!drawerOpen) return;
+    drawerRef.current?.querySelector<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeDrawer();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [closeDrawer, drawerOpen]);
+
   const select = (entry: Entry) => {
     setSelected(entry);
     setDownloadError('');
-    setDrawerOpen(false);
+    if (drawerOpen) closeDrawer();
     void loadPreview(entry);
   };
 
@@ -155,7 +172,7 @@ export function GameLogsPage({
   const tree = <>{loading ? <p>Loading...</p> : null}{!loading && !error && !entries.length ? <p>Empty</p> : null}{error ? <p role="alert">{error}</p> : null}{(['game', 'sourcemod'] as const).map((kind) => <section key={kind}><h4>{kind}</h4><ul>{build(entries, kind).children.map((node) => renderNode(node, kind))}</ul></section>)}</>;
 
   return <div className="game-logs-shell">
-    <button className="game-logs-tree-trigger" aria-label="Open log tree" aria-controls="game-logs-drawer" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}><Menu /></button>
+    <button ref={drawerTriggerRef} className="game-logs-tree-trigger" aria-label="Open log tree" aria-controls="game-logs-drawer" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}><Menu /></button>
     <div className="game-logs-layout">
       <aside className="game-logs-tree"><button onClick={() => void loadTree(true)} aria-label="Refresh"><RefreshCw size={16} /></button>{tree}</aside>
       <main>{selected ? <>
@@ -165,9 +182,12 @@ export function GameLogsPage({
         {rotated ? <p role="status">Log rotated or deleted</p> : previewError && !previewLoading ? <p role="alert">{previewError}</p> : preview ? <><HighlightedLog text={preview.text} />{preview.truncated ? <p>Tail truncated to {PREVIEW_LIMIT} bytes</p> : null}</> : null}
       </> : null}</main>
     </div>
-    <div id="game-logs-drawer" className={`game-logs-drawer ${drawerOpen ? 'open' : ''}`} role="dialog" aria-modal="true" aria-label="Log tree" aria-hidden={!drawerOpen}>
-      <div><b>Log tree</b><button aria-label="Close log tree" onClick={() => setDrawerOpen(false)}><X /></button></div>
-      {drawerOpen ? tree : null}
-    </div>
+    {drawerOpen ? <>
+      <div className="game-logs-drawer-overlay" data-testid="game-logs-drawer-overlay" aria-hidden="true" onClick={closeDrawer} />
+      <div ref={drawerRef} id="game-logs-drawer" className="game-logs-drawer open" role="dialog" aria-modal="true" aria-label="Log tree">
+        <div><b>Log tree</b><button aria-label="Close log tree" onClick={closeDrawer}><X /></button></div>
+        {tree}
+      </div>
+    </> : null}
   </div>;
 }
