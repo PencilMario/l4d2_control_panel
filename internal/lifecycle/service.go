@@ -184,7 +184,7 @@ func (s *Service) Start(ctx context.Context, id string) error {
 	}
 	if v.ContainerID == "" {
 		base := filepath.Join(s.dataRoot, "instances", v.ID)
-		for _, dir := range []string{"game", "private", "backups", "console", filepath.Join("logs", "game"), filepath.Join("logs", "sourcemod")} {
+		for _, dir := range []string{"game", "private", "backups", "console"} {
 			if err := os.MkdirAll(filepath.Join(base, dir), 0750); err != nil {
 				return err
 			}

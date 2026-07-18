@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -111,6 +112,25 @@ func TestPrepareRejectsSymlinkInMigrationTree(t *testing.T) {
 	}
 }
 
+func TestPrepareRejectsSymlinkInLegacyParentPath(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "instances", "instance-1")
+	outside := filepath.Join(root, "outside")
+	writeFile(t, filepath.Join(outside, "left4dead2", "logs", "escaped.log"), "secret")
+	if err := os.MkdirAll(filepath.Join(base, "overlay"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(base, "overlay", "merged")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := NewManager(root, Options{}).Prepare(context.Background(), "instance-1"); err == nil {
+		t.Fatal("expected legacy parent symlink rejection")
+	}
+	if _, err := os.Stat(filepath.Join(base, "logs", "game", "escaped.log")); !os.IsNotExist(err) {
+		t.Fatalf("legacy parent symlink escaped: %v", err)
+	}
+}
+
 func TestPrepareRejectsSymlinkPersistentRoot(t *testing.T) {
 	root := t.TempDir()
 	base := filepath.Join(root, "instances", "instance-1")
@@ -210,6 +230,80 @@ func TestPrepareRejectsDirectoryAtPersistentFileLeaf(t *testing.T) {
 	info, err := os.Stat(destination)
 	if err != nil || !info.IsDir() {
 		t.Fatalf("destination directory changed: info=%v err=%v", info, err)
+	}
+}
+
+func TestPrepareSerializesConcurrentMigrationWithoutLosingConflicts(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "instances", "instance-1")
+	writeFile(t, filepath.Join(base, "overlay", "merged", "left4dead2", "logs", "server.log"), "merged")
+	writeFile(t, filepath.Join(base, "overlay", "upper", "left4dead2", "logs", "server.log"), "upper")
+	manager := NewManager(root, Options{Now: func() time.Time {
+		return time.Date(2026, 7, 18, 12, 34, 56, 0, time.UTC)
+	}})
+	start := make(chan struct{})
+	errs := make(chan error, 8)
+	var workers sync.WaitGroup
+	for range 8 {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			errs <- manager.Prepare(context.Background(), "instance-1")
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Prepare: %v", err)
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(base, "logs", "game"))
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("entries=%v err=%v; want both contents exactly once", entries, err)
+	}
+	contents := map[string]bool{}
+	for _, entry := range entries {
+		value, err := os.ReadFile(filepath.Join(base, "logs", "game", entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		contents[string(value)] = true
+	}
+	if !contents["merged"] || !contents["upper"] {
+		t.Fatalf("contents=%v", contents)
+	}
+}
+
+func TestPrepareDeduplicatesLargeFile(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "instances", "instance-1")
+	content := make([]byte, 12*1024*1024)
+	for index := range content {
+		content[index] = byte(index % 251)
+	}
+	source := filepath.Join(base, "overlay", "merged", "left4dead2", "logs", "large.log")
+	destination := filepath.Join(base, "logs", "game", "large.log")
+	if err := os.MkdirAll(filepath.Dir(source), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, content, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(destination, content, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewManager(root, Options{}).Prepare(context.Background(), "instance-1"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(destination))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("entries=%v err=%v", entries, err)
 	}
 }
 

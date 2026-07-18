@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -17,8 +18,10 @@ type Options struct {
 }
 
 type Manager struct {
-	root string
-	now  func() time.Time
+	root      string
+	now       func() time.Time
+	locksMu   sync.Mutex
+	instances map[string]*sync.Mutex
 }
 
 func NewManager(root string, options Options) *Manager {
@@ -26,13 +29,16 @@ func NewManager(root string, options Options) *Manager {
 	if now == nil {
 		now = time.Now
 	}
-	return &Manager{root: root, now: now}
+	return &Manager{root: root, now: now, instances: make(map[string]*sync.Mutex)}
 }
 
 func (m *Manager) Prepare(ctx context.Context, instanceID string) error {
 	if instanceID == "" || filepath.Base(instanceID) != instanceID || instanceID == "." || instanceID == ".." {
 		return errors.New("invalid instance id")
 	}
+	instanceLock := m.instanceLock(instanceID)
+	instanceLock.Lock()
+	defer instanceLock.Unlock()
 	base := filepath.Join(m.root, "instances", instanceID)
 	destinations := []struct {
 		source, destination string
@@ -49,23 +55,31 @@ func (m *Manager) Prepare(ctx context.Context, instanceID string) error {
 	}
 	stamp := m.now().UTC().Format("20060102T150405Z")
 	for _, item := range destinations {
-		if err := migrateTree(ctx, item.source, item.destination, stamp); err != nil {
+		if err := migrateTree(ctx, m.root, item.source, item.destination, stamp); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func migrateTree(ctx context.Context, sourceRoot, destinationRoot, stamp string) error {
-	info, err := os.Lstat(sourceRoot)
-	if os.IsNotExist(err) {
-		return nil
+func (m *Manager) instanceLock(instanceID string) *sync.Mutex {
+	m.locksMu.Lock()
+	defer m.locksMu.Unlock()
+	lock := m.instances[instanceID]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		m.instances[instanceID] = lock
 	}
+	return lock
+}
+
+func migrateTree(ctx context.Context, anchor, sourceRoot, destinationRoot, stamp string) error {
+	exists, err := validateDirectoryPath(anchor, sourceRoot, true)
 	if err != nil {
 		return fmt.Errorf("inspect legacy log root: %w", err)
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("legacy log root is not a regular directory: %s", sourceRoot)
+	if !exists {
+		return nil
 	}
 	return filepath.WalkDir(sourceRoot, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -100,29 +114,35 @@ func migrateTree(ctx context.Context, sourceRoot, destinationRoot, stamp string)
 }
 
 func copyUnique(source, destination, stamp string, mode os.FileMode) error {
-	destinationExists, err := validateRegularLeaf(destination)
-	if err != nil {
+	for {
+		candidate := destination
+		destinationExists, err := validateRegularLeaf(destination)
+		if err != nil {
+			return err
+		}
+		if destinationExists {
+			same, err := sameFileContent(source, destination)
+			if err != nil {
+				return err
+			}
+			if same {
+				return nil
+			}
+			match, err := findMatchingConflict(source, destination)
+			if err != nil || match {
+				return err
+			}
+			candidate, err = nextConflictName(destination, stamp)
+			if err != nil {
+				return err
+			}
+		}
+		err = copyAtomic(source, candidate, mode)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
 		return err
 	}
-	if !destinationExists {
-		return copyAtomic(source, destination, mode)
-	}
-	same, err := sameFileContent(source, destination)
-	if err != nil {
-		return err
-	}
-	if same {
-		return nil
-	}
-	match, err := findMatchingConflict(source, destination)
-	if err != nil || match {
-		return err
-	}
-	destination, err = nextConflictName(destination, stamp)
-	if err != nil {
-		return err
-	}
-	return copyAtomic(source, destination, mode)
 }
 
 func validateRegularLeaf(path string) (bool, error) {
@@ -140,15 +160,47 @@ func validateRegularLeaf(path string) (bool, error) {
 }
 
 func sameFileContent(left, right string) (bool, error) {
-	a, err := os.ReadFile(left)
+	leftInfo, err := os.Stat(left)
 	if err != nil {
 		return false, err
 	}
-	b, err := os.ReadFile(right)
+	rightInfo, err := os.Stat(right)
 	if err != nil {
 		return false, err
 	}
-	return bytes.Equal(a, b), nil
+	if leftInfo.Size() != rightInfo.Size() {
+		return false, nil
+	}
+	leftFile, err := os.Open(left)
+	if err != nil {
+		return false, err
+	}
+	defer leftFile.Close()
+	rightFile, err := os.Open(right)
+	if err != nil {
+		return false, err
+	}
+	defer rightFile.Close()
+	leftBuffer := make([]byte, 64*1024)
+	rightBuffer := make([]byte, len(leftBuffer))
+	remaining := leftInfo.Size()
+	for remaining > 0 {
+		chunk := int64(len(leftBuffer))
+		if remaining < chunk {
+			chunk = remaining
+		}
+		if _, err := io.ReadFull(leftFile, leftBuffer[:chunk]); err != nil {
+			return false, err
+		}
+		if _, err := io.ReadFull(rightFile, rightBuffer[:chunk]); err != nil {
+			return false, err
+		}
+		if !bytes.Equal(leftBuffer[:chunk], rightBuffer[:chunk]) {
+			return false, nil
+		}
+		remaining -= chunk
+	}
+	return true, nil
 }
 
 func findMatchingConflict(source, destination string) (bool, error) {
@@ -189,36 +241,47 @@ func nextConflictName(destination, stamp string) (string, error) {
 }
 
 func secureMkdirAll(anchor, destination string) error {
+	_, err := validateDirectoryPath(anchor, destination, false)
+	return err
+}
+
+func validateDirectoryPath(anchor, destination string, allowMissing bool) (bool, error) {
 	relative, err := filepath.Rel(anchor, destination)
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
-		return errors.New("persistent log directory escapes controlled root")
+		return false, errors.New("persistent log directory escapes controlled root")
 	}
 	current := anchor
 	if info, err := os.Lstat(current); err != nil {
-		return err
+		return false, err
 	} else if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("controlled root is not a regular directory: %s", current)
+		return false, fmt.Errorf("controlled root is not a regular directory: %s", current)
 	}
 	if relative == "." {
-		return nil
+		return true, nil
 	}
 	for _, component := range strings.Split(relative, string(filepath.Separator)) {
 		current = filepath.Join(current, component)
 		info, err := os.Lstat(current)
 		if os.IsNotExist(err) {
+			if allowMissing {
+				return false, nil
+			}
 			if err := os.Mkdir(current, 0o750); err != nil {
-				return err
+				if info, statErr := os.Lstat(current); statErr == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+					continue
+				}
+				return false, err
 			}
 			continue
 		}
 		if err != nil {
-			return err
+			return false, err
 		}
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("persistent log component is not a regular directory: %s", current)
+			return false, fmt.Errorf("persistent log component is not a regular directory: %s", current)
 		}
 	}
-	return nil
+	return true, nil
 }
 
 func copyAtomic(source, destination string, mode os.FileMode) (err error) {
@@ -234,9 +297,7 @@ func copyAtomic(source, destination string, mode os.FileMode) (err error) {
 	temporaryName := temporary.Name()
 	defer func() {
 		temporary.Close()
-		if err != nil {
-			_ = os.Remove(temporaryName)
-		}
+		_ = os.Remove(temporaryName)
 	}()
 	if _, err = io.Copy(temporary, input); err != nil {
 		return fmt.Errorf("copy legacy log: %w", err)
@@ -247,7 +308,7 @@ func copyAtomic(source, destination string, mode os.FileMode) (err error) {
 	if err = temporary.Close(); err != nil {
 		return err
 	}
-	if err = os.Rename(temporaryName, destination); err != nil {
+	if err = os.Link(temporaryName, destination); err != nil {
 		return fmt.Errorf("publish migrated log: %w", err)
 	}
 	return nil

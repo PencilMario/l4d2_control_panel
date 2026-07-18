@@ -88,10 +88,14 @@ type fakeProvisioner struct {
 type fakeLogPreparer struct {
 	events *[]string
 	err    error
+	check  func() error
 }
 
 func (p fakeLogPreparer) Prepare(_ context.Context, instanceID string) error {
 	*p.events = append(*p.events, "logs:"+instanceID)
+	if p.check != nil {
+		return p.check()
+	}
 	return p.err
 }
 
@@ -156,6 +160,30 @@ func TestStartDoesNotCreateContainerWhenLogPreparationFails(t *testing.T) {
 	}
 	if engine.created || got.ActualState != domain.StateFaulted || strings.Join(events, ",") != "logs:failed-logs" {
 		t.Fatalf("engine=%#v instance=%#v events=%v", engine, got, events)
+	}
+}
+
+func TestStartLeavesLogDirectoryOwnershipToLogPreparer(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	value := domain.Instance{ID: "log-owner", NodeID: "local", Name: "log owner", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", ActualState: domain.StateStopped}
+	if err := db.CreateInstance(context.Background(), value); err != nil {
+		t.Fatal(err)
+	}
+	events := []string{}
+	base := filepath.Join(root, "instances", value.ID)
+	preparer := fakeLogPreparer{events: &events, check: func() error {
+		if _, err := os.Lstat(filepath.Join(base, "logs")); !os.IsNotExist(err) {
+			return errors.New("lifecycle created logs before preparer")
+		}
+		return os.MkdirAll(filepath.Join(base, "logs", "game"), 0o750)
+	}}
+	if err := New(db, &fakeEngine{}, freePorts{}, root, WithLogPreparer(preparer)).Start(context.Background(), value.ID); err != nil {
+		t.Fatal(err)
 	}
 }
 
