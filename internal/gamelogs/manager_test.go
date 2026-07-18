@@ -148,6 +148,79 @@ func TestCleanupRejectsInvalidRetentionAndCancellation(t *testing.T) {
 	}
 }
 
+func TestCleanupWaitingForInstanceLockReturnsOnContextCancellation(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root, Options{})
+	unlock, err := manager.lockInstance(context.Background(), "i")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+
+	baseContext, cancel := context.WithCancel(context.Background())
+	waiting := make(chan struct{})
+	ctx := &observedDoneContext{Context: baseContext, observed: waiting}
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := manager.Cleanup(ctx, "i", 14)
+		secondDone <- err
+	}()
+	<-waiting
+	cancel()
+	select {
+	case err := <-secondDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("waiting cleanup error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiting cleanup did not observe context cancellation")
+	}
+}
+
+type observedDoneContext struct {
+	context.Context
+	observed chan struct{}
+	once     sync.Once
+}
+
+func (c *observedDoneContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.observed) })
+	return c.Context.Done()
+}
+
+func TestCleanupStopsScanningAfterContextCancellation(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "instances", "i", "logs", "game")
+	for _, name := range []string{"a.log", "b.log", "c.log"} {
+		path := filepath.Join(base, name)
+		writeFile(t, path, name)
+		old := time.Now().Add(-30 * 24 * time.Hour)
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	removeCalls := 0
+	manager := NewManager(root, Options{Remove: func(path string) error {
+		removeCalls++
+		err := os.Remove(path)
+		cancel()
+		return err
+	}})
+	result, err := manager.Cleanup(ctx, "i", 14)
+	if !errors.Is(err, context.Canceled) || removeCalls != 1 || result.Deleted != 1 {
+		t.Fatalf("result=%+v removeCalls=%d err=%v", result, removeCalls, err)
+	}
+}
+
+func TestCleanupReturnsErrorForUnsafeLogRoot(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "instances", "i", "logs", "game"), "not a directory")
+	if _, err := NewManager(root, Options{}).Cleanup(context.Background(), "i", 14); err == nil {
+		t.Fatal("Cleanup silently accepted a non-directory log root")
+	}
+}
+
 func TestPreviewReturnsTailMetadataAndReplacementText(t *testing.T) {
 	root := t.TempDir()
 	manager := NewManager(root, Options{})

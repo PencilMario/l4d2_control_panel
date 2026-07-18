@@ -49,7 +49,7 @@ type Manager struct {
 	now       func() time.Time
 	remove    func(string) error
 	locksMu   sync.Mutex
-	instances map[string]*sync.Mutex
+	instances map[string]chan struct{}
 }
 
 func NewManager(root string, options Options) *Manager {
@@ -61,7 +61,7 @@ func NewManager(root string, options Options) *Manager {
 	if remove == nil {
 		remove = os.Remove
 	}
-	return &Manager{root: root, now: now, remove: remove, instances: make(map[string]*sync.Mutex)}
+	return &Manager{root: root, now: now, remove: remove, instances: make(map[string]chan struct{})}
 }
 
 func (m *Manager) Cleanup(ctx context.Context, instanceID string, retentionDays int) (CleanupResult, error) {
@@ -76,9 +76,11 @@ func (m *Manager) Cleanup(ctx context.Context, instanceID string, retentionDays 
 		return result, err
 	}
 	cutoff := m.now().UTC().Add(-time.Duration(retentionDays) * 24 * time.Hour)
-	instanceLock := m.instanceLock(instanceID)
-	instanceLock.Lock()
-	defer instanceLock.Unlock()
+	unlock, err := m.lockInstance(ctx, instanceID)
+	if err != nil {
+		return result, err
+	}
+	defer unlock()
 
 	for _, kind := range []string{"game", "sourcemod"} {
 		if err := ctx.Err(); err != nil {
@@ -333,9 +335,11 @@ func (m *Manager) Prepare(ctx context.Context, instanceID string) error {
 	if err := validateInstanceID(instanceID); err != nil {
 		return err
 	}
-	instanceLock := m.instanceLock(instanceID)
-	instanceLock.Lock()
-	defer instanceLock.Unlock()
+	unlock, err := m.lockInstance(ctx, instanceID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	base := filepath.Join(m.root, "instances", instanceID)
 	destinations := []struct {
 		source, destination string
@@ -359,15 +363,24 @@ func (m *Manager) Prepare(ctx context.Context, instanceID string) error {
 	return nil
 }
 
-func (m *Manager) instanceLock(instanceID string) *sync.Mutex {
+func (m *Manager) lockInstance(ctx context.Context, instanceID string) (func(), error) {
 	m.locksMu.Lock()
-	defer m.locksMu.Unlock()
-	lock := m.instances[instanceID]
-	if lock == nil {
-		lock = &sync.Mutex{}
-		m.instances[instanceID] = lock
+	semaphore := m.instances[instanceID]
+	if semaphore == nil {
+		semaphore = make(chan struct{}, 1)
+		m.instances[instanceID] = semaphore
 	}
-	return lock
+	m.locksMu.Unlock()
+
+	select {
+	case semaphore <- struct{}{}:
+		var once sync.Once
+		return func() {
+			once.Do(func() { <-semaphore })
+		}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func migrateTree(ctx context.Context, anchor, sourceRoot, destinationRoot, stamp string) error {

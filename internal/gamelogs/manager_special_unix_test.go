@@ -31,6 +31,28 @@ func TestReadAPIsRejectFIFO(t *testing.T) {
 	}
 }
 
+func TestCleanupSkipsFIFO(t *testing.T) {
+	root := t.TempDir()
+	gameRoot := filepath.Join(root, "instances", "i", "logs", "game")
+	path := filepath.Join(gameRoot, "special.fifo")
+	if err := secureMkdirAll(root, gameRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := secureMkdirAll(root, filepath.Join(root, "instances", "i", "logs", "sourcemod")); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewManager(root, Options{}).Cleanup(context.Background(), "i", 14)
+	if err != nil || result.Skipped != 1 || result.Scanned != 0 || result.Deleted != 0 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if _, err := os.Lstat(path); err != nil {
+		t.Fatalf("FIFO was removed: %v", err)
+	}
+}
+
 func TestPreviewOpenFileReadsOpenedInodeAfterRenameReplacement(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "server.log")

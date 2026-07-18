@@ -674,6 +674,32 @@ func TestGameLogRetentionDaysRejectsInvalidWithoutChangingValue(t *testing.T) {
 	}
 }
 
+func TestGameLogRetentionDaysSettingIsIndependentFromCompletedJobLimit(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.SetCompletedJobLimit(37); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetGameLogRetentionDays(21); err != nil {
+		t.Fatal(err)
+	}
+	limit, limitErr := s.CompletedJobLimit()
+	days, daysErr := s.GameLogRetentionDays()
+	if limitErr != nil || daysErr != nil || limit != 37 || days != 21 {
+		t.Fatalf("completed limit=%d (%v), retention days=%d (%v)", limit, limitErr, days, daysErr)
+	}
+	if err := s.SetCompletedJobLimit(38); err != nil {
+		t.Fatal(err)
+	}
+	days, err = s.GameLogRetentionDays()
+	if err != nil || days != 21 {
+		t.Fatalf("retention changed with completed limit: days=%d err=%v", days, err)
+	}
+}
+
 func TestJobsIncludesExecutionTimes(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {
