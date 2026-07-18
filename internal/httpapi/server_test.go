@@ -94,17 +94,20 @@ func TestGameLogsHTTPContract(t *testing.T) {
 	gm := gamelogs.NewManager(root, gamelogs.Options{})
 	_ = os.MkdirAll(filepath.Join(root, "instances", "logs", "logs", "game"), 0755)
 	name := "bad name.log"
-	if err := os.WriteFile(filepath.Join(root, "instances", "logs", "logs", "game", name), []byte("héllo"), 0644); err != nil {
+	content := strings.Repeat("x", 70*1024)
+	if err := os.WriteFile(filepath.Join(root, "instances", "logs", "logs", "game", name), []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
 	s = New(db, s.auth, WithGameLogs(gm, nil))
 	c := loginCookie(t, s)
 	tr := authenticatedJSON(t, s, c, http.MethodGet, "/api/instances/logs/game-logs/tree", "")
-	if tr.Code != 200 || !strings.Contains(tr.Body.String(), name) {
+	var tree []gamelogs.Entry
+	if tr.Code != 200 || json.Unmarshal(tr.Body.Bytes(), &tree) != nil || len(tree) != 1 || tree[0].Kind != "game" || tree[0].Path != name {
 		t.Fatalf("tree=%d %s", tr.Code, tr.Body.String())
 	}
 	pr := authenticatedJSON(t, s, c, http.MethodGet, "/api/instances/logs/game-logs/preview?kind=game&path="+url.QueryEscape(name), "")
-	if pr.Code != 200 || !strings.Contains(pr.Body.String(), "héllo") {
+	var preview gamelogs.Preview
+	if pr.Code != 200 || json.Unmarshal(pr.Body.Bytes(), &preview) != nil || len(preview.Text) != len(content) || preview.Truncated {
 		t.Fatalf("preview=%d %s", pr.Code, pr.Body.String())
 	}
 	dr := authenticatedJSON(t, s, c, http.MethodGet, "/api/instances/logs/game-logs/download?kind=game&path="+url.QueryEscape(name), "")

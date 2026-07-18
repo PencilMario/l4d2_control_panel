@@ -1,5 +1,80 @@
-import React from 'react';export type LogToken={text:string;className?:string};
-export function tokenizeLog(input:string):LogToken[]{const out:LogToken[]=[];let active='';const emit=(s:string)=>{const re=/(\b\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\b|\[\d{2}:\d{2}:\d{2}\])|(\[(?:plugin|module|source)\]|\b(?:source|module)\/\w+)|(\b(?:ERROR|FATAL|WARN(?:ING)?|INFO|DEBUG|TRACE)\b)|(\b(?:SteamID|SteamId|UserID|userid)\s*[:=]?\s*[A-Za-z0-9_:.-]+)|(\b(?:\d{1,3}\.){3}\d{1,3}:\d{1,5}|\[[0-9A-Fa-f:]+\]:\d{1,5})|([\w./\\-]+\.(?:sp|cpp|c|h|inc):\d+)/gi;let l=0,m;while((m=re.exec(s))){if(m.index>l)out.push({text:s.slice(l,m.index),className:active||undefined});const cls=m[1]?'log-token-timestamp':m[2]?(m[2].toLowerCase().includes('plugin')?'log-token-plugin':'log-token-module'):m[3]?(m[3].toUpperCase().startsWith('WARN')?'log-token-warn':m[3].toUpperCase()==='INFO'?'log-token-info':'log-token-error'):m[4]?'log-token-user':m[5]?'log-token-address':m[6]?'log-token-file':active||undefined;out.push({text:m[0],className:cls});l=m.index+m[0].length}if(l<s.length)out.push({text:s.slice(l),className:active||undefined})};let i=0,m;const re=/\x1b\[([0-9;]*)m/g;while((m=re.exec(input))){emit(input.slice(i,m.index));const n=Number((m[1]||'0').split(';')[0]);if([0,31,32,33,39,91,92,93].includes(n)){active=n===0||n===39?'':n===31||n===91?'log-token-error':n===33||n===93?'log-token-warn':n===32||n===92?'log-token-info':active}else emit(m[0]);i=m.index+m[0].length}emit(input.slice(i));return out}
-export const DISPLAY_PREVIEW_LIMIT=1024*1024;
-export function truncateForDisplay(text:string):{text:string;truncated:boolean}{return text.length>DISPLAY_PREVIEW_LIMIT?{text:text.slice(-DISPLAY_PREVIEW_LIMIT),truncated:true}:{text,truncated:false}}
-export function HighlightedLog({text}:{text:string}){const display=truncateForDisplay(text);return <><pre className="log-viewer">{tokenizeLog(display.text).map((t,i)=><span key={i} className={t.className}>{t.text}</span>)}</pre>{display.truncated&&<p>Tail truncated to {DISPLAY_PREVIEW_LIMIT} bytes</p>}</>}
+import React from 'react';
+
+export type LogToken = { text: string; className?: string };
+
+const ANSI_COLORS: Record<number, string> = {
+  30: 'log-ansi-black', 31: 'log-token-error', 32: 'log-token-info', 33: 'log-token-warn',
+  34: 'log-ansi-blue', 35: 'log-ansi-magenta', 36: 'log-ansi-cyan', 37: 'log-ansi-white',
+  90: 'log-ansi-bright-black', 91: 'log-token-error', 92: 'log-token-info', 93: 'log-token-warn',
+  94: 'log-ansi-blue', 95: 'log-ansi-magenta', 96: 'log-ansi-cyan', 97: 'log-ansi-white',
+};
+
+function validAddress(value: string) {
+  const unbracketed = value.replace(/^\[|\](?::\d+)?$/g, '');
+  const ipv4 = unbracketed.match(/^(\d{1,3}(?:\.\d{1,3}){3})(?::(\d+))?$/);
+  if (ipv4) return ipv4[1].split('.').every((part) => Number(part) <= 255) && (!ipv4[2] || Number(ipv4[2]) <= 65535);
+  const port = value.match(/\]:(\d+)$/)?.[1];
+  const colons = unbracketed.match(/:/g)?.length || 0;
+  const looksIPv6 = unbracketed.includes('::') || (/[a-f]/i.test(unbracketed) && colons >= 2) || colons >= 4;
+  return looksIPv6 && /^[0-9a-f:]+$/i.test(unbracketed) && (!port || Number(port) <= 65535);
+}
+
+export function tokenizeLog(input: string): LogToken[] {
+  const output: LogToken[] = [];
+  let color = '';
+  let emphasis = false;
+  const activeClass = () => [color, emphasis ? 'log-token-emphasis' : ''].filter(Boolean).join(' ') || undefined;
+  const emit = (text: string) => {
+    const regex = /(\b\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\b|\[\d{2}:\d{2}:\d{2}\])|(\[(?:plugin|module|source|sm)\]|\bplugin\s*:\s*[\w.-]+|\b(?:source|module)\/[\w.-]+)|(\b(?:ERROR|FATAL|WARN(?:ING)?|INFO|DEBUG|TRACE)\b)|(\b(?:SteamID|SteamId|UserID|userid)\s*[:=]?\s*[A-Za-z0-9_:.-]+)|(\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\b|\[[0-9A-Fa-f:]+\](?::\d{1,5})?|(?<![\w:])[0-9A-Fa-f]*:[0-9A-Fa-f:]+(?![\w:]))|([\w./\\-]+\.(?:sp|cpp|c|h|inc):\d+)/gi;
+    let cursor = 0;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text))) {
+      if (match.index > cursor) output.push({ text: text.slice(cursor, match.index), className: activeClass() });
+      let className = activeClass();
+      if (match[1]) className = 'log-token-timestamp';
+      else if (match[2]) className = /plugin|\[sm\]/i.test(match[2]) ? 'log-token-plugin' : 'log-token-module';
+      else if (match[3]) className = match[3].toUpperCase().startsWith('WARN') ? 'log-token-warn' : match[3].toUpperCase() === 'INFO' ? 'log-token-info' : 'log-token-error';
+      else if (match[4]) className = 'log-token-user';
+      else if (match[5] && validAddress(match[5])) className = 'log-token-address';
+      else if (match[6]) className = 'log-token-file';
+      output.push({ text: match[0], className });
+      cursor = match.index + match[0].length;
+    }
+    if (cursor < text.length) output.push({ text: text.slice(cursor), className: activeClass() });
+  };
+  const ansi = /\x1b\[([0-9;]*)m/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = ansi.exec(input))) {
+    emit(input.slice(cursor, match.index));
+    const codes = (match[1] || '0').split(';').map(Number);
+    let known = true;
+    for (const code of codes) {
+      if (code === 0) { color = ''; emphasis = false; }
+      else if (code === 1) emphasis = true;
+      else if (code === 22) emphasis = false;
+      else if (code === 39) color = '';
+      else if (ANSI_COLORS[code]) color = ANSI_COLORS[code];
+      else known = false;
+    }
+    if (!known) emit(match[0]);
+    cursor = match.index + match[0].length;
+  }
+  emit(input.slice(cursor));
+  return output;
+}
+
+export const DISPLAY_PREVIEW_LIMIT = 1024 * 1024;
+
+export function truncateForDisplay(text: string): { text: string; truncated: boolean } {
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.byteLength <= DISPLAY_PREVIEW_LIMIT) return { text, truncated: false };
+  let start = bytes.byteLength - DISPLAY_PREVIEW_LIMIT;
+  while (start < bytes.byteLength && (bytes[start] & 0xc0) === 0x80) start++;
+  return { text: new TextDecoder().decode(bytes.slice(start)), truncated: true };
+}
+
+export function HighlightedLog({ text }: { text: string }) {
+  const display = truncateForDisplay(text);
+  return <><pre className="log-viewer">{tokenizeLog(display.text).map((token, index) => <span key={index} className={token.className}>{token.text}</span>)}</pre>{display.truncated ? <p>Tail truncated to {DISPLAY_PREVIEW_LIMIT} bytes</p> : null}</>;
+}

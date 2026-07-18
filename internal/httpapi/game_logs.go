@@ -59,7 +59,7 @@ func (s *Server) gameLogsPreview(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 422, map[string]string{"error": err.Error()})
 		return
 	}
-	v, err := s.gameLogs.Preview(r.Context(), chi.URLParam(r, "id"), k, p, 64*1024)
+	v, err := s.gameLogs.Preview(r.Context(), chi.URLParam(r, "id"), k, p, 10*1024*1024)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) || errors.Is(err, context.Canceled) {
 			writeJSON(w, 404, map[string]string{"error": "not found"})
