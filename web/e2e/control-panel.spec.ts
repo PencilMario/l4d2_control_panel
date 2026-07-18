@@ -219,18 +219,19 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await expect(card).toContainText("待应用");
 
   await card.getByRole("button", { name: "更新" }).click();
-  await expect(page.getByRole("dialog", { name: "重新安装实例组件" })).toBeVisible();
-  await expect(page.getByRole("checkbox", { name: "重新安装游戏本体" })).toBeChecked();
-  await expect(page.getByRole("checkbox", { name: "重新安装实例插件包" })).toBeChecked();
+  const reinstallDialog = page.getByRole("dialog", { name: "重新安装实例插件包" });
+  await expect(reinstallDialog).toBeVisible();
+  await expect(reinstallDialog.getByRole("checkbox")).toHaveCount(0);
+  const confirmReinstall = reinstallDialog.getByRole("button", { name: "确认重新安装" });
   const reinstallRequest = page.waitForRequest((request) =>
     request.method() === "POST" && new URL(request.url()).pathname.endsWith("/game-update"),
   );
   const reinstallJob = await captureJob(page, "/game-update", () =>
-    page.getByRole("button", { name: "确认重新安装" }).click(),
+    confirmReinstall.click(),
   );
   expect(await (await reinstallRequest).postDataJSON()).toEqual({
     confirm: true,
-    reinstall_game: true,
+    reinstall_game: false,
     reinstall_package: true,
   });
   await waitForJob(page, reinstallJob.ID);
