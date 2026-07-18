@@ -153,6 +153,13 @@ func TestFixtureLifecycleSeedsPersistentGameLogs(t *testing.T) {
 	if err != nil || !strings.Contains(string(content), "ERROR") || !strings.Contains(string(content), "instance=logs") {
 		t.Fatalf("recent content=%q err=%v", content, err)
 	}
+	if err := (&fixtureLifecycle{db: db, root: root}).Rebuild(context.Background(), "logs"); err != nil {
+		t.Fatal(err)
+	}
+	afterRebuild, err := os.ReadFile(recent)
+	if err != nil || !bytes.Equal(afterRebuild, content) {
+		t.Fatalf("rebuild content=%q want=%q err=%v", afterRebuild, content, err)
+	}
 }
 
 func writeFixturePackage(t *testing.T, path, name, content string) {

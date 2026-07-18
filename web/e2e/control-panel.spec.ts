@@ -552,10 +552,39 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await page.getByRole("button", { name: "Download" }).click();
   expect((await logDownload).suggestedFilename()).toBe("current-error.log");
 
+  await page.getByRole("button", { name: "总览" }).click();
+  card = instanceCard(instanceName);
+  await card.getByRole("button", { name: "更新" }).click();
+  await expect(page.getByRole("dialog")).toContainText("重新安装实例插件包");
+  const persistentLogReinstall = await captureJob(page, "/game-update", () =>
+    page.getByRole("button", { name: "确认重新安装" }).click(),
+  );
+  await waitForJob(page, persistentLogReinstall.ID);
+  await page.getByRole("button", { name: "游戏日志" }).click();
+  await page.getByRole("combobox", { name: "当前实例" }).selectOption(initiallySaved.id);
+  if (mobile) await page.getByRole("button", { name: "Open log tree" }).click();
+  await page.getByRole("button", { name: "Toggle sourcemod/errors" }).click();
+  await page.getByRole("button", { name: "errors/current-error.log" }).click();
+  await expect(page.locator(".log-viewer")).toContainText("plugin:fixture.smx");
+
   await page.getByRole("button", { name: "系统设置" }).click();
   const gameLogRetention = page.getByRole("spinbutton", { name: "游戏日志保留天数" });
   await expect(gameLogRetention).toHaveValue("14");
+  const cleanupResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" &&
+    new URL(response.url()).pathname === "/api/settings/game-logs/cleanup",
+  );
   await page.getByRole("button", { name: "立即清理游戏日志" }).click();
+  const cleanupResult = await (await cleanupResponse).json() as { JobIDs: string[] };
+  await Promise.all(cleanupResult.JobIDs.map((id) => waitForJob(page, id)));
+  const cleanupJobID = await page.evaluate(async ({ ids, instanceID }) => {
+    for (const id of ids) {
+      const response = await fetch(`/api/jobs/${id}`);
+      const job = await response.json() as FixtureJob;
+      if (job.InstanceID === instanceID) return id;
+    }
+    throw new Error(`cleanup job missing for instance ${instanceID}`);
+  }, { ids: cleanupResult.JobIDs, instanceID: initiallySaved.id });
   await expect(page.getByRole("status")).toContainText("清理任务已提交");
   await expect.poll(() => page.evaluate(async (id) => {
     const response = await fetch(`/api/instances/${id}/game-logs/tree`);
@@ -570,7 +599,17 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await expect(page.getByRole("status")).toContainText("游戏日志设置已保存");
   await expect(gameLogRetention).toHaveValue("30");
   await page.getByRole("button", { name: "任务", exact: true }).click();
-  await expect(page.locator(".job-row").filter({ hasText: "cleanup_game_logs" }).first()).toContainText(/成功|运行|排队/);
+  const cleanupJob = page.getByRole("button", {
+    name: `查看 cleanup_game_logs 任务日志，任务 ID ${cleanupJobID}`,
+  });
+  await expect(cleanupJob).toContainText("成功");
+  await cleanupJob.click();
+  const cleanupLog = page.getByRole("region", { name: "cleanup_game_logs 任务日志" });
+  await cleanupLog.getByRole("button", { name: "打开完整日志" }).click();
+  const cleanupOutput = page.locator(".task-log-output");
+  await expect(cleanupOutput).toContainText(/Scanned=\d+/);
+  await expect(cleanupOutput).toContainText(/Deleted=1/);
+  await expect(cleanupOutput).toContainText(/ReleasedBytes=\d+/);
 
   await page.getByRole("button", { name: "私有文件" }).click();
   await expect(page.getByRole("heading", { name: "私有文件", exact: true })).toBeVisible();
