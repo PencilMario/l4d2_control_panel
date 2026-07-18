@@ -1654,7 +1654,7 @@ describe("App", () => {
     ]);
   });
 
-  it("saves independent scheduled Release update modes", async () => {
+  it("saves scheduled Release updates against the instance package source", async () => {
     let submitted: any;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
@@ -1665,10 +1665,11 @@ describe("App", () => {
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "计划任务" }));
     await userEvent.selectOptions(screen.getByLabelText("任务"), "release_hot");
-    expect(screen.getByLabelText("GitHub 源")).toBeInTheDocument();
+    expect(screen.queryByLabelText("GitHub 源")).not.toBeInTheDocument();
+    expect(screen.getByText(/使用目标实例当前配置的插件包/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "保存计划" }));
     expect(submitted.type).toBe("release_hot");
-    expect(JSON.parse(submitted.payload)).toEqual({ source_id: "source-1" });
+    expect(JSON.parse(submitted.payload)).toEqual({});
   });
 
   it("confirms player kicks and bans before submitting them", async () => {
