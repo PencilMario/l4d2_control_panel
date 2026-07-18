@@ -959,7 +959,7 @@ test("real HTTP administration journey survives refresh and streams recovery sta
 
   await page.getByRole("button", { name: "编辑 游戏更新" }).click();
   await expect(page.getByLabel("任务", { exact: true })).toBeDisabled();
-  await expect(page.getByLabel("实例", { exact: true })).toBeDisabled();
+  await expect(page.getByLabel("实例", { exact: true })).toHaveCount(0);
   await page.getByLabel("Cron").fill(editedCron);
   await page.getByLabel("在线玩家策略").selectOption("wait");
   await page.getByLabel("启用计划").uncheck();
