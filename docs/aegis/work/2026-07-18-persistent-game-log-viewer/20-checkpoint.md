@@ -24,8 +24,8 @@
 - [x] Task 3：保留设置与清理行为
 - [x] Task 4：清理任务与每日排队
 - [x] Task 5：认证 HTTP API
-- [ ] Task 6：安全高亮 React 查看器（active）
-- [ ] Task 7：导航、设置、E2E 与文档
+- [x] Task 6：安全高亮 React 查看器
+- [ ] Task 7：导航、设置、E2E 与文档（active）
 
 当前证据：
 
@@ -43,10 +43,12 @@
 - 目标任务/调度测试、`go vet` 与 diff 检查通过；规格审查与代码质量审查均通过。
 - Task 5 commits：`4e9d93d`、`be93c2f`、`b9e9965`。
 - `go test -count=1 ./internal/httpapi ./cmd/panel` 与相关 vet 通过；真实 HTTP 合约测试、规格审查、质量审查均通过。
+- Task 6 final HEAD：`2e27c40`（含真实 API 契约、递归树、高亮、性能和可访问性修复）。
+- 前端 `143/143` 测试与生产构建通过；Task 6 规格审查与代码质量审查均通过。
 
 阻塞项：无。
 
-下一步：Task 6 实现代理增加 ANSI/语义高亮 tokenizer 和实例日志 React 查看器。
+下一步：Task 7 实现代理接入 App 导航与设置，补 E2E fixture/主旅程、README 和最终证据。
 
 ## ResumeStateHint
 
