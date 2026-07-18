@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/go-chi/chi/v5"
-	"github.com/not0721here/l4d2-control-panel/internal/gamelogs"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 	"io"
 	"net/http"
+	"net/url"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -90,7 +91,12 @@ func (s *Server) gameLogsDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 	w.Header().Set("Content-Type", "text/plain")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+filepath.Base(p)+`"`)
+	name := filepath.Base(p)
+	fallback := regexp.MustCompile(`[^A-Za-z0-9._-]`).ReplaceAllString(name, "_")
+	if fallback == "" {
+		fallback = "download.log"
+	}
+	w.Header().Set("Content-Disposition", `attachment; filename="`+fallback+`"; filename*=UTF-8''`+url.PathEscape(name))
 	http.ServeContent(w, r, filepath.Base(p), info.ModTime(), f)
 }
 func (s *Server) getGameLogSettings(w http.ResponseWriter, r *http.Request) {
@@ -114,6 +120,10 @@ func decodeStrict(r *http.Request, v any) error {
 	return nil
 }
 func (s *Server) putGameLogSettings(w http.ResponseWriter, r *http.Request) {
+	if s.gameLogScheduler == nil {
+		writeJSON(w, 503, nil)
+		return
+	}
 	var in struct {
 		RetentionDays int `json:"retention_days"`
 	}
@@ -125,10 +135,7 @@ func (s *Server) putGameLogSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 422, nil)
 		return
 	}
-	result := gamelogs.EnqueueResult{}
-	if s.gameLogScheduler != nil {
-		result = s.gameLogScheduler.EnqueueAll(context.Background())
-	}
+	result := s.gameLogScheduler.EnqueueAll(context.Background())
 	writeJSON(w, 200, map[string]any{"retention_days": in.RetentionDays, "enqueue": result})
 }
 func (s *Server) cleanupGameLogs(w http.ResponseWriter, r *http.Request) {

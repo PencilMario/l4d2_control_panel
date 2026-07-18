@@ -211,7 +211,7 @@ func (m *Manager) Tree(ctx context.Context, instanceID string) ([]Entry, error) 
 		root := m.logRoot(instanceID, kind)
 		exists, err := validateDirectoryPath(m.root, root, true)
 		if err != nil {
-			return nil, fmt.Errorf("inspect %s log root: %w", kind, err)
+			return nil, fmt.Errorf("inspect %s log root", kind)
 		}
 		if !exists {
 			continue
@@ -231,13 +231,13 @@ func (m *Manager) Tree(ctx context.Context, instanceID string) ([]Entry, error) 
 				return err
 			}
 			if info.Mode()&os.ModeSymlink != 0 {
-				return fmt.Errorf("log tree contains symlink: %s", path)
+				return fmt.Errorf("log tree contains symlink")
 			}
 			if info.IsDir() {
 				return nil
 			}
 			if !info.Mode().IsRegular() {
-				return fmt.Errorf("log tree contains special file: %s", path)
+				return fmt.Errorf("log tree contains special file")
 			}
 			relative, err := filepath.Rel(root, path)
 			if err != nil {
@@ -247,7 +247,7 @@ func (m *Manager) Tree(ctx context.Context, instanceID string) ([]Entry, error) 
 			return nil
 		})
 		if err != nil {
-			return nil, fmt.Errorf("walk %s logs: %w", kind, err)
+			return nil, fmt.Errorf("walk %s logs", kind)
 		}
 	}
 	sort.Slice(entries, func(i, j int) bool {
