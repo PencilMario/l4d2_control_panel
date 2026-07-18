@@ -175,11 +175,32 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
   const loadRef = useRef<{ generation: number; controller?: AbortController }>({ generation: 0 });
   instanceIDRef.current = instanceID;
 
+  const changeInstance = useCallback((nextInstanceID: string) => {
+    loadRef.current.controller?.abort();
+    setEntries([]);
+    setDiff(EMPTY_DIFF);
+    setSnapshots([]);
+    setExpanded(new Set());
+    setSelectedPath("");
+    setEditor("");
+    setEditing(false);
+    setLoading(false);
+    setError("");
+    setStatus("");
+    setUploadStatus("");
+    setActiveUpload(null);
+    setHistory(null);
+    setDrawerOpen(false);
+    setSnapshotsOpen(false);
+    setDiffOpen(false);
+    setInstanceID(nextInstanceID);
+  }, []);
+
   useEffect(() => {
     if (!instances.some((item) => item.id === instanceID)) {
-      setInstanceID(instances[0]?.id ?? "");
+      changeInstance(instances[0]?.id ?? "");
     }
-  }, [instanceID, instances]);
+  }, [changeInstance, instanceID, instances]);
 
   const reload = useCallback(async () => {
     const owner = instanceID;
@@ -554,7 +575,7 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
         </div>
         <label>
           目标实例
-          <select value={instanceID} onChange={(event) => setInstanceID(event.target.value)}>
+          <select value={instanceID} onChange={(event) => changeInstance(event.target.value)}>
             {instances.map((item) => (
               <option key={item.id} value={item.id}>{item.name}</option>
             ))}
@@ -631,18 +652,12 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
         </div>
       </div>
 
-      <div
-        id="private-tree-drawer"
-        ref={drawerRef}
-        className={`private-tree-drawer ${drawerOpen ? "open" : ""}`}
-        role="dialog"
-        aria-modal="true"
-        aria-label="私有文件目录"
-        aria-hidden={!drawerOpen}
-      >
-        <div className="private-drawer-head"><b>私有文件目录</b><button aria-label="关闭文件树" onClick={() => setDrawerOpen(false)}><X /></button></div>
-        {drawerOpen ? tree : null}
-      </div>
+      {drawerOpen ? (
+        <div id="private-tree-drawer" ref={drawerRef} className="private-tree-drawer open" role="dialog" aria-modal="true" aria-label="私有文件目录">
+          <div className="private-drawer-head"><b>私有文件目录</b><button aria-label="关闭文件树" onClick={() => setDrawerOpen(false)}><X /></button></div>
+          {tree}
+        </div>
+      ) : null}
 
       {snapshotsOpen ? (
         <div className="private-snapshot-backdrop" role="presentation">

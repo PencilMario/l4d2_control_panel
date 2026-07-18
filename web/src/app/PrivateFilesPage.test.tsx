@@ -321,10 +321,7 @@ describe("PrivateFilesPage", () => {
       "aria-controls",
       "private-tree-drawer",
     );
-    expect(screen.getByRole("dialog", { hidden: true })).toHaveAttribute(
-      "aria-modal",
-      "true",
-    );
+    expect(screen.queryByRole("dialog", { hidden: true })).not.toBeInTheDocument();
   });
 
   it("resumes a failed upload only when the file and target path match exactly", async () => {
@@ -480,8 +477,45 @@ describe("PrivateFilesPage", () => {
     await userEvent.click(trigger);
     const close = screen.getByRole("button", { name: "关闭文件树" });
     expect(close).toHaveFocus();
+    const drawer = screen.getByRole("dialog", { name: "私有文件目录" });
+    const last = drawer.querySelectorAll<HTMLElement>("button:not([disabled])").item(
+      drawer.querySelectorAll("button:not([disabled])").length - 1,
+    );
+    close.focus();
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    expect(last).toHaveFocus();
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(close).toHaveFocus();
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() => expect(trigger).toHaveFocus());
+    expect(screen.queryByRole("dialog", { name: "私有文件目录", hidden: true })).not.toBeInTheDocument();
+  });
+
+  it("clears the old instance immediately and reloads an identical path for the new instance", async () => {
+    let resolveB!: (response: Response) => void;
+    const abortedA: AbortSignal[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.includes("/instances/a/private/tree")) {
+        if (init?.signal) abortedA.push(init.signal);
+        return json([{ path: "same.cfg", kind: "file", size: 1, hash: "content-a", updated_at: "now" }]);
+      }
+      if (path.includes("/instances/b/private/tree")) return new Promise<Response>((resolve) => { resolveB = resolve; });
+      if (path.endsWith("/private/diff")) return json({ changes: [], summary: { added: 0, modified: 0, deleted: 0 } });
+      return json([]);
+    }));
+    render(<PrivateFilesPage instances={[{ ...instance, id: "a", name: "A" }, { ...instance, id: "b", name: "B" }]} queue={vi.fn()} />);
+    await userEvent.click(await screen.findByRole("treeitem", { name: "same.cfg" }));
+    expect(screen.getByText(/content-a/)).toBeVisible();
+
+    fireEvent.change(screen.getByLabelText("目标实例"), { target: { value: "b" } });
+    expect(screen.queryByText(/content-a/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("treeitem", { name: "same.cfg" })).not.toBeInTheDocument();
+    expect(abortedA.some((signal) => signal.aborted)).toBe(true);
+
+    resolveB(json([{ path: "same.cfg", kind: "file", size: 2, hash: "content-b", updated_at: "now" }]));
+    await userEvent.click(await screen.findByRole("treeitem", { name: "same.cfg" }));
+    expect(screen.getByText(/content-b/)).toBeVisible();
   });
 
   it("ignores a deferred instance response after switching instances", async () => {

@@ -1,6 +1,7 @@
 import React from 'react';
 
-export type LogToken = { text: string; className?: string };
+export type LogToken = { text: string; className?: string; simplified?: boolean };
+export const MAX_RENDER_TOKENS = 5000;
 
 const ANSI_COLORS: Record<number, string> = {
   30: 'log-ansi-black', 31: 'log-ansi-red', 32: 'log-ansi-green', 33: 'log-ansi-yellow',
@@ -21,6 +22,23 @@ function validAddress(value: string) {
 
 export function tokenizeLog(input: string): LogToken[] {
   const output: LogToken[] = [];
+  const push = (text: string, className?: string) => {
+    if (!text) return;
+    const previous = output.at(-1);
+    if (previous?.simplified) {
+      previous.text += text;
+      return;
+    }
+    if (previous && previous.className === className) {
+      previous.text += text;
+      return;
+    }
+    if (output.length >= MAX_RENDER_TOKENS - 1) {
+      output.push({ text, simplified: true });
+      return;
+    }
+    output.push({ text, className });
+  };
   let color = '';
   let emphasis = false;
   const activeClass = () => [color, emphasis ? 'log-token-emphasis' : ''].filter(Boolean).join(' ') || undefined;
@@ -29,7 +47,7 @@ export function tokenizeLog(input: string): LogToken[] {
     let cursor = 0;
     let match: RegExpExecArray | null;
     while ((match = regex.exec(text))) {
-      if (match.index > cursor) output.push({ text: text.slice(cursor, match.index), className: activeClass() });
+      if (match.index > cursor) push(text.slice(cursor, match.index), activeClass());
       let className = activeClass();
       if (match[1] || match[2]) className = 'log-token-stack';
       else if (match[3]) className = 'log-token-player';
@@ -49,10 +67,14 @@ export function tokenizeLog(input: string): LogToken[] {
       else if (match[8]) className = 'log-token-user';
       else if (match[9] && validAddress(match[9])) className = 'log-token-address';
       else if (match[10]) className = 'log-token-file';
-      output.push({ text: match[0], className });
+      push(match[0], className);
       cursor = match.index + match[0].length;
+      if (output.at(-1)?.simplified) {
+        push(text.slice(cursor));
+        return;
+      }
     }
-    if (cursor < text.length) output.push({ text: text.slice(cursor), className: activeClass() });
+    if (cursor < text.length) push(text.slice(cursor), activeClass());
   };
   const ansi = /\x1b\[([0-9;]*)m/g;
   let cursor = 0;
@@ -77,16 +99,39 @@ export function tokenizeLog(input: string): LogToken[] {
 }
 
 export const DISPLAY_PREVIEW_LIMIT = 1024 * 1024;
+const DISPLAY_SCAN_CHUNK = 64 * 1024;
 
 export function truncateForDisplay(text: string): { text: string; truncated: boolean } {
-  const bytes = new TextEncoder().encode(text);
-  if (bytes.byteLength <= DISPLAY_PREVIEW_LIMIT) return { text, truncated: false };
-  let start = bytes.byteLength - DISPLAY_PREVIEW_LIMIT;
-  while (start < bytes.byteLength && (bytes[start] & 0xc0) === 0x80) start++;
-  return { text: new TextDecoder().decode(bytes.slice(start)), truncated: true };
+  const encoder = new TextEncoder();
+  if (text.length <= DISPLAY_PREVIEW_LIMIT / 3) return { text, truncated: false };
+  const chunks: string[] = [];
+  let bytes = 0;
+  let cursor = text.length;
+  while (cursor > 0) {
+    const start = Math.max(0, cursor - DISPLAY_SCAN_CHUNK);
+    const chunk = text.slice(start, cursor);
+    const encoded = encoder.encode(chunk);
+    if (bytes + encoded.byteLength > DISPLAY_PREVIEW_LIMIT) {
+      let low = 0;
+      let high = chunk.length;
+      const remaining = DISPLAY_PREVIEW_LIMIT - bytes;
+      while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        if (encoder.encode(chunk.slice(middle)).byteLength <= remaining) high = middle;
+        else low = middle + 1;
+      }
+      chunks.unshift(chunk.slice(low));
+      return { text: chunks.join(''), truncated: true };
+    }
+    chunks.unshift(chunk);
+    bytes += encoded.byteLength;
+    cursor = start;
+  }
+  return { text, truncated: false };
 }
 
 export function HighlightedLog({ text }: { text: string }) {
   const display = truncateForDisplay(text);
-  return <><pre className="log-viewer">{tokenizeLog(display.text).map((token, index) => <span key={index} className={token.className}>{token.text}</span>)}</pre>{display.truncated ? <p>Tail truncated to {DISPLAY_PREVIEW_LIMIT} bytes</p> : null}</>;
+  const tokens = tokenizeLog(display.text);
+  return <><pre className="log-viewer">{tokens.map((token, index) => <span key={index} className={token.className}>{token.text}</span>)}</pre>{tokens.some((token) => token.simplified) ? <p>高亮已简化</p> : null}{display.truncated ? <p>Tail truncated to {DISPLAY_PREVIEW_LIMIT} bytes</p> : null}</>;
 }

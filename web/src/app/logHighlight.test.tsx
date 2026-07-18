@@ -1,6 +1,6 @@
 import { render } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { DISPLAY_PREVIEW_LIMIT, HighlightedLog, tokenizeLog, truncateForDisplay } from './logHighlight';
+import { DISPLAY_PREVIEW_LIMIT, HighlightedLog, MAX_RENDER_TOKENS, tokenizeLog, truncateForDisplay } from './logHighlight';
 
 describe('log highlighting', () => {
   it('supports combined SGR emphasis, colors, and foreground reset', () => {
@@ -75,5 +75,17 @@ describe('log highlighting', () => {
     render(<HighlightedLog text="<img src=x> unknown" />);
     expect(document.querySelector('pre')?.textContent).toContain('<img src=x>');
     expect(document.querySelector('img')).toBeNull();
+  });
+
+  it('bounds repeated semantic tokens and keeps the log tail visible', () => {
+    const text = `${'INFO message\n'.repeat(90_000)}TAIL-MARKER`;
+    const tokens = tokenizeLog(text);
+
+    expect(tokens.length).toBeLessThanOrEqual(MAX_RENDER_TOKENS);
+    expect(tokens.map((token) => token.text).join('')).toBe(text);
+    expect(tokens.at(-1)?.text).toContain('TAIL-MARKER');
+
+    const { getByText } = render(<HighlightedLog text={text} />);
+    expect(getByText('高亮已简化')).toBeVisible();
   });
 });
