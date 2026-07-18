@@ -4,10 +4,139 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestTreeListsNestedLogsWithStableKindPathOrder(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "instances", "instance-1", "logs")
+	writeFile(t, filepath.Join(base, "sourcemod", "z", "error.log"), "err")
+	writeFile(t, filepath.Join(base, "game", "z.log"), "game-z")
+	writeFile(t, filepath.Join(base, "game", "a.log"), "a")
+	writeFile(t, filepath.Join(base, "sourcemod", "a.log"), "sm-a")
+	wantTime := time.Date(2026, 7, 18, 2, 3, 4, 0, time.FixedZone("test", 8*60*60))
+	if err := os.Chtimes(filepath.Join(base, "game", "a.log"), wantTime, wantTime); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := NewManager(root, Options{}).Tree(context.Background(), "instance-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, len(entries))
+	for i, entry := range entries {
+		got[i] = entry.Kind + ":" + entry.Path
+	}
+	if want := []string{"game:a.log", "game:z.log", "sourcemod:a.log", "sourcemod:z/error.log"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("entries=%v, want %v", got, want)
+	}
+	if entries[0].Size != 1 || !entries[0].ModifiedAt.Equal(wantTime) || entries[0].ModifiedAt.Location() != time.UTC {
+		t.Fatalf("metadata=%+v", entries[0])
+	}
+}
+
+func TestPreviewReturnsTailMetadataAndReplacementText(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root, Options{})
+	base := filepath.Join(root, "instances", "i", "logs")
+	path := filepath.Join(base, "sourcemod", "nested", "x.log")
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte{'a', 'b', 0xff, 'c', 'd'}, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	mtime := time.Date(2026, 7, 18, 1, 2, 3, 0, time.UTC)
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+
+	preview, err := manager.Preview(context.Background(), "i", "sourcemod", "nested/x.log", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Text != "b\ufffdcd" || !preview.Truncated || preview.Size != 5 || !preview.ModifiedAt.Equal(mtime) {
+		t.Fatalf("preview=%+v", preview)
+	}
+	full, err := manager.Preview(context.Background(), "i", "sourcemod", "nested/x.log", 10)
+	if err != nil || full.Text != "ab\ufffdcd" || full.Truncated || full.Size != 5 {
+		t.Fatalf("full=%+v err=%v", full, err)
+	}
+	original, _ := os.ReadFile(path)
+	if !reflect.DeepEqual(original, []byte{'a', 'b', 0xff, 'c', 'd'}) {
+		t.Fatalf("original changed: %v", original)
+	}
+}
+
+func TestReadAPIsRejectUnsafeAndMissingPaths(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root, Options{})
+	base := filepath.Join(root, "instances", "i", "logs", "game")
+	writeFile(t, filepath.Join(base, "ok.log"), "ok")
+	for _, tc := range []struct {
+		name, kind, path string
+		limit            int64
+	}{
+		{"kind", "other", "ok.log", 1}, {"traversal", "game", "../ok.log", 1}, {"absolute", "game", filepath.Join(root, "outside.log"), 1}, {"nul", "game", "bad\x00.log", 1}, {"zero limit", "game", "ok.log", 0}, {"missing", "game", "missing.log", 1}, {"directory", "game", ".", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := manager.Preview(context.Background(), "i", tc.kind, tc.path, tc.limit); err == nil {
+				t.Fatal("expected rejection")
+			}
+		})
+	}
+}
+
+func TestReadAPIsRejectIntermediateAndLeafSymlinks(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root, Options{})
+	base := filepath.Join(root, "instances", "i", "logs", "game")
+	outside := filepath.Join(root, "outside")
+	writeFile(t, filepath.Join(outside, "secret.log"), "secret")
+	if err := os.MkdirAll(base, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(base, "linked")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.log"), filepath.Join(base, "leaf.log")); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"linked/secret.log", "leaf.log"} {
+		if _, err := manager.Preview(context.Background(), "i", "game", path, 10); err == nil {
+			t.Fatalf("Preview(%q) accepted symlink", path)
+		}
+	}
+	if _, err := manager.Tree(context.Background(), "i"); err == nil {
+		t.Fatal("Tree accepted symlink")
+	}
+}
+
+func TestResolveDownloadReturnsValidatedOpenRegularFile(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root, Options{})
+	path := filepath.Join(root, "instances", "i", "logs", "game", "server.log")
+	writeFile(t, path, "download")
+	file, info, err := manager.ResolveDownload("i", "game", "server.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if !info.Mode().IsRegular() || info.Size() != 8 {
+		t.Fatalf("info=%v", info)
+	}
+	_ = os.Remove(path) // succeeds on Unix; Windows keeps the validated handle usable while open
+	content := make([]byte, 8)
+	if _, err := file.Read(content); err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "download" {
+		t.Fatalf("content=%q", content)
+	}
+}
 
 func TestPrepareCreatesPersistentLogRoots(t *testing.T) {
 	root := t.TempDir()

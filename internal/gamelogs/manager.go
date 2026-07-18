@@ -8,10 +8,27 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/not0721here/l4d2-control-panel/internal/safepath"
 )
+
+type Entry struct {
+	Kind       string    `json:"kind"`
+	Path       string    `json:"path"`
+	Size       int64     `json:"size"`
+	ModifiedAt time.Time `json:"modified_at"`
+}
+
+type Preview struct {
+	Text       string    `json:"text"`
+	Truncated  bool      `json:"truncated"`
+	Size       int64     `json:"size"`
+	ModifiedAt time.Time `json:"modified_at"`
+}
 
 type Options struct {
 	Now func() time.Time
@@ -32,9 +49,162 @@ func NewManager(root string, options Options) *Manager {
 	return &Manager{root: root, now: now, instances: make(map[string]*sync.Mutex)}
 }
 
-func (m *Manager) Prepare(ctx context.Context, instanceID string) error {
-	if instanceID == "" || filepath.Base(instanceID) != instanceID || instanceID == "." || instanceID == ".." {
+// Tree returns regular log files ordered first by kind and then by slash path.
+func (m *Manager) Tree(ctx context.Context, instanceID string) ([]Entry, error) {
+	if err := validateInstanceID(instanceID); err != nil {
+		return nil, err
+	}
+	entries := make([]Entry, 0)
+	for _, kind := range []string{"game", "sourcemod"} {
+		root := m.logRoot(instanceID, kind)
+		exists, err := validateDirectoryPath(m.root, root, true)
+		if err != nil {
+			return nil, fmt.Errorf("inspect %s log root: %w", kind, err)
+		}
+		if !exists {
+			continue
+		}
+		err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if path == root {
+				return nil
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("log tree contains symlink: %s", path)
+			}
+			if info.IsDir() {
+				return nil
+			}
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("log tree contains special file: %s", path)
+			}
+			relative, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			entries = append(entries, Entry{Kind: kind, Path: filepath.ToSlash(relative), Size: info.Size(), ModifiedAt: info.ModTime().UTC()})
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("walk %s logs: %w", kind, err)
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Kind != entries[j].Kind {
+			return entries[i].Kind < entries[j].Kind
+		}
+		return entries[i].Path < entries[j].Path
+	})
+	return entries, nil
+}
+
+func (m *Manager) Preview(ctx context.Context, instanceID, kind, relative string, limit int64) (Preview, error) {
+	if limit <= 0 {
+		return Preview{}, errors.New("preview limit must be positive")
+	}
+	if err := ctx.Err(); err != nil {
+		return Preview{}, err
+	}
+	file, info, err := m.ResolveDownload(instanceID, kind, relative)
+	if err != nil {
+		return Preview{}, err
+	}
+	defer file.Close()
+	size := info.Size()
+	start := int64(0)
+	if size > limit {
+		start = size - limit
+	}
+	buffer := make([]byte, size-start)
+	n, err := file.ReadAt(buffer, start)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return Preview{}, fmt.Errorf("read log preview: %w", err)
+	}
+	buffer = buffer[:n]
+	return Preview{Text: strings.ToValidUTF8(string(buffer), "\ufffd"), Truncated: start > 0, Size: size, ModifiedAt: info.ModTime().UTC()}, nil
+}
+
+// ResolveDownload validates the complete path and returns an already-open file,
+// so callers never need to reopen a checked pathname.
+func (m *Manager) ResolveDownload(instanceID, kind, relative string) (*os.File, os.FileInfo, error) {
+	if err := validateInstanceID(instanceID); err != nil {
+		return nil, nil, err
+	}
+	root, err := m.kindRoot(instanceID, kind)
+	if err != nil {
+		return nil, nil, err
+	}
+	if strings.IndexByte(relative, 0) >= 0 {
+		return nil, nil, errors.New("log path contains NUL")
+	}
+	target, err := safepath.Join(root, relative)
+	if err != nil {
+		return nil, nil, err
+	}
+	parentExists, err := validateDirectoryPath(root, filepath.Dir(target), true)
+	if err != nil {
+		return nil, nil, fmt.Errorf("validate log parent: %w", err)
+	}
+	if !parentExists {
+		return nil, nil, os.ErrNotExist
+	}
+	leaf, err := os.Lstat(target)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !leaf.Mode().IsRegular() {
+		return nil, nil, errors.New("log path is not a regular file")
+	}
+	file, err := os.Open(target)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, nil, err
+	}
+	current, err := os.Lstat(target)
+	if err != nil || !current.Mode().IsRegular() || !os.SameFile(info, current) {
+		file.Close()
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, nil, errors.New("log file changed during open")
+	}
+	return file, info, nil
+}
+
+func validateInstanceID(instanceID string) error {
+	if instanceID == "" || filepath.Base(instanceID) != instanceID || instanceID == "." || instanceID == ".." || strings.IndexByte(instanceID, 0) >= 0 {
 		return errors.New("invalid instance id")
+	}
+	return nil
+}
+
+func (m *Manager) logRoot(instanceID, kind string) string {
+	return filepath.Join(m.root, "instances", instanceID, "logs", kind)
+}
+
+func (m *Manager) kindRoot(instanceID, kind string) (string, error) {
+	if kind != "game" && kind != "sourcemod" {
+		return "", errors.New("invalid log kind")
+	}
+	return m.logRoot(instanceID, kind), nil
+}
+
+func (m *Manager) Prepare(ctx context.Context, instanceID string) error {
+	if err := validateInstanceID(instanceID); err != nil {
+		return err
 	}
 	instanceLock := m.instanceLock(instanceID)
 	instanceLock.Lock()
