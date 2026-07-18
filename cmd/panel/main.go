@@ -10,6 +10,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/disk"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
+	"github.com/not0721here/l4d2-control-panel/internal/gamelogs"
 	"github.com/not0721here/l4d2-control-panel/internal/health"
 	"github.com/not0721here/l4d2-control-panel/internal/httpapi"
 	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
@@ -163,13 +164,18 @@ func main() {
 	healthChecker := health.Checker{Host: cfg.GameHost, Query: a2s.Client{}, Probe: engine}
 	instanceProvisioner := provisioning.Service{Root: cfg.DataRoot, Packages: packageManager, Deployer: updatePipeline, Instances: db, SharedState: db, Overlay: overlayClient}
 	sharedGate := maintenance.NewGate()
-	life := lifecycle.New(db, engine, portChecker, cfg.DataRoot, lifecycle.WithHealth(healthChecker), lifecycle.WithSpace(disk.Checker{}, startMinimumFreeBytes), lifecycle.WithProvisioner(instanceProvisioner), lifecycle.WithMaintenanceGate(sharedGate))
+	gameLogManager := gamelogs.NewManager(cfg.DataRoot, gamelogs.Options{})
+	life := lifecycle.New(db, engine, portChecker, cfg.DataRoot, lifecycle.WithHealth(healthChecker), lifecycle.WithSpace(disk.Checker{}, startMinimumFreeBytes), lifecycle.WithProvisioner(instanceProvisioner), lifecycle.WithMaintenanceGate(sharedGate), lifecycle.WithLogPreparer(gameLogManager))
 	if unknown, reconcileErr := life.Reconcile(context.Background()); reconcileErr != nil {
 		log.Printf("container reconciliation deferred: %v", reconcileErr)
 	} else if len(unknown) > 0 {
 		log.Printf("found %d unclaimed managed containers", len(unknown))
 	}
 	jobManager := jobs.NewPersistentManager(db, jobs.WithLogSink(jobLogManager))
+	gameLogScheduler := gamelogs.NewScheduler(db, jobManager, gameLogManager)
+	if err := gameLogScheduler.Start(); err != nil {
+		log.Fatal(err)
+	}
 	playerService := players.NewService(db, a2s.Client{}, engine, cfg.GameHost)
 	vpkRestartCoordinator := vpkrestart.New(db, playerService, life, jobManager)
 	vpkRestartCoordinator.Start(context.Background())
@@ -202,6 +208,7 @@ func main() {
 	stopBackground := func() {
 		vpkRestartCoordinator.Stop()
 		scheduleService.Stop()
+		gameLogScheduler.Stop()
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/api/", api.Handler())

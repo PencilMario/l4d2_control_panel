@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strconv"
@@ -135,6 +136,12 @@ func (s *Store) JobEvents(jobID string) ([]domain.JobEvent, error) {
 		events = append(events, event)
 	}
 	return events, rows.Err()
+}
+
+func (s *Store) HasActiveJob(ctx context.Context, instanceID, kind string) (bool, error) {
+	var active bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM jobs WHERE instance_id=? AND type=? AND status IN ('pending','running'))`, instanceID, kind).Scan(&active)
+	return active, err
 }
 
 func (s *Store) SaveJobWithEvent(record domain.JobRecord, event domain.JobEvent) error {

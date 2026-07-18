@@ -62,6 +62,35 @@ func TestOpenEnablesWALAndMigrates(t *testing.T) {
 	}
 }
 
+func TestHasActiveJobDistinguishesPendingAndRunningFromCompleted(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now().UTC()
+	for _, tc := range []struct{ id, status string }{{"pending", "pending"}, {"running", "running"}, {"done", "succeeded"}} {
+		if err := s.SaveJobWithEvent(domain.JobRecord{ID: tc.id, InstanceID: "i", Type: "cleanup_game_logs", Status: tc.status, CreatedAt: now, UpdatedAt: now}, domain.JobEvent{JobID: tc.id, Kind: "test", CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	active, err := s.HasActiveJob(context.Background(), "i", "cleanup_game_logs")
+	if err != nil || !active {
+		t.Fatalf("active=%v err=%v", active, err)
+	}
+	active, err = s.HasActiveJob(context.Background(), "other", "cleanup_game_logs")
+	if err != nil || active {
+		t.Fatalf("other active=%v err=%v", active, err)
+	}
+	if _, err := s.DB().Exec(`UPDATE jobs SET status='succeeded' WHERE instance_id='i'`); err != nil {
+		t.Fatal(err)
+	}
+	active, err = s.HasActiveJob(context.Background(), "i", "cleanup_game_logs")
+	if err != nil || active {
+		t.Fatalf("completed active=%v err=%v", active, err)
+	}
+}
+
 func TestSharedGameStateRoundTrip(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {
