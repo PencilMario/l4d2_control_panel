@@ -1,3 +1,4 @@
 .worktrees/
 .deploy-shared/
 .playwright-mcp/
+.env

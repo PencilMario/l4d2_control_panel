@@ -13,6 +13,7 @@
 - [Schedule management and task descriptions](specs/2026-07-16-schedule-management-design.md)
 - [Shared game body and instance overlays](specs/2026-07-17-shared-game-overlay-design.md)
 - [Frontend motion and asynchronous action guards](specs/2026-07-16-frontend-motion-and-action-guards-design.md)
+- [One-click deployment and update](specs/2026-07-18-one-click-deploy-update-design.md)
 
 ## Implementation Plans
 
@@ -26,6 +27,7 @@
 
 ## Active Work
 
+- [One-click deployment and update](work/2026-07-18-one-click-deploy-update/30-plan.md)
 - [Schedule management and task descriptions](work/2026-07-16-schedule-management/00-intent.md)
 - [Restart and Unix Socket console repair](work/2026-07-16-restart-console-unix-socket/00-intent.md)
 - [Instance startup and package implementation](work/2026-07-15-instance-startup-packages/00-intent.md)

@@ -6,12 +6,56 @@ The Panel never mounts `/var/run/docker.sock`. A repository-owned socket proxy e
 
 ## Requirements
 
-- Linux x86-64 host with Docker Engine and Docker Compose.
+- Linux x86-64 host. The deployment script can install Docker Engine and the
+  Compose plugin automatically on Debian and Ubuntu; other distributions must
+  provide them before deployment.
 - At least 1 GiB free before starting an uninstalled instance; the shared game release is managed separately.
 - A TLS reverse proxy on the same host.
 - Go 1.24+ and Node 22+ only for local development.
 
 ## Deploy
+
+On a clean Debian or Ubuntu host, run:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/PencilMario/l4d2_control_panel/main/deploy.sh | sudo bash
+```
+
+The script installs missing Docker packages, clones the repository to
+`/opt/l4d2-control-panel`, creates `/opt/l4d2-control-panel/.env` with mode
+`0600`, generates a random administrator password, builds the images and waits
+for `/api/health`. Save the password printed at the end of the first successful
+deployment. Persistent game and Panel data remain under `/srv/l4d2-panel`.
+
+Run the same one-line command again to update, or use the installed copy:
+
+```sh
+sudo bash /opt/l4d2-control-panel/deploy.sh
+```
+
+Updates preserve `.env`, named volumes and `/srv/l4d2-panel`. The script refuses
+to overwrite local repository changes, only fast-forwards `main`, and attempts
+to restore the previous commit and service version if the new deployment fails.
+Alternative repositories, branches and installation directories are supported:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/PencilMario/l4d2_control_panel/main/deploy.sh \
+  | sudo bash -s -- --repo https://github.com/PencilMario/l4d2_control_panel.git \
+      --branch main --install-dir /opt/l4d2-control-panel
+```
+
+Useful operations after deployment:
+
+```sh
+cd /opt/l4d2-control-panel
+sudo docker compose --env-file .env ps
+sudo docker compose --env-file .env logs --tail=100 -f panel socket-proxy overlay-helper
+curl --fail http://127.0.0.1:18081/api/health
+```
+
+The installer does not configure TLS, a firewall, DNS or a reverse proxy.
+
+### Manual Compose deployment
 
 ```sh
 cp .env.example .env
