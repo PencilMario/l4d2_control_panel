@@ -1323,15 +1323,22 @@ func (m *apiSharedGameMigration) Migrate(context.Context) error {
 func TestGlobalGameStatusAndUpdate(t *testing.T) {
 	s, db := testServer(t)
 	defer db.Close()
+	gameCurrent := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(gameCurrent, "left4dead2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gameCurrent, "left4dead2", "steam.inf"), []byte("PatchVersion=2.2.4.3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.SaveSharedGameState(context.Background(), domain.SharedGameState{ActiveReleaseID: "release-1", MigrationState: "ready"}); err != nil {
 		t.Fatal(err)
 	}
 	updater := &apiSharedGameUpdater{}
 	manager := jobs.NewPersistentManager(db)
-	s = New(db, s.auth, WithOperations(&fakeLifecycle{}, manager), WithSharedGameUpdates(updater))
+	s = New(db, s.auth, WithOperations(&fakeLifecycle{}, manager), WithSharedGameUpdates(updater), WithSharedGamePath(gameCurrent))
 	cookie := loginCookie(t, s)
 	status := authenticatedJSON(t, s, cookie, http.MethodGet, "/api/game", "")
-	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), "release-1") {
+	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"version":"2.2.4.3"`) || !strings.Contains(status.Body.String(), `"path":"/data/game/current"`) {
 		t.Fatalf("status=%d body=%s", status.Code, status.Body.String())
 	}
 	response := authenticatedJSON(t, s, cookie, http.MethodPost, "/api/game/update", `{"confirm":true,"online_policy":"wait"}`)

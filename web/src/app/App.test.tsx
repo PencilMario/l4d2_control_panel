@@ -9,7 +9,7 @@ import {
 import { StrictMode } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { App, mergePerformanceHistory, prunePerformanceHistory, type Instance } from "./App";
+import { App, mergePerformanceHistory, prunePerformanceHistory, sharedGameVersionLabel, type Instance } from "./App";
 const instance: Instance = {
   id: "1",
   name: "深夜战役",
@@ -82,6 +82,27 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe("App", () => {
+  it("uses the game version without exposing the internal release ID", () => {
+    expect(sharedGameVersionLabel({ version: "2.2.4.3", active_release_id: "release-uuid" })).toBe("2.2.4.3");
+    expect(sharedGameVersionLabel({ active_release_id: "release-uuid" })).toBe("版本未知");
+    expect(sharedGameVersionLabel({})).toBe("未初始化");
+  });
+
+  it("shows shared-game status in the content repository", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/session") return new Response('{"authenticated":true}', { status: 200, headers: { "Content-Type": "application/json" } });
+      if (path === "/api/game") return new Response('{"active_release_id":"release-uuid","version":"2.2.4.3","path":"/data/game/current","migration_state":"ready"}', { status: 200, headers: { "Content-Type": "application/json" } });
+      return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "内容仓库" }));
+    expect(await screen.findByText("保存位置")).toBeVisible();
+    expect(await screen.findByText("2.2.4.3")).toBeVisible();
+    expect(screen.getByText("/data/game/current")).toBeVisible();
+    expect(screen.getByRole("button", { name: "更新共享游戏本体" })).toHaveClass("shared-game-update");
+  });
+
   it("keeps the newest 1000 console lines and follows after sending a command", async () => {
     const sockets: FakeWebSocket[] = [];
     class FakeWebSocket {
