@@ -41,15 +41,21 @@ type CleanupResult struct {
 
 type Options struct {
 	Now    func() time.Time
-	Remove func(string) error
+	Remove func(string, os.FileInfo) error
+}
+
+type instanceLockEntry struct {
+	token chan struct{}
+	refs  int
 }
 
 type Manager struct {
-	root      string
-	now       func() time.Time
-	remove    func(string) error
-	locksMu   sync.Mutex
-	instances map[string]chan struct{}
+	root         string
+	now          func() time.Time
+	remove       func(string, os.FileInfo) error
+	beforeRemove func(string)
+	locksMu      sync.Mutex
+	instances    map[string]*instanceLockEntry
 }
 
 func NewManager(root string, options Options) *Manager {
@@ -59,9 +65,9 @@ func NewManager(root string, options Options) *Manager {
 	}
 	remove := options.Remove
 	if remove == nil {
-		remove = os.Remove
+		remove = func(path string, _ os.FileInfo) error { return os.Remove(path) }
 	}
-	return &Manager{root: root, now: now, remove: remove, instances: make(map[string]chan struct{})}
+	return &Manager{root: root, now: now, remove: remove, instances: make(map[string]*instanceLockEntry)}
 }
 
 func (m *Manager) Cleanup(ctx context.Context, instanceID string, retentionDays int) (CleanupResult, error) {
@@ -89,7 +95,7 @@ func (m *Manager) Cleanup(ctx context.Context, instanceID string, retentionDays 
 		root := m.logRoot(instanceID, kind)
 		exists, err := validateDirectoryPath(m.root, root, true)
 		if err != nil {
-			return result, fmt.Errorf("inspect %s log root: %w", kind, err)
+			return result, fmt.Errorf("inspect %s logs", kind)
 		}
 		if !exists {
 			continue
@@ -135,8 +141,13 @@ func (m *Manager) Cleanup(ctx context.Context, instanceID string, retentionDays 
 				return nil
 			}
 			result.Expired++
-			if err := m.remove(path); err != nil {
+			removed, err := m.removeIfSame(path, info)
+			if err != nil {
 				result.Failures = append(result.Failures, label+": delete failed")
+				return nil
+			}
+			if !removed {
+				result.Skipped++
 				return nil
 			}
 			result.Deleted++
@@ -144,14 +155,17 @@ func (m *Manager) Cleanup(ctx context.Context, instanceID string, retentionDays 
 			return nil
 		})
 		if err != nil {
-			return result, fmt.Errorf("walk %s logs: %w", kind, err)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return result, ctxErr
+			}
+			return result, fmt.Errorf("walk %s logs", kind)
 		}
 		for index := len(directories) - 1; index >= 0; index-- {
 			if err := ctx.Err(); err != nil {
 				return result, err
 			}
 			directory := directories[index]
-			if err := m.remove(directory); err != nil {
+			if err := os.Remove(directory); err != nil {
 				entries, readErr := os.ReadDir(directory)
 				if readErr == nil && len(entries) > 0 {
 					continue
@@ -165,6 +179,26 @@ func (m *Manager) Cleanup(ctx context.Context, instanceID string, retentionDays 
 		return result, fmt.Errorf("game log cleanup completed with %d failure(s)", len(result.Failures))
 	}
 	return result, nil
+}
+
+func (m *Manager) removeIfSame(path string, expected os.FileInfo) (bool, error) {
+	if m.beforeRemove != nil {
+		m.beforeRemove(path)
+	}
+	current, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !current.Mode().IsRegular() || !expected.Mode().IsRegular() || !os.SameFile(expected, current) {
+		return false, nil
+	}
+	if err := m.remove(path, expected); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Tree returns regular log files ordered first by kind and then by slash path.
@@ -365,21 +399,35 @@ func (m *Manager) Prepare(ctx context.Context, instanceID string) error {
 
 func (m *Manager) lockInstance(ctx context.Context, instanceID string) (func(), error) {
 	m.locksMu.Lock()
-	semaphore := m.instances[instanceID]
-	if semaphore == nil {
-		semaphore = make(chan struct{}, 1)
-		m.instances[instanceID] = semaphore
+	entry := m.instances[instanceID]
+	if entry == nil {
+		entry = &instanceLockEntry{token: make(chan struct{}, 1)}
+		m.instances[instanceID] = entry
 	}
+	entry.refs++
 	m.locksMu.Unlock()
 
 	select {
-	case semaphore <- struct{}{}:
+	case entry.token <- struct{}{}:
 		var once sync.Once
 		return func() {
-			once.Do(func() { <-semaphore })
+			once.Do(func() {
+				<-entry.token
+				m.releaseInstanceLock(instanceID, entry)
+			})
 		}, nil
 	case <-ctx.Done():
+		m.releaseInstanceLock(instanceID, entry)
 		return nil, ctx.Err()
+	}
+}
+
+func (m *Manager) releaseInstanceLock(instanceID string, entry *instanceLockEntry) {
+	m.locksMu.Lock()
+	defer m.locksMu.Unlock()
+	entry.refs--
+	if entry.refs == 0 && m.instances[instanceID] == entry {
+		delete(m.instances, instanceID)
 	}
 }
 

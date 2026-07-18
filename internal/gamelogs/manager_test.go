@@ -115,7 +115,7 @@ func TestCleanupContinuesAfterDeleteFailureAndReturnsAggregateError(t *testing.T
 	old := time.Now().Add(-30 * 24 * time.Hour)
 	_ = os.Chtimes(failing, old, old)
 	_ = os.Chtimes(deleted, old, old)
-	manager := NewManager(root, Options{Remove: func(path string) error {
+	manager := NewManager(root, Options{Remove: func(path string, _ os.FileInfo) error {
 		if path == failing {
 			return fmt.Errorf("blocked at %s", root)
 		}
@@ -201,7 +201,7 @@ func TestCleanupStopsScanningAfterContextCancellation(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	removeCalls := 0
-	manager := NewManager(root, Options{Remove: func(path string) error {
+	manager := NewManager(root, Options{Remove: func(path string, _ os.FileInfo) error {
 		removeCalls++
 		err := os.Remove(path)
 		cancel()
@@ -218,6 +218,64 @@ func TestCleanupReturnsErrorForUnsafeLogRoot(t *testing.T) {
 	writeFile(t, filepath.Join(root, "instances", "i", "logs", "game"), "not a directory")
 	if _, err := NewManager(root, Options{}).Cleanup(context.Background(), "i", 14); err == nil {
 		t.Fatal("Cleanup silently accepted a non-directory log root")
+	} else if strings.Contains(err.Error(), root) {
+		t.Fatalf("fatal cleanup error leaked data root: %v", err)
+	}
+}
+
+func TestCleanupSkipsFileReplacedBeforeDelete(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "instances", "i", "logs", "game", "rotating.log")
+	writeFile(t, path, "expired")
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(root, Options{})
+	manager.beforeRemove = func(candidate string) {
+		if candidate != path {
+			return
+		}
+		if err := os.Rename(path, path+".old"); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, path, "fresh replacement")
+	}
+
+	result, err := manager.Cleanup(context.Background(), "i", 14)
+	if err != nil || result.Expired != 1 || result.Deleted != 0 || result.ReleasedBytes != 0 || result.Skipped != 1 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	assertFile(t, path, "fresh replacement")
+}
+
+func TestInstanceLockEntriesAreReclaimedAfterUnlockAndCancellation(t *testing.T) {
+	manager := NewManager(t.TempDir(), Options{})
+	for index := range 50 {
+		instanceID := fmt.Sprintf("instance-%d", index)
+		unlock, err := manager.lockInstance(context.Background(), instanceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		waiting := make(chan struct{})
+		observed := &observedDoneContext{Context: ctx, observed: waiting}
+		canceled := make(chan error, 1)
+		go func() {
+			_, err := manager.lockInstance(observed, instanceID)
+			canceled <- err
+		}()
+		<-waiting
+		cancel()
+		if err := <-canceled; !errors.Is(err, context.Canceled) {
+			t.Fatalf("lock cancellation error=%v", err)
+		}
+		unlock()
+	}
+	manager.locksMu.Lock()
+	defer manager.locksMu.Unlock()
+	if len(manager.instances) != 0 {
+		t.Fatalf("instance lock entries leaked: %d", len(manager.instances))
 	}
 }
 
