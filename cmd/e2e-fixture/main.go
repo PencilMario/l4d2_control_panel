@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
@@ -269,28 +270,11 @@ func (fixtureSystem) Info(context.Context) (docker.Info, error) {
 	return docker.Info{ServerVersion: "fixture-29.6.1", ContainersRunning: 1}, nil
 }
 
-type fixtureGameUpdater struct {
-	mu     sync.Mutex
-	root   string
-	seeded map[string]struct{}
-}
-
-func newFixtureGameUpdater(root string) *fixtureGameUpdater {
-	return &fixtureGameUpdater{root: root, seeded: make(map[string]struct{})}
-}
+type fixtureGameUpdater struct{}
 
 func (*fixtureGameUpdater) HasMaintenance(context.Context, string) (bool, error) { return false, nil }
-func (u *fixtureGameUpdater) UpdateGame(_ context.Context, id string, _ domain.Instance) error {
+func (*fixtureGameUpdater) UpdateGame(context.Context, string, domain.Instance) error {
 	time.Sleep(250 * time.Millisecond)
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	if _, exists := u.seeded[id]; exists {
-		return nil
-	}
-	if err := seedGameLogs(u.root, id); err != nil {
-		return err
-	}
-	u.seeded[id] = struct{}{}
 	return nil
 }
 
@@ -346,7 +330,7 @@ func main() {
 	}
 	defer gameLogScheduler.Stop()
 	packageUpdates := &updates.Coordinator{Lifecycle: lifecycle, Deployer: pipeline, Instances: db}
-	gameUpdates := &updates.GameCoordinator{Root: root, Instances: db, Lifecycle: lifecycle, Updater: newFixtureGameUpdater(root), Private: private, Packages: packages, Deployer: pipeline}
+	gameUpdates := &updates.GameCoordinator{Root: root, Instances: db, Lifecycle: lifecycle, Updater: &fixtureGameUpdater{}, Private: private, Packages: packages, Deployer: pipeline}
 	schedules := scheduler.NewService(db, fixtureDispatcher{})
 	defer schedules.Stop()
 
@@ -370,6 +354,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/__e2e/private-lower", privateLowerDiagnostic(root))
 	mux.HandleFunc("/__e2e/console-output", consoleOutputControl(console))
+	mux.HandleFunc("/__e2e/seed-game-logs", seedGameLogsControl(root, db))
 	mux.Handle("/api/", api.Handler())
 	mux.Handle("/", spaHandler(webRoot()))
 	address := os.Getenv("L4D2_E2E_LISTEN")
@@ -380,6 +365,32 @@ func main() {
 	log.Printf("e2e fixture listening on http://%s", address)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
+	}
+}
+
+func seedGameLogsControl(root string, db *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		id := r.URL.Query().Get("id")
+		if _, err := uuid.Parse(id); err != nil {
+			http.Error(w, "invalid instance id", http.StatusBadRequest)
+			return
+		}
+		if _, err := db.Instance(r.Context(), id); errors.Is(err, store.ErrNotFound) {
+			http.Error(w, "instance not found", http.StatusNotFound)
+			return
+		} else if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := seedGameLogs(root, id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 

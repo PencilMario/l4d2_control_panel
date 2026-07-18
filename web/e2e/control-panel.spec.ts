@@ -537,6 +537,14 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   card = instanceCard(instanceName);
   await expect(card).toContainText("运行中");
 
+  const seededGameLogs = await page.evaluate(async (id) => {
+    const response = await fetch(
+      `/__e2e/seed-game-logs?id=${encodeURIComponent(id)}`,
+    );
+    return response.ok;
+  }, initiallySaved.id);
+  expect(seededGameLogs).toBe(true);
+
   await page.getByRole("button", { name: "游戏日志" }).click();
   await expect(page.getByRole("heading", { name: "游戏日志" })).toBeVisible();
   await page.getByRole("combobox", { name: "当前实例" }).selectOption(initiallySaved.id);

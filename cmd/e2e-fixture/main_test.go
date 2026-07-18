@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/httpapi"
@@ -121,27 +122,29 @@ func TestFixtureStartupRecoversInterruptedPackageDeployment(t *testing.T) {
 	}
 }
 
-func TestFixtureLifecycleSeedsPersistentGameLogs(t *testing.T) {
+func TestFixtureLifecycleDoesNotReseedPersistentGameLogs(t *testing.T) {
 	root := t.TempDir()
 	db, err := store.Open(filepath.Join(root, "panel.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	instance := domain.Instance{ID: "logs", NodeID: "local", Name: "Logs", GamePort: 27015}
+	id := uuid.NewString()
+	instance := domain.Instance{ID: id, NodeID: "local", Name: "Logs", GamePort: 27015}
 	if err := db.CreateInstance(context.Background(), instance); err != nil {
 		t.Fatal(err)
 	}
-	updater := newFixtureGameUpdater(root)
-	if err := updater.UpdateGame(context.Background(), "logs", instance); err != nil {
-		t.Fatal(err)
+	seed := httptest.NewRecorder()
+	seedGameLogsControl(root, db).ServeHTTP(seed, httptest.NewRequest(http.MethodGet, "/__e2e/seed-game-logs?id="+id, nil))
+	if seed.Code != http.StatusNoContent {
+		t.Fatalf("seed status=%d body=%q", seed.Code, seed.Body.String())
 	}
-	if err := (&fixtureLifecycle{db: db, root: root}).Start(context.Background(), "logs"); err != nil {
+	if err := (&fixtureLifecycle{db: db, root: root}).Start(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
 
-	recent := filepath.Join(root, "instances", "logs", "logs", "game", "server.log")
-	aged := filepath.Join(root, "instances", "logs", "logs", "sourcemod", "errors", "aged-error.log")
+	recent := filepath.Join(root, "instances", id, "logs", "game", "server.log")
+	aged := filepath.Join(root, "instances", id, "logs", "sourcemod", "errors", "aged-error.log")
 	for _, path := range []string{recent, aged} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("seeded log %s: %v", path, err)
@@ -155,14 +158,14 @@ func TestFixtureLifecycleSeedsPersistentGameLogs(t *testing.T) {
 		t.Fatalf("aged log mtime=%s", info.ModTime())
 	}
 	content, err := os.ReadFile(recent)
-	if err != nil || !strings.Contains(string(content), "ERROR") || !strings.Contains(string(content), "instance=logs") {
+	if err != nil || !strings.Contains(string(content), "ERROR") || !strings.Contains(string(content), "instance="+id) {
 		t.Fatalf("recent content=%q err=%v", content, err)
 	}
 	fixedModified := time.Date(2026, 7, 18, 12, 34, 56, 0, time.UTC)
 	if err := os.Chtimes(recent, fixedModified, fixedModified); err != nil {
 		t.Fatal(err)
 	}
-	if err := (&fixtureLifecycle{db: db, root: root}).Rebuild(context.Background(), "logs"); err != nil {
+	if err := (&fixtureLifecycle{db: db, root: root}).Rebuild(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
 	afterRebuild, err := os.ReadFile(recent)
@@ -179,14 +182,71 @@ func TestFixtureLifecycleSeedsPersistentGameLogs(t *testing.T) {
 	if err := os.Remove(aged); err != nil {
 		t.Fatal(err)
 	}
-	if err := updater.UpdateGame(context.Background(), "logs", instance); err != nil {
+	if err := (&fixtureGameUpdater{}).UpdateGame(context.Background(), id, instance); err != nil {
 		t.Fatal(err)
 	}
-	if err := (&fixtureLifecycle{db: db, root: root}).Rebuild(context.Background(), "logs"); err != nil {
+	if err := (&fixtureLifecycle{db: db, root: root}).Rebuild(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(aged); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("rebuild unexpectedly restored deleted log: %v", err)
+	}
+}
+
+func TestSeedGameLogsControlValidatesInstanceAndSeedsFiles(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	handler := seedGameLogsControl(root, db)
+
+	for _, target := range []string{
+		"/__e2e/seed-game-logs",
+		"/__e2e/seed-game-logs?id=../outside",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("target=%q status=%d body=%q", target, response.Code, response.Body.String())
+		}
+	}
+
+	missingID := uuid.NewString()
+	missing := httptest.NewRecorder()
+	handler.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/__e2e/seed-game-logs?id="+missingID, nil))
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing status=%d body=%q", missing.Code, missing.Body.String())
+	}
+
+	id := uuid.NewString()
+	instance := domain.Instance{ID: id, NodeID: "local", Name: "Logs", GamePort: 27015}
+	if err := db.CreateInstance(context.Background(), instance); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/__e2e/seed-game-logs?id="+id, nil))
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+
+	paths := []string{
+		filepath.Join(root, "instances", id, "logs", "game", "server.log"),
+		filepath.Join(root, "instances", id, "logs", "sourcemod", "errors", "current-error.log"),
+		filepath.Join(root, "instances", id, "logs", "sourcemod", "errors", "aged-error.log"),
+	}
+	for _, path := range paths {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("seeded log %s: %v", path, err)
+		}
+	}
+	agedInfo, err := os.Stat(paths[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(agedInfo.ModTime()) < 20*24*time.Hour {
+		t.Fatalf("aged log mtime=%s", agedInfo.ModTime())
 	}
 }
 
