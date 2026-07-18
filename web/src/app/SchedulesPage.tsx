@@ -2,7 +2,6 @@ import {
   useCallback,
   useEffect,
   useId,
-  useMemo,
   useRef,
   useState,
   type FormEvent,
@@ -89,11 +88,11 @@ const TASK_TYPES: Record<ScheduleTaskType, TaskTypeDefinition> = {
     label: "插件热更新",
     needsInstance: true,
     usesPlayerPolicy: true,
-    target: "一个游戏实例和内容仓库中的一个插件包。",
+    target: "一个游戏实例及其当前配置的插件包。",
     steps:
-      "先应用在线玩家策略，再读取指定插件包；仅部署热更新允许的配置、脚本和插件内容，重新应用私有覆盖，最后记录该包为已应用版本。",
+      "先应用在线玩家策略，再读取实例当前配置的插件包；仅部署热更新允许的配置、脚本和插件内容，重新应用私有覆盖，最后记录该包为已应用版本。",
     interruption: "不主动停止或重启实例。",
-    parameters: "需要选择通过热更新兼容检查的插件包。",
+    parameters: "不需要额外参数；使用实例当前配置的插件包。",
     caution:
       "不适合需要替换游戏二进制或必须重启才能生效的内容。不兼容时任务失败，不会自动降级为完整更新。",
   },
@@ -101,12 +100,12 @@ const TASK_TYPES: Record<ScheduleTaskType, TaskTypeDefinition> = {
     label: "插件完整更新",
     needsInstance: true,
     usesPlayerPolicy: true,
-    target: "一个游戏实例和内容仓库中的一个插件包。",
+    target: "一个游戏实例及其当前配置的插件包。",
     steps:
-      "先应用在线玩家策略；活动实例先停止，事务化部署插件包并重新应用私有覆盖，再按更新前状态启动并通过健康检查，成功后记录已应用版本。",
+      "先应用在线玩家策略；活动实例先停止，事务化部署实例当前配置的插件包并重新应用私有覆盖，再按更新前状态启动并通过健康检查，成功后记录已应用版本。",
     interruption:
       "活动实例会停止并可能断开玩家；原本停止的实例保持停止。",
-    parameters: "需要选择一个仍然存在的插件包。",
+    parameters: "不需要额外参数；使用实例当前配置的插件包。",
     caution:
       "部署、启动或健康检查失败时会执行回滚，并尝试恢复更新前内容和运行状态。",
   },
@@ -125,11 +124,11 @@ const TASK_TYPES: Record<ScheduleTaskType, TaskTypeDefinition> = {
     label: "GitHub Release 热更新",
     needsInstance: true,
     usesPlayerPolicy: true,
-    target: "一个游戏实例和一个 GitHub Release 源。",
+    target: "一个游戏实例及其当前插件包对应的 GitHub Release 源。",
     steps:
-      "先检查并下载最新匹配 Release；只有发现新版本时才应用在线玩家策略，然后以热更新方式部署新包并记录已应用版本。",
+      "读取实例当前插件包对应的仓库和文件名，检查并下载最新匹配 Release；只有发现新版本时才应用在线玩家策略，然后以热更新方式部署新包并记录已应用版本。",
     interruption: "不主动停止或重启实例。",
-    parameters: "需要选择一个仍然存在的 GitHub 源。",
+    parameters: "不需要额外参数；来源取自实例当前配置的插件包。",
     caution:
       "Release 下载发生在玩家检查之前。没有新版本时不部署；新包不兼容热更新时任务失败，不会自动改为完整更新。",
   },
@@ -137,11 +136,11 @@ const TASK_TYPES: Record<ScheduleTaskType, TaskTypeDefinition> = {
     label: "GitHub Release 完整更新",
     needsInstance: true,
     usesPlayerPolicy: true,
-    target: "一个游戏实例和一个 GitHub Release 源。",
+    target: "一个游戏实例及其当前插件包对应的 GitHub Release 源。",
     steps:
-      "先检查并下载最新匹配 Release；只有发现新版本时才应用在线玩家策略，然后停止活动实例、事务化部署、重新应用私有覆盖、按原状态启动并检查健康。",
+      "读取实例当前插件包对应的仓库和文件名，检查并下载最新匹配 Release；只有发现新版本时才应用在线玩家策略，然后停止活动实例、事务化部署、重新应用私有覆盖、按原状态启动并检查健康。",
     interruption: "活动实例会停止并可能断开玩家。",
-    parameters: "需要选择一个仍然存在的 GitHub 源。",
+    parameters: "不需要额外参数；来源取自实例当前配置的插件包。",
     caution:
       "Release 下载发生在玩家检查之前。没有新版本时正常结束；部署或重启失败时执行回滚。",
   },
@@ -345,11 +344,12 @@ function payloadSummary(
 ) {
   const payload = parsePayload(task) as Record<string, unknown>;
   if (task.type === "package_hot" || task.type === "package_full") {
-    const id = String(payload.package_id ?? "");
-    const item = packages.find((candidate) => candidate.id === id);
-    return item ? `${item.filename} · ${item.version}` : `插件包引用已失效${id ? ` · ${id}` : ""}`;
+    return "使用实例当前配置的插件包";
   }
-  if (task.type.startsWith("release_")) {
+  if (task.type === "release_hot" || task.type === "release_full") {
+    return "使用实例当前插件包的 GitHub 源";
+  }
+  if (task.type === "release_check") {
     const id = String(payload.source_id ?? "");
     const item = sources.find((candidate) => candidate.id === id);
     return item ? `${item.name} · ${item.repository}` : `GitHub 源引用已失效${id ? ` · ${id}` : ""}`;
@@ -379,7 +379,6 @@ export function SchedulesPage({
   const [taskType, setTaskType] = useState<ScheduleTaskType>("game_update");
   const [instanceID, setInstanceID] = useState(instances[0]?.id || "");
   const [sourceID, setSourceID] = useState("");
-  const [packageID, setPackageID] = useState("");
   const [retentionDays, setRetentionDays] = useState(30);
   const [cron, setCron] = useState("0 4 * * *");
   const [policy, setPolicy] = useState<OnlinePolicy>("skip");
@@ -389,15 +388,9 @@ export function SchedulesPage({
   const [showHelp, setShowHelp] = useState(false);
 
   const definition = TASK_TYPES[taskType];
-  const releaseTask = taskType.startsWith("release_");
+  const releaseTask = taskType === "release_hot" || taskType === "release_full";
+  const releaseCheckTask = taskType === "release_check";
   const packageTask = taskType === "package_hot" || taskType === "package_full";
-  const availablePackages = useMemo(
-    () =>
-      taskType === "package_hot"
-        ? packages.filter((item) => item.hot_compatible)
-        : packages,
-    [packages, taskType],
-  );
 
   const load = useCallback(async () => {
     const [taskItems, sourceItems] = await Promise.all([
@@ -419,12 +412,6 @@ export function SchedulesPage({
   useEffect(() => {
     if (!sourceID && sources[0]) setSourceID(sources[0].id);
   }, [sourceID, sources]);
-
-  useEffect(() => {
-    if (!editing && availablePackages.length && !availablePackages.some((item) => item.id === packageID)) {
-      setPackageID(availablePackages[0].id);
-    }
-  }, [availablePackages, editing, packageID]);
 
   const resetCreate = () => {
     setEditing(null);
@@ -448,8 +435,7 @@ export function SchedulesPage({
   };
 
   const createPayload = () => {
-    if (packageTask) return JSON.stringify({ package_id: packageID });
-    if (releaseTask) return JSON.stringify({ source_id: sourceID });
+    if (releaseCheckTask) return JSON.stringify({ source_id: sourceID });
     if (taskType === "cleanup") return JSON.stringify({ retention_days: retentionDays });
     return "{}";
   };
@@ -457,8 +443,7 @@ export function SchedulesPage({
   const canSubmit = editing
     ? true
     : (!definition.needsInstance || Boolean(instanceID)) &&
-      (!releaseTask || Boolean(sourceID)) &&
-      (!packageTask || Boolean(packageID));
+      (!releaseCheckTask || Boolean(sourceID));
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -476,7 +461,7 @@ export function SchedulesPage({
             cron,
             timezone: editing.timezone,
             online_policy: TASK_TYPES[editing.type].usesPlayerPolicy ? policy : "force",
-            payload: editing.payload,
+            payload: (editing.type === "package_hot" || editing.type === "package_full" || editing.type === "release_hot" || editing.type === "release_full") ? "{}" : editing.payload,
             enabled,
           }
         : {
@@ -582,7 +567,7 @@ export function SchedulesPage({
               </select>
             </label>
           ) : null}
-          {releaseTask && !editing ? (
+          {releaseCheckTask && !editing ? (
             <label>
               GitHub 源
               <select
@@ -597,20 +582,10 @@ export function SchedulesPage({
               </select>
             </label>
           ) : null}
-          {packageTask && !editing ? (
-            <label>
-              插件包
-              <select
-                aria-label="插件包"
-                value={packageID}
-                onChange={(event) => setPackageID(event.target.value)}
-                required
-              >
-                {availablePackages.map((item) => (
-                  <option key={item.id} value={item.id}>{item.filename} · {item.version}</option>
-                ))}
-              </select>
-            </label>
+          {packageTask || releaseTask ? (
+            <p className="schedule-instance-package-note">
+              使用目标实例当前配置的插件包；计划任务不会覆盖实例插件包设置。
+            </p>
           ) : null}
           {taskType === "cleanup" && !editing ? (
             <label>

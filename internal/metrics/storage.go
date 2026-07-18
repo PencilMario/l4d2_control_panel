@@ -14,14 +14,34 @@ func (s DirectoryStorage) InstanceStorage(ctx context.Context, id string) (Stora
 	values := []*uint64{}
 	usage := StorageUsage{}
 	values = append(values, &usage.Game, &usage.Private, &usage.Backups, &usage.Console)
-	for index, name := range []string{"game", "private", "backups", "console"} {
-		size, err := directorySize(ctx, filepath.Join(base, name))
+	paths := []string{instanceGameStoragePath(base), filepath.Join(base, "private"), filepath.Join(base, "backups"), filepath.Join(base, "console")}
+	for index, path := range paths {
+		size, err := directorySize(ctx, path)
 		if err != nil {
 			return StorageUsage{}, err
 		}
 		*values[index] = size
 	}
 	return usage, nil
+}
+
+func instanceGameStoragePath(base string) string {
+	gamePath := filepath.Join(base, "game")
+	info, err := os.Lstat(gamePath)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return gamePath
+	}
+	target, err := os.Readlink(gamePath)
+	if err != nil {
+		return gamePath
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(gamePath), target)
+	}
+	if filepath.Clean(target) == filepath.Join(base, "overlay", "merged") {
+		return filepath.Join(base, "overlay", "upper")
+	}
+	return gamePath
 }
 
 func directorySize(ctx context.Context, root string) (uint64, error) {

@@ -159,6 +159,15 @@ type GitHubSource = {
   repository: string;
   asset_pattern: string;
 };
+type SharedGameState = {
+  active_release_id?: string;
+  version?: string;
+  path?: string;
+  migration_state?: string;
+};
+
+export const sharedGameVersionLabel = (state: SharedGameState) =>
+  state.version || (state.active_release_id ? "版本未知" : "未初始化");
 
 const errorMessage = (reason: unknown) =>
   reason instanceof Error ? reason.message : String(reason);
@@ -267,6 +276,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
   const [packages, setPackages] = useState<PackageVersion[]>(
     initialPackages || [],
   );
+  const [sharedGame, setSharedGame] = useState<SharedGameState>({});
   const [performanceHistory, setPerformanceHistory] = useState<
     Record<string, PerformanceHistoryPoint[]>
   >({});
@@ -453,6 +463,14 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
     const next = await api<PackageVersion[]>("/api/packages");
     if (mountedRef.current) setPackages(next);
   };
+  const loadSharedGame = async () => {
+    try {
+      const next = await api<SharedGameState>("/api/game");
+      if (mountedRef.current) setSharedGame(next);
+    } catch {
+      if (mountedRef.current) setSharedGame({});
+    }
+  };
   const loadHealth = async () => {
     try {
       await api("/api/health");
@@ -488,6 +506,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
         void Promise.allSettled([
           loadInstances(),
           loadPackages(),
+          loadSharedGame(),
           loadHealth(),
         ]);
       })
@@ -612,7 +631,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
         if (controller.signal.aborted || settled) return;
         setJob(next);
         if (["succeeded", "failed", "interrupted"].includes(next.Status)) {
-          void Promise.allSettled([loadInstances(), loadPackages()]);
+          void Promise.allSettled([loadInstances(), loadPackages(), loadSharedGame()]);
           finish(() => resolve(next));
           return;
         }
@@ -636,6 +655,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
           void Promise.allSettled([
             loadInstances(),
             loadPackages(),
+            loadSharedGame(),
             loadHealth(),
           ]);
         }}
@@ -781,6 +801,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
           <Overview
             instances={instances}
             packages={packages}
+            sharedGame={sharedGame}
             running={running}
             performanceHistory={performanceHistory}
             pendingActions={pendingActions}
@@ -804,7 +825,9 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
           <ContentPage
             instances={instances}
             packages={packages}
+            sharedGame={sharedGame}
             reloadPackages={loadPackages}
+            reloadSharedGame={loadSharedGame}
             queue={queue}
           />
         )}
@@ -916,6 +939,7 @@ function Nav({
 function Overview({
   instances,
   packages,
+  sharedGame,
   running,
   performanceHistory,
   pendingActions,
@@ -930,6 +954,7 @@ function Overview({
 }: {
   instances: Instance[];
   packages: PackageVersion[];
+  sharedGame: SharedGameState;
   running: number;
   performanceHistory: Record<string, PerformanceHistoryPoint[]>;
   pendingActions: Set<string>;
@@ -994,9 +1019,9 @@ function Overview({
         />
         <Metric
           icon={<RefreshCw />}
-          label="控制通道"
-          value="PTY"
-          note="非 RCON"
+          label="游戏本体版本"
+          value={sharedGameVersionLabel(sharedGame)}
+          note="共享安装"
         />
       </section>
       <section className="work">
@@ -1278,12 +1303,16 @@ const DEFAULT_PLUGIN_ASSET_PATTERN =
 function ContentPage({
   instances,
   packages,
+  sharedGame,
   reloadPackages,
+  reloadSharedGame,
   queue,
 }: {
   instances: Instance[];
   packages: PackageVersion[];
+  sharedGame: SharedGameState;
   reloadPackages: () => Promise<void>;
+  reloadSharedGame: () => Promise<void>;
   queue: (path: string, body: any) => Promise<void>;
 }) {
   const [vpks, setVpks] = useState<any[]>([]);
@@ -1293,6 +1322,7 @@ function ContentPage({
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [sources, setSources] = useState<GitHubSource[]>([]);
   const [sourceEditor, setSourceEditor] = useState<GitHubSource | null>(null);
+  const [gamePolicy, setGamePolicy] = useState("wait");
   const contentActions = useAsyncLocks();
   const loadVPK = () => api<any[]>("/api/content/vpk").then(setVpks);
   const loadSources = () => api<GitHubSource[]>("/api/github-sources").then((items) => setSources(Array.isArray(items) ? items : []));
@@ -1417,6 +1447,40 @@ function ContentPage({
           ))}
         </select>
       </label>
+      <Panel
+        title="共享游戏本体"
+        action={
+          <button
+            className="danger shared-game-update"
+            disabled={contentActions.pending.has("game:update")}
+            aria-busy={contentActions.pending.has("game:update")}
+            onClick={() => {
+              if (!window.confirm("更新共享游戏本体？所有依赖实例均符合在线玩家策略后才会停止并更新。")) return;
+              void runContentAction("game:update", async () => {
+                await queue("/api/game/update", { confirm: true, online_policy: gamePolicy });
+                await reloadSharedGame();
+              });
+            }}
+          >
+            更新共享游戏本体
+          </button>
+        }
+      >
+        <div className="shared-game-details">
+          <div><small>版本号</small><b>{sharedGameVersionLabel(sharedGame)}</b></div>
+          <div><small>保存位置</small><code>{sharedGame.path || "/data/game/current"}</code></div>
+          <div><small>状态</small><b>{sharedGame.migration_state === "ready" ? "就绪" : sharedGame.migration_state || "未知"}</b></div>
+        </div>
+        <label className="shared-game-policy">
+          所有服务器在线玩家策略
+          <select aria-label="所有服务器在线玩家策略" value={gamePolicy} onChange={(event) => setGamePolicy(event.target.value)}>
+            <option value="skip">任一不符合则跳过</option>
+            <option value="wait">等待全部空服</option>
+            <option value="force">强制执行</option>
+          </select>
+        </label>
+        <p>该操作不绑定实例；任一活动服务器有玩家或查询失败时，等待/跳过策略会阻止整个更新。</p>
+      </Panel>
       <Panel
         title="共享 VPK"
         action={
