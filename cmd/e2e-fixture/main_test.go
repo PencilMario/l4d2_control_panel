@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
@@ -116,6 +117,41 @@ func TestFixtureStartupRecoversInterruptedPackageDeployment(t *testing.T) {
 	}
 	if journals, err := filepath.Glob(filepath.Join(root, "instances", "fixture", "backups", "update-*", "journal.json")); err != nil || len(journals) != 0 {
 		t.Fatalf("journals=%v err=%v", journals, err)
+	}
+}
+
+func TestFixtureLifecycleSeedsPersistentGameLogs(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	instance := domain.Instance{ID: "logs", NodeID: "local", Name: "Logs", GamePort: 27015}
+	if err := db.CreateInstance(context.Background(), instance); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&fixtureLifecycle{db: db, root: root}).Start(context.Background(), "logs"); err != nil {
+		t.Fatal(err)
+	}
+
+	recent := filepath.Join(root, "instances", "logs", "logs", "game", "server.log")
+	aged := filepath.Join(root, "instances", "logs", "logs", "sourcemod", "errors", "aged-error.log")
+	for _, path := range []string{recent, aged} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("seeded log %s: %v", path, err)
+		}
+	}
+	info, err := os.Stat(aged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(info.ModTime()) < 20*24*time.Hour {
+		t.Fatalf("aged log mtime=%s", info.ModTime())
+	}
+	content, err := os.ReadFile(recent)
+	if err != nil || !strings.Contains(string(content), "ERROR") || !strings.Contains(string(content), "instance=logs") {
+		t.Fatalf("recent content=%q err=%v", content, err)
 	}
 }
 

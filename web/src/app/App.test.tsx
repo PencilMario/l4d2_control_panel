@@ -1303,6 +1303,144 @@ describe("App", () => {
     expect(input).toHaveValue(25);
   });
 
+  it("opens game logs for the selected instance and keeps the page while switching instances", async () => {
+    const second = { ...instance, id: "2", name: "黎明战役", game_port: 27035 };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/game-logs/tree")) return Response.json([]);
+      return Response.json([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App initialInstances={[instance, second]} />);
+    await userEvent.click(screen.getByRole("button", { name: "游戏日志" }));
+    expect(screen.getByRole("heading", { name: "游戏日志" })).toBeVisible();
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/instances/1/game-logs/tree",
+        expect.anything(),
+      ),
+    );
+
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "当前实例" }), "2");
+    expect(screen.getByRole("heading", { name: "游戏日志" })).toBeVisible();
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/instances/2/game-logs/tree",
+        expect.anything(),
+      ),
+    );
+  });
+
+  it("disables game logs navigation when no instance is selected", () => {
+    render(<App initialInstances={[]} />);
+    expect(screen.getByRole("button", { name: "游戏日志" })).toBeDisabled();
+  });
+
+  it("loads and saves game log retention with enqueue statistics", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/settings/game-logs") {
+        if (init?.method === "PUT") {
+          return Response.json({
+            retention_days: 30,
+            enqueue: { Queued: 2, Deduplicated: 1, Failed: 0 },
+          });
+        }
+        return Response.json({ retention_days: 14 });
+      }
+      if (path === "/api/settings/jobs") return Response.json({ successful_job_limit: 25 });
+      return Response.json({ configured: false });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "系统设置" }));
+    const input = await screen.findByRole("spinbutton", { name: "游戏日志保留天数" });
+    expect(input).toHaveValue(14);
+    expect(input).toHaveAttribute("min", "1");
+    expect(input).toHaveAttribute("max", "365");
+
+    await userEvent.clear(input);
+    await userEvent.type(input, "366");
+    await userEvent.click(screen.getByRole("button", { name: "保存游戏日志设置" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("1 至 365");
+    expect(fetchMock).not.toHaveBeenCalledWith("/api/settings/game-logs", expect.objectContaining({ method: "PUT" }));
+
+    await userEvent.clear(input);
+    await userEvent.type(input, "30");
+    await userEvent.click(screen.getByRole("button", { name: "保存游戏日志设置" }));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/settings/game-logs",
+      expect.objectContaining({ method: "PUT", body: JSON.stringify({ retention_days: 30 }) }),
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent("已排队 2，已去重 1，失败 0");
+    expect(input).toHaveValue(30);
+  });
+
+  it("prevents duplicate immediate game log cleanup and reports failures", async () => {
+    const cleanup = deferred<Response>();
+    let cleanupPosts = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/settings/game-logs/cleanup" && init?.method === "POST") {
+        cleanupPosts += 1;
+        return cleanup.promise;
+      }
+      if (path === "/api/settings/game-logs") return Response.json({ retention_days: 14 });
+      if (path === "/api/settings/jobs") return Response.json({ successful_job_limit: 25 });
+      return Response.json({ configured: false });
+    }));
+
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "系统设置" }));
+    const button = await screen.findByRole("button", { name: "立即清理游戏日志" });
+    await waitFor(() => expect(button).toBeEnabled());
+    act(() => {
+      button.click();
+      button.click();
+    });
+    expect(cleanupPosts).toBe(1);
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-busy", "true");
+
+    cleanup.resolve(Response.json({ Queued: 1, Deduplicated: 0, Failed: 1 }));
+    expect(await screen.findByRole("status")).toHaveTextContent("已排队 1，已去重 0，失败 1");
+    await waitFor(() => expect(button).toBeEnabled());
+  });
+
+  it("disables game log retention while saving and restores the confirmed value on error", async () => {
+    const save = deferred<Response>();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/settings/game-logs") {
+        if (init?.method === "PUT") return save.promise;
+        return Response.json({ retention_days: 14 });
+      }
+      if (path === "/api/settings/jobs") return Response.json({ successful_job_limit: 25 });
+      return Response.json({ configured: false });
+    }));
+
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "系统设置" }));
+    const input = await screen.findByRole("spinbutton", { name: "游戏日志保留天数" });
+    const button = screen.getByRole("button", { name: "保存游戏日志设置" });
+    await userEvent.clear(input);
+    await userEvent.type(input, "30");
+    await userEvent.click(button);
+    expect(input).toBeDisabled();
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-busy", "true");
+
+    save.resolve(Response.json(
+      { error: { message: "保存游戏日志设置失败" } },
+      { status: 500 },
+    ));
+    expect(await screen.findByRole("alert")).toHaveTextContent("保存游戏日志设置失败");
+    expect(input).toHaveValue(14);
+    await waitFor(() => expect(button).toBeEnabled());
+  });
+
   it("reinstalls only the selected instance plugin package", async () => {
     const request = deferred<Response>();
     const fetchMock = vi.fn(() => request.promise);

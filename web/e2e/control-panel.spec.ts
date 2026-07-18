@@ -536,6 +536,42 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   card = instanceCard(instanceName);
   await expect(card).toContainText("运行中");
 
+  await page.getByRole("button", { name: "游戏日志" }).click();
+  await expect(page.getByRole("heading", { name: "游戏日志" })).toBeVisible();
+  await page.getByRole("combobox", { name: "当前实例" }).selectOption(initiallySaved.id);
+  if (mobile) await page.getByRole("button", { name: "Open log tree" }).click();
+  await page.getByRole("button", { name: "Toggle sourcemod/errors" }).click();
+  await expect(page.getByRole("button", { name: "errors/aged-error.log" })).toBeVisible();
+  await page.getByRole("button", { name: "errors/current-error.log" }).click();
+  const logViewer = page.locator(".log-viewer");
+  await expect(logViewer).toContainText("ERROR");
+  await expect(logViewer.locator(".log-token-error")).toContainText("ERROR");
+  await expect(logViewer.locator(".log-token-timestamp")).toContainText("2026-07-18 12:00:01");
+  await expect(logViewer.locator(".log-token-plugin")).toContainText("plugin:fixture.smx");
+  const logDownload = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download" }).click();
+  expect((await logDownload).suggestedFilename()).toBe("current-error.log");
+
+  await page.getByRole("button", { name: "系统设置" }).click();
+  const gameLogRetention = page.getByRole("spinbutton", { name: "游戏日志保留天数" });
+  await expect(gameLogRetention).toHaveValue("14");
+  await page.getByRole("button", { name: "立即清理游戏日志" }).click();
+  await expect(page.getByRole("status")).toContainText("清理任务已提交");
+  await expect.poll(() => page.evaluate(async (id) => {
+    const response = await fetch(`/api/instances/${id}/game-logs/tree`);
+    const entries = await response.json() as Array<{ path: string }>;
+    return {
+      aged: entries.some((entry) => entry.path === "errors/aged-error.log"),
+      recent: entries.some((entry) => entry.path === "errors/current-error.log"),
+    };
+  }, initiallySaved.id)).toEqual({ aged: false, recent: true });
+  await gameLogRetention.fill("30");
+  await page.getByRole("button", { name: "保存游戏日志设置" }).click();
+  await expect(page.getByRole("status")).toContainText("游戏日志设置已保存");
+  await expect(gameLogRetention).toHaveValue("30");
+  await page.getByRole("button", { name: "任务", exact: true }).click();
+  await expect(page.locator(".job-row").filter({ hasText: "cleanup_game_logs" }).first()).toContainText(/成功|运行|排队/);
+
   await page.getByRole("button", { name: "私有文件" }).click();
   await expect(page.getByRole("heading", { name: "私有文件", exact: true })).toBeVisible();
   await page.getByLabel("目标实例").selectOption(initiallySaved.id);

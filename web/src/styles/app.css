@@ -974,6 +974,21 @@ nav button.active {
   border-color: #2b3732;
   box-shadow: inset 3px 0 var(--acid);
 }
+.instance-selector {
+  display: grid;
+  gap: 6px;
+  margin: 0 12px 12px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.instance-selector select {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid #36413d;
+  background: #090c0b;
+  color: #eef3ef;
+  padding: 8px;
+}
 .splash,
 .login {
   min-height: 100vh;

@@ -21,6 +21,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/gamelogs"
 	"github.com/not0721here/l4d2-control-panel/internal/httpapi"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/metrics"
@@ -60,6 +61,9 @@ func (l *fixtureLifecycle) Start(ctx context.Context, id string) error {
 	} else if err != nil {
 		return err
 	}
+	if err := seedGameLogs(l.root, id); err != nil {
+		return err
+	}
 	instance.ContainerID = "fixture-" + id
 	if instance.SelectedPackageID != "" {
 		instance.PackageVersion = instance.SelectedPackageID
@@ -67,6 +71,37 @@ func (l *fixtureLifecycle) Start(ctx context.Context, id string) error {
 	instance.DesiredState = domain.StateRunning
 	instance.ActualState = domain.StateRunning
 	return l.db.UpdateInstance(ctx, instance)
+}
+
+func seedGameLogs(root, id string) error {
+	logs := []struct {
+		kind, name, content string
+		age                 time.Duration
+	}{
+		{kind: "game", name: "server.log", content: "2026-07-18 12:00:00 ERROR instance=" + id + " UserID=42 127.0.0.1:27015\n"},
+		{kind: "sourcemod", name: "errors/current-error.log", content: "2026-07-18 12:00:01 [SM] ERROR plugin:fixture.smx UserID=42\n"},
+		{kind: "sourcemod", name: "errors/aged-error.log", content: "2026-06-01 12:00:00 ERROR expired fixture log\n", age: 30 * 24 * time.Hour},
+	}
+	for _, value := range logs {
+		path := filepath.Join(root, "instances", id, "logs", value.kind, filepath.FromSlash(value.name))
+		if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+			return err
+		}
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			if err := os.WriteFile(path, []byte(value.content), 0640); err != nil {
+				return err
+			}
+			if value.age > 0 {
+				modified := time.Now().Add(-value.age)
+				if err := os.Chtimes(path, modified, modified); err != nil {
+					return err
+				}
+			}
+		} else if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (l *fixtureLifecycle) Stop(ctx context.Context, id string) error {
@@ -290,6 +325,12 @@ func main() {
 	lifecycle := &fixtureLifecycle{db: db, root: root}
 	jobManager := jobs.NewPersistentManager(db)
 	seedJobs(db)
+	gameLogManager := gamelogs.NewManager(root, gamelogs.Options{})
+	gameLogScheduler := gamelogs.NewScheduler(db, jobManager, gameLogManager)
+	if err := gameLogScheduler.Start(); err != nil {
+		log.Fatal(err)
+	}
+	defer gameLogScheduler.Stop()
 	packageUpdates := &updates.Coordinator{Lifecycle: lifecycle, Deployer: pipeline, Instances: db}
 	gameUpdates := &updates.GameCoordinator{Root: root, Instances: db, Lifecycle: lifecycle, Updater: fixtureGameUpdater{}, Private: private, Packages: packages, Deployer: pipeline}
 	schedules := scheduler.NewService(db, fixtureDispatcher{})
@@ -299,6 +340,7 @@ func main() {
 	api := httpapi.New(
 		db,
 		sessions,
+		httpapi.WithGameLogs(gameLogManager, gameLogScheduler),
 		httpapi.WithOperations(lifecycle, jobManager),
 		httpapi.WithConsole(console),
 		httpapi.WithPlayers(fixturePlayers{}),
