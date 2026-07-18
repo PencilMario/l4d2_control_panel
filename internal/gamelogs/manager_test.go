@@ -138,6 +138,46 @@ func TestResolveDownloadReturnsValidatedOpenRegularFile(t *testing.T) {
 	}
 }
 
+func TestPreviewOpenFileSafelyHandlesShorteningAfterStat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rotating.log")
+	writeFile(t, path, "0123456789")
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, 3); err != nil {
+		t.Fatal(err)
+	}
+
+	preview, err := previewOpenFile(file, info, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Text != "" || !preview.Truncated || preview.Size != 10 || !preview.ModifiedAt.Equal(info.ModTime().UTC()) {
+		t.Fatalf("preview after shortening=%+v", preview)
+	}
+}
+
+func TestResolveDownloadRejectsDirectoryLeaf(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "instances", "i", "logs", "game", "directory")
+	if err := os.MkdirAll(path, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(root, Options{})
+	if _, _, err := manager.ResolveDownload("i", "game", "directory"); err == nil {
+		t.Fatal("ResolveDownload accepted directory leaf")
+	}
+	if _, err := manager.Preview(context.Background(), "i", "game", "directory", 10); err == nil {
+		t.Fatal("Preview accepted directory leaf")
+	}
+}
+
 func TestPrepareCreatesPersistentLogRoots(t *testing.T) {
 	root := t.TempDir()
 	manager := NewManager(root, Options{})

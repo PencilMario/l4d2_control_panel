@@ -119,6 +119,10 @@ func (m *Manager) Preview(ctx context.Context, instanceID, kind, relative string
 		return Preview{}, err
 	}
 	defer file.Close()
+	return previewOpenFile(file, info, limit)
+}
+
+func previewOpenFile(file *os.File, info os.FileInfo, limit int64) (Preview, error) {
 	size := info.Size()
 	start := int64(0)
 	if size > limit {
