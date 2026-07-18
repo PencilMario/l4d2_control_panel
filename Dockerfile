@@ -9,9 +9,10 @@ COPY web/ ./
 RUN npm run build
 
 FROM ${GO_IMAGE} AS backend
+ARG GOPROXY=https://proxy.golang.org,direct
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+RUN GOPROXY="${GOPROXY}" go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/panel ./cmd/panel
 

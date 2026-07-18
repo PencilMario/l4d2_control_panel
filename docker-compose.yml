@@ -34,6 +34,7 @@ services:
       args:
         GO_IMAGE: ${GO_IMAGE:-golang:1.25-alpine}
         ALPINE_IMAGE: ${ALPINE_IMAGE:-alpine:3.22}
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
     restart: unless-stopped
     depends_on:
       proxy-init:
@@ -57,6 +58,7 @@ services:
       args:
         GO_IMAGE: ${GO_IMAGE:-golang:1.25-alpine}
         ALPINE_IMAGE: ${ALPINE_IMAGE:-alpine:3.22}
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
     restart: unless-stopped
     network_mode: none
     read_only: true
@@ -77,6 +79,7 @@ services:
         NODE_IMAGE: ${NODE_IMAGE:-node:22-alpine}
         GO_IMAGE: ${GO_IMAGE:-golang:1.25-alpine}
         ALPINE_IMAGE: ${ALPINE_IMAGE:-alpine:3.22}
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
     restart: unless-stopped
     network_mode: bridge
     depends_on:
