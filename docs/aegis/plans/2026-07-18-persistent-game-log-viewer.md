@@ -436,6 +436,8 @@ export function HighlightedLog({ text }: { text: string }) {
 
 Implement stable regex precedence (ANSI, timestamp, level, SteamID, address, stack/module, plain), abortable tree/preview loads, nested accessible tree buttons, refresh, download URL, truncation/rotation/error states, and responsive CSS.
 
+Use the private-files page as the layout contract: keep the page heading and target-instance selector in the same positions, reuse its toolbar, two-column workspace, tree pane, mobile tree trigger, drawer breakpoint and drawer interaction classes where practical, and give the read-only preview the same workspace card hierarchy. Keep log data/selection state separate and do not refactor private-file write behavior merely to share the shell.
+
 - [ ] **Step 4: Verify GREEN and production build**
 
 Run: `npm test -- --run src/app/logHighlight.test.tsx src/app/GameLogsPage.test.tsx; npm run build`
