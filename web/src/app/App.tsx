@@ -1092,6 +1092,10 @@ function Overview({
                 <PerformancePanel
                   snapshot={{
                     image_size_bytes: x.image_size_bytes ?? null,
+                    game_size_bytes: x.game_size_bytes ?? null,
+                    private_size_bytes: x.private_size_bytes ?? null,
+                    backups_size_bytes: x.backups_size_bytes ?? null,
+                    console_size_bytes: x.console_size_bytes ?? null,
                     cpu_percent: x.cpu,
                     memory_bytes: x.memory_bytes ?? (x.memory === null ? null : x.memory * (1 << 30)),
                     memory_limit_bytes: x.memory_limit_bytes ?? null,

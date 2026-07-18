@@ -519,6 +519,19 @@ describe("App", () => {
     await waitFor(() => expect(screen.queryByTestId("performance-chart")).not.toBeInTheDocument());
     expect(historyCalls).toBe(1);
   });
+  it("shows every per-instance storage category in total occupancy", () => {
+    render(<App initialInstances={[{
+      ...instance,
+      image_size_bytes: 5 * 1024 ** 3,
+      game_size_bytes: 512 * 1024 ** 2,
+      private_size_bytes: 128 * 1024 ** 2,
+      backups_size_bytes: 64 * 1024 ** 2,
+      console_size_bytes: 32 * 1024 ** 2,
+    }]} />);
+    expect(screen.getByText("5.7 GiB")).toBeInTheDocument();
+    expect(screen.getByText("游戏 512 MiB · 私有 128 MiB · 备份 64 MiB · 日志 32 MiB · 镜像 5 GiB")).toBeInTheDocument();
+  });
+
   it("shows operational instance data", () => {
     render(
       <App

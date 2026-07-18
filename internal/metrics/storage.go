@@ -22,6 +22,11 @@ func (s DirectoryStorage) InstanceStorage(ctx context.Context, id string) (Stora
 		}
 		*values[index] = size
 	}
+	logs, err := directorySize(ctx, filepath.Join(base, "logs"))
+	if err != nil {
+		return StorageUsage{}, err
+	}
+	usage.Console += logs
 	return usage, nil
 }
 
