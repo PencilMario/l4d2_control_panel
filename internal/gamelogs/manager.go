@@ -43,7 +43,7 @@ func (m *Manager) Prepare(ctx context.Context, instanceID string) error {
 		{filepath.Join(base, "overlay", "upper", "left4dead2", "addons", "sourcemod", "logs"), filepath.Join(base, "logs", "sourcemod")},
 	}
 	for _, item := range destinations {
-		if err := os.MkdirAll(item.destination, 0o750); err != nil {
+		if err := secureMkdirAll(m.root, item.destination); err != nil {
 			return fmt.Errorf("prepare persistent log directory: %w", err)
 		}
 	}
@@ -90,7 +90,7 @@ func migrateTree(ctx context.Context, sourceRoot, destinationRoot, stamp string)
 		}
 		destination := filepath.Join(destinationRoot, relative)
 		if info.IsDir() {
-			if err := os.MkdirAll(destination, 0o750); err != nil {
+			if err := secureMkdirAll(destinationRoot, destination); err != nil {
 				return fmt.Errorf("create migrated log directory: %w", err)
 			}
 			return nil
@@ -166,15 +166,45 @@ func nextConflictName(destination, stamp string) (string, error) {
 	}
 }
 
+func secureMkdirAll(anchor, destination string) error {
+	relative, err := filepath.Rel(anchor, destination)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return errors.New("persistent log directory escapes controlled root")
+	}
+	current := anchor
+	if info, err := os.Lstat(current); err != nil {
+		return err
+	} else if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("controlled root is not a regular directory: %s", current)
+	}
+	if relative == "." {
+		return nil
+	}
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			if err := os.Mkdir(current, 0o750); err != nil {
+				return err
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("persistent log component is not a regular directory: %s", current)
+		}
+	}
+	return nil
+}
+
 func copyAtomic(source, destination string, mode os.FileMode) (err error) {
 	input, err := os.Open(source)
 	if err != nil {
 		return fmt.Errorf("open legacy log: %w", err)
 	}
 	defer input.Close()
-	if err := os.MkdirAll(filepath.Dir(destination), 0o750); err != nil {
-		return err
-	}
 	temporary, err := os.CreateTemp(filepath.Dir(destination), ".migrate-*")
 	if err != nil {
 		return fmt.Errorf("create migrated log: %w", err)

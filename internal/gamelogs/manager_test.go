@@ -111,6 +111,56 @@ func TestPrepareRejectsSymlinkInMigrationTree(t *testing.T) {
 	}
 }
 
+func TestPrepareRejectsSymlinkPersistentRoot(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "instances", "instance-1")
+	outside := filepath.Join(root, "outside")
+	if err := os.MkdirAll(filepath.Join(base, "logs"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(base, "logs", "game")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := NewManager(root, Options{}).Prepare(context.Background(), "instance-1"); err == nil {
+		t.Fatal("expected persistent root symlink rejection")
+	}
+}
+
+func TestPrepareRejectsSymlinkPersistentSubdirectory(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "instances", "instance-1")
+	writeFile(t, filepath.Join(base, "overlay", "merged", "left4dead2", "logs", "nested", "server.log"), "log")
+	outside := filepath.Join(root, "outside")
+	if err := os.MkdirAll(filepath.Join(base, "logs", "game"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(base, "logs", "game", "nested")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := NewManager(root, Options{}).Prepare(context.Background(), "instance-1"); err == nil {
+		t.Fatal("expected persistent subdirectory symlink rejection")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "server.log")); !os.IsNotExist(err) {
+		t.Fatalf("migration escaped persistent root: %v", err)
+	}
+}
+
+func TestPrepareRejectsNonDirectoryPersistentComponent(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "instances", "instance-1")
+	writeFile(t, filepath.Join(base, "overlay", "merged", "left4dead2", "logs", "nested", "server.log"), "log")
+	writeFile(t, filepath.Join(base, "logs", "game", "nested"), "not a directory")
+	if err := NewManager(root, Options{}).Prepare(context.Background(), "instance-1"); err == nil {
+		t.Fatal("expected non-directory persistent component rejection")
+	}
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
