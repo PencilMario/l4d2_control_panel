@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GameLogsPage } from './GameLogsPage';
 
@@ -93,6 +93,50 @@ describe('GameLogsPage', () => {
     fireEvent.click(screen.getByTestId('game-logs-drawer-overlay'));
     expect(screen.queryByRole('dialog', { name: 'Log tree' })).toBeNull();
     expect(trigger).toHaveFocus();
+  });
+
+  it('loops focus between the first and last controls in the mobile drawer', async () => {
+    const api = vi.fn().mockResolvedValue([{ ...entry, path: 'a.log' }]);
+    render(<GameLogsPage instanceID="i" api={api} />);
+    await waitFor(() => expect(screen.getByLabelText('a.log')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Open log tree' }));
+    const drawer = screen.getByRole('dialog', { name: 'Log tree' });
+    const controls = within(drawer).getAllByRole('button');
+    const first = controls[0];
+    const last = controls.at(-1)!;
+
+    last.focus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(first).toHaveFocus();
+
+    first.focus();
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(last).toHaveFocus();
+  });
+
+  it('clears the old instance preview immediately and reloads the same path only after selection', async () => {
+    let resolveNewTree!: (value: unknown) => void;
+    const request = vi.fn((url: string) => {
+      if (url === '/api/instances/old/game-logs/tree') return Promise.resolve([{ ...entry, path: 'same.log' }]);
+      if (url.includes('/api/instances/old/game-logs/preview')) return Promise.resolve({ text: 'OLD CONTENT' });
+      if (url === '/api/instances/new/game-logs/tree') return new Promise((resolve) => { resolveNewTree = resolve; });
+      if (url.includes('/api/instances/new/game-logs/preview')) return Promise.resolve({ text: 'NEW CONTENT' });
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    const api = <T,>(url: string): Promise<T> => request(url) as Promise<T>;
+    const view = render(<GameLogsPage instanceID="old" api={api} />);
+    fireEvent.click(await waitFor(() => screen.getByLabelText('same.log')));
+    await waitFor(() => expect(screen.getByText('OLD CONTENT')).toBeTruthy());
+
+    view.rerender(<GameLogsPage instanceID="new" api={api} />);
+    expect(screen.queryByText('OLD CONTENT')).toBeNull();
+    expect(screen.queryByLabelText('same.log')).toBeNull();
+
+    await act(async () => resolveNewTree([{ ...entry, path: 'same.log' }]));
+    const newEntry = await waitFor(() => screen.getByLabelText('same.log'));
+    expect(screen.queryByText('NEW CONTENT')).toBeNull();
+    fireEvent.click(newEntry);
+    await waitFor(() => expect(screen.getByText('NEW CONTENT')).toBeTruthy());
   });
 
   it('uses the sourcemod category in preview and download requests', async () => {

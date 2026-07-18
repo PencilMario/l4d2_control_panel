@@ -85,7 +85,7 @@ export function GameLogsPage({
     }
   };
 
-  const loadTree = async (refreshPreview = false) => {
+  const loadTree = async (refreshPreview = false, currentSelection: Entry | null = selected) => {
     treeAbort.current?.abort();
     const controller = new AbortController();
     const sequence = ++treeSequence.current;
@@ -96,8 +96,8 @@ export function GameLogsPage({
       const data = await api<Entry[]>(`/api/instances/${instanceID}/game-logs/tree`, { signal: controller.signal });
       if (sequence !== treeSequence.current) return;
       setEntries(data);
-      if (selected) {
-        const current = data.find((item) => item.kind === selected.kind && item.path === selected.path) || null;
+      if (currentSelection) {
+        const current = data.find((item) => item.kind === currentSelection.kind && item.path === currentSelection.path) || null;
         setSelected(current);
         if (refreshPreview && current) await loadPreview(current);
       }
@@ -110,7 +110,20 @@ export function GameLogsPage({
   };
 
   useEffect(() => {
-    void loadTree();
+    treeAbort.current?.abort();
+    previewAbort.current?.abort();
+    treeSequence.current++;
+    previewSequence.current++;
+    setEntries([]);
+    setSelected(null);
+    setPreview(undefined);
+    setLoading(false);
+    setPreviewLoading(false);
+    setError('');
+    setPreviewError('');
+    setDownloadError('');
+    setRotated(false);
+    void loadTree(false, null);
     return () => {
       treeAbort.current?.abort();
       previewAbort.current?.abort();
@@ -126,7 +139,22 @@ export function GameLogsPage({
     if (!drawerOpen) return;
     drawerRef.current?.querySelector<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeDrawer();
+      if (event.key === 'Escape') {
+        closeDrawer();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = Array.from(drawerRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') ?? []);
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
