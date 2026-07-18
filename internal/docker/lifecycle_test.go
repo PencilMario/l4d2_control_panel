@@ -38,6 +38,12 @@ func TestBuildContainerSpecWithGamePathUsesOverlayMount(t *testing.T) {
 	if spec.Mounts[0] != want {
 		t.Fatalf("mount=%q want=%q", spec.Mounts[0], want)
 	}
+	wantGameLogs := filepath.Join(root, "instances", "abc", "logs", "game") + ":/opt/l4d2/game/left4dead2/logs"
+	wantSourceModLogs := filepath.Join(root, "instances", "abc", "logs", "sourcemod") + ":/opt/l4d2/game/left4dead2/addons/sourcemod/logs"
+	joined := strings.Join(spec.Mounts, "|")
+	if !strings.Contains(joined, wantGameLogs) || !strings.Contains(joined, wantSourceModLogs) {
+		t.Fatalf("mounts=%v", spec.Mounts)
+	}
 }
 func TestSupervisorExecRejectsUnknownOperation(t *testing.T) {
 	if _, err := SupervisorExec("abc", "sh"); err == nil {

@@ -112,6 +112,9 @@ type SpaceChecker interface{ Available(string) (uint64, error) }
 type Provisioner interface {
 	Prepare(context.Context, domain.Instance) error
 }
+type LogPreparer interface {
+	Prepare(context.Context, string) error
+}
 type Service struct {
 	repo                Repository
 	engine              Engine
@@ -120,6 +123,7 @@ type Service struct {
 	health              HealthChecker
 	space               SpaceChecker
 	provisioner         Provisioner
+	logPreparer         LogPreparer
 	minimumInstallBytes uint64
 	maintenanceGate     *maintenance.Gate
 }
@@ -131,6 +135,9 @@ func WithSpace(checker SpaceChecker, minimum uint64) Option {
 }
 func WithProvisioner(provisioner Provisioner) Option {
 	return func(s *Service) { s.provisioner = provisioner }
+}
+func WithLogPreparer(preparer LogPreparer) Option {
+	return func(s *Service) { s.logPreparer = preparer }
 }
 func WithMaintenanceGate(gate *maintenance.Gate) Option {
 	return func(s *Service) { s.maintenanceGate = gate }
@@ -177,7 +184,7 @@ func (s *Service) Start(ctx context.Context, id string) error {
 	}
 	if v.ContainerID == "" {
 		base := filepath.Join(s.dataRoot, "instances", v.ID)
-		for _, dir := range []string{"game", "private", "backups", "console"} {
+		for _, dir := range []string{"game", "private", "backups", "console", filepath.Join("logs", "game"), filepath.Join("logs", "sourcemod")} {
 			if err := os.MkdirAll(filepath.Join(base, dir), 0750); err != nil {
 				return err
 			}
@@ -201,6 +208,11 @@ func (s *Service) Start(ctx context.Context, id string) error {
 			v, err = s.repo.Instance(ctx, id)
 			if err != nil {
 				return err
+			}
+		}
+		if s.logPreparer != nil {
+			if err := s.logPreparer.Prepare(ctx, v.ID); err != nil {
+				return s.fault(ctx, v, err)
 			}
 		}
 		spec, err := docker.BuildContainerSpec(s.dataRoot, v)

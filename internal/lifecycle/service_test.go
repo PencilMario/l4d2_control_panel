@@ -85,6 +85,16 @@ type fakeProvisioner struct {
 	err    error
 }
 
+type fakeLogPreparer struct {
+	events *[]string
+	err    error
+}
+
+func (p fakeLogPreparer) Prepare(_ context.Context, instanceID string) error {
+	*p.events = append(*p.events, "logs:"+instanceID)
+	return p.err
+}
+
 func (p fakeProvisioner) Prepare(ctx context.Context, value domain.Instance) error {
 	*p.events = append(*p.events, "prepare")
 	if p.err != nil {
@@ -107,11 +117,11 @@ func TestStartPreparesSelectedPackageBeforeCreatingContainer(t *testing.T) {
 	}
 	events := []string{}
 	engine := &fakeEngine{events: &events}
-	service := New(db, engine, freePorts{}, root, WithProvisioner(fakeProvisioner{repo: db, events: &events}))
+	service := New(db, engine, freePorts{}, root, WithProvisioner(fakeProvisioner{repo: db, events: &events}), WithLogPreparer(fakeLogPreparer{events: &events}))
 	if err := service.Start(context.Background(), value.ID); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(events, ",") != "prepare,create,start" {
+	if strings.Join(events, ",") != "prepare,logs:prepared,create,start" {
 		t.Fatalf("events=%v", events)
 	}
 	got, err := db.Instance(context.Background(), value.ID)
@@ -120,6 +130,32 @@ func TestStartPreparesSelectedPackageBeforeCreatingContainer(t *testing.T) {
 	}
 	if got.PackageVersion != "package-a" || got.ActualState != domain.StateRunning {
 		t.Fatalf("instance=%#v", got)
+	}
+}
+
+func TestStartDoesNotCreateContainerWhenLogPreparationFails(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	value := domain.Instance{ID: "failed-logs", NodeID: "local", Name: "failed logs", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", ActualState: domain.StateStopped}
+	if err := db.CreateInstance(context.Background(), value); err != nil {
+		t.Fatal(err)
+	}
+	events := []string{}
+	engine := &fakeEngine{events: &events}
+	service := New(db, engine, freePorts{}, root, WithLogPreparer(fakeLogPreparer{events: &events, err: errors.New("migration failed")}))
+	if err := service.Start(context.Background(), value.ID); err == nil {
+		t.Fatal("expected log preparation failure")
+	}
+	got, err := db.Instance(context.Background(), value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if engine.created || got.ActualState != domain.StateFaulted || strings.Join(events, ",") != "logs:failed-logs" {
+		t.Fatalf("engine=%#v instance=%#v events=%v", engine, got, events)
 	}
 }
 
