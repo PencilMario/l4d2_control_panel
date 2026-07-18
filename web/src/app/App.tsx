@@ -19,6 +19,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  ScrollText,
   Server,
   Settings,
   ShieldCheck,
@@ -32,6 +33,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { api, normalizeInstance, type Job } from "../api/client";
 import { JobsPage } from "./JobsPage";
 import { JobLogsPage } from "./JobLogsPage";
+import { GameLogsPage } from "./GameLogsPage";
 import {
   InstanceConfigModal,
   type ConfigurableInstance,
@@ -114,7 +116,7 @@ type Props = {
   initialPackages?: PackageVersion[];
   onAction?: (id: string, action: string) => void;
 };
-type Page = "overview" | "private" | "content" | "jobs" | "joblogs" | "schedules" | "settings";
+type Page = "overview" | "private" | "content" | "jobs" | "joblogs" | "gamelogs" | "schedules" | "settings";
 type HealthState = {
   status: "checking" | "online" | "error";
   message: string;
@@ -278,6 +280,9 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
   const mountedRef = useRef(true);
   const [pending, setPending] = useState<Instance | null>(null);
   const [page, setPage] = useState<Page>("overview");
+  const [selectedInstanceID, setSelectedInstanceID] = useState(
+    initialInstances?.[0]?.id ?? "",
+  );
   const [logJob, setLogJob] = useState<Job | null>(null);
   const [terminal, setTerminal] = useState<Instance | null>(null);
   const [playersTarget, setPlayersTarget] = useState<Instance | null>(null);
@@ -508,6 +513,15 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
       liveInstanceIDs.current.clear();
     };
   }, [auth, injected, loadInstances]);
+  useEffect(() => {
+    const selectionStillExists = instances.some(
+      (instance) => instance.id === selectedInstanceID,
+    );
+    if (!selectionStillExists) {
+      setSelectedInstanceID(instances[0]?.id ?? "");
+    }
+    if (!instances.length && page === "gamelogs") setPage("overview");
+  }, [instances, page, selectedInstanceID]);
   const queue = async (path: string, body: any) => {
     const serialized = JSON.stringify(body);
     const key = `${path}\u0000${serialized}`;
@@ -630,6 +644,9 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
   const running = instances.filter(
     (x) => displayState(x) === "running",
   ).length;
+  const selectedInstance = instances.find(
+    (instance) => instance.id === selectedInstanceID,
+  );
   return (
     <div className="shell">
       <aside>
@@ -641,6 +658,20 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
           </div>
         </div>
         <nav aria-label="主导航">
+          {page === "gamelogs" ? <label className="instance-selector">
+            当前实例
+            <select
+              aria-label="当前实例"
+              value={selectedInstance?.id ?? ""}
+              disabled={!instances.length}
+              onChange={(event) => setSelectedInstanceID(event.target.value)}
+            >
+              {!instances.length ? <option value="">暂无实例</option> : null}
+              {instances.map((instance) => (
+                <option key={instance.id} value={instance.id}>{instance.name}</option>
+              ))}
+            </select>
+          </label> : null}
           <Nav
             active={page === "overview"}
             onClick={() => setPage("overview")}
@@ -661,6 +692,14 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
             icon={<Box />}
           >
             内容仓库
+          </Nav>
+          <Nav
+            active={page === "gamelogs"}
+            onClick={() => setPage("gamelogs")}
+            icon={<ScrollText />}
+            disabled={!selectedInstance}
+          >
+            游戏日志
           </Nav>
           <Nav
             active={page === "jobs" || page === "joblogs"}
@@ -713,6 +752,8 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
                     ? "持久任务流水"
                     : page === "joblogs"
                       ? "任务实时日志"
+                    : page === "gamelogs"
+                      ? "游戏日志"
                     : page === "schedules"
                       ? "自动维护计划"
                       : "系统与凭据"}
@@ -769,6 +810,9 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
         )}
         {page === "jobs" && <JobsPage onOpenLogs={(selected) => { setLogJob(selected); setPage("joblogs"); }} />}
         {page === "joblogs" && logJob ? <JobLogsPage job={logJob} onBack={() => setPage("jobs")} /> : null}
+        {page === "gamelogs" && selectedInstance ? (
+          <GameLogsPage key={selectedInstance.id} instanceID={selectedInstance.id} />
+        ) : null}
         {page === "schedules" && (
           <SchedulesPage instances={instances} packages={packages} />
         )}{" "}
@@ -853,15 +897,17 @@ function Nav({
   active,
   onClick,
   icon,
+  disabled = false,
   children,
 }: {
   active: boolean;
   onClick: () => void;
   icon: ReactNode;
+  disabled?: boolean;
   children: ReactNode;
 }) {
   return (
-    <button className={active ? "active" : ""} onClick={onClick}>
+    <button className={active ? "active" : ""} onClick={onClick} disabled={disabled}>
       {icon}
       {children}
     </button>
@@ -1667,6 +1713,12 @@ function SettingsPage() {
   const [jobSettingsReady, setJobSettingsReady] = useState(false);
   const [savingJobs, setSavingJobs] = useState(false);
   const [jobsNotice, setJobsNotice] = useState("");
+  const [confirmedGameLogDays, setConfirmedGameLogDays] = useState(14);
+  const [draftGameLogDays, setDraftGameLogDays] = useState("14");
+  const [gameLogSettingsReady, setGameLogSettingsReady] = useState(false);
+  const [gameLogBusy, setGameLogBusy] = useState<"save" | "cleanup" | "">("");
+  const [gameLogsNotice, setGameLogsNotice] = useState("");
+  const gameLogRequestSequence = useRef(0);
   const settingsActions = useAsyncLocks();
   useEffect(() => {
     api<any>("/api/settings/steam")
@@ -1685,6 +1737,22 @@ function SettingsPage() {
         setJobSettingsReady(true);
       })
       .catch((reason) => setSettingsError(errorMessage(reason)));
+    const gameLogLoadSequence = ++gameLogRequestSequence.current;
+    api<{ retention_days: number }>("/api/settings/game-logs")
+      .then((settings) => {
+        if (gameLogLoadSequence !== gameLogRequestSequence.current) return;
+        if (!Number.isInteger(settings.retention_days) || settings.retention_days < 1 || settings.retention_days > 365) {
+          throw new Error("游戏日志设置数据无效");
+        }
+        setConfirmedGameLogDays(settings.retention_days);
+        setDraftGameLogDays(String(settings.retention_days));
+        setGameLogSettingsReady(true);
+      })
+      .catch((reason) => {
+        if (gameLogLoadSequence === gameLogRequestSequence.current) {
+          setSettingsError(errorMessage(reason));
+        }
+      });
   }, []);
   const saveSteam = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -1754,6 +1822,65 @@ function SettingsPage() {
       setSettingsError(errorMessage(reason));
     } finally {
       setSavingJobs(false);
+    }
+  };
+  type EnqueueStats = { Queued: number; Deduplicated: number; Failed: number };
+  const formatEnqueueStats = (stats: EnqueueStats) =>
+    `已排队 ${stats.Queued}，已去重 ${stats.Deduplicated}，失败 ${stats.Failed}`;
+  const saveGameLogSettings = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (settingsActions.isLocked("game-logs")) return;
+    const days = Number(draftGameLogDays);
+    if (!Number.isInteger(days) || days < 1 || days > 365) {
+      setSettingsError("游戏日志保留天数必须为 1 至 365 的整数");
+      return;
+    }
+    setSettingsError("");
+    setGameLogsNotice("");
+    setGameLogBusy("save");
+    const sequence = ++gameLogRequestSequence.current;
+    try {
+      await settingsActions.run("game-logs", async () => {
+        const saved = await api<{ retention_days: number; enqueue: EnqueueStats }>(
+          "/api/settings/game-logs",
+          { method: "PUT", body: JSON.stringify({ retention_days: days }) },
+        );
+        if (sequence === gameLogRequestSequence.current) {
+          setConfirmedGameLogDays(saved.retention_days);
+          setDraftGameLogDays(String(saved.retention_days));
+          setGameLogsNotice(`游戏日志设置已保存；${formatEnqueueStats(saved.enqueue)}`);
+        }
+      });
+    } catch (reason) {
+      if (sequence === gameLogRequestSequence.current) {
+        setDraftGameLogDays(String(confirmedGameLogDays));
+        setSettingsError(errorMessage(reason));
+      }
+    } finally {
+      if (sequence === gameLogRequestSequence.current) setGameLogBusy("");
+    }
+  };
+  const cleanupGameLogs = async () => {
+    if (settingsActions.isLocked("game-logs")) return;
+    setSettingsError("");
+    setGameLogsNotice("");
+    setGameLogBusy("cleanup");
+    const sequence = ++gameLogRequestSequence.current;
+    try {
+      await settingsActions.run("game-logs", async () => {
+        const result = await api<EnqueueStats>("/api/settings/game-logs/cleanup", {
+          method: "POST",
+        });
+        if (sequence === gameLogRequestSequence.current) {
+          setGameLogsNotice(`清理任务已提交；${formatEnqueueStats(result)}`);
+        }
+      });
+    } catch (reason) {
+      if (sequence === gameLogRequestSequence.current) {
+        setSettingsError(errorMessage(reason));
+      }
+    } finally {
+      if (sequence === gameLogRequestSequence.current) setGameLogBusy("");
     }
   };
   return (
@@ -1831,6 +1958,58 @@ function SettingsPage() {
           {savingJobs ? "保存中…" : "保存"}
         </button>
       </form>
+      <section className="control-form" aria-labelledby="game-log-settings-title">
+        <p className="eyebrow">PERSISTENT GAME LOGS</p>
+        <h2 id="game-log-settings-title">游戏日志</h2>
+        <p>默认保留 14 天。日志跨游戏重装和插件重装保留；永久删除实例时一并删除。</p>
+        <p>调高保留天数不会恢复已删除日志。清理结果可在任务流水中查看。</p>
+        <form onSubmit={saveGameLogSettings}>
+          <label>
+            游戏日志保留天数
+            <input
+              type="number"
+              min={1}
+              max={365}
+              step={1}
+              required
+              value={draftGameLogDays}
+              disabled={!gameLogSettingsReady || gameLogBusy !== ""}
+              onChange={(event) => {
+                const value = event.target.value;
+                setDraftGameLogDays(value);
+                setGameLogsNotice("");
+                const days = Number(value);
+                setSettingsError(
+                  value !== "" && (!Number.isInteger(days) || days < 1 || days > 365)
+                    ? "游戏日志保留天数必须为 1 至 365 的整数"
+                    : "",
+                );
+              }}
+            />
+          </label>
+          <p>当前确认值：{confirmedGameLogDays} 天</p>
+          <button
+            className="create"
+            type="submit"
+            aria-label="保存游戏日志设置"
+            disabled={!gameLogSettingsReady || gameLogBusy !== ""}
+            aria-busy={gameLogBusy === "save"}
+          >
+            {gameLogBusy === "save" ? "保存中…" : "保存"}
+          </button>
+        </form>
+        <button
+          className="create"
+          type="button"
+          aria-label="立即清理游戏日志"
+          disabled={!gameLogSettingsReady || gameLogBusy !== ""}
+          aria-busy={gameLogBusy === "cleanup"}
+          onClick={() => void cleanupGameLogs()}
+        >
+          {gameLogBusy === "cleanup" ? "提交中…" : "立即清理"}
+        </button>
+        {gameLogsNotice ? <p role="status">{gameLogsNotice}</p> : null}
+      </section>
     </div>
   );
 }

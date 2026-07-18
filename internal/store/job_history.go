@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strconv"
@@ -12,12 +13,16 @@ import (
 const (
 	jobHistoryMigrationVersion = 6
 
-	DefaultCompletedJobLimit = 25
-	MinCompletedJobLimit     = 1
-	MaxCompletedJobLimit     = 500
+	DefaultCompletedJobLimit    = 25
+	MinCompletedJobLimit        = 1
+	MaxCompletedJobLimit        = 500
+	DefaultGameLogRetentionDays = 14
+	MinGameLogRetentionDays     = 1
+	MaxGameLogRetentionDays     = 365
 
 	// Keep the original key so existing installations retain their configured value.
-	completedJobLimitKey = "successful_job_limit"
+	completedJobLimitKey    = "successful_job_limit"
+	gameLogRetentionDaysKey = "game_log_retention_days"
 )
 
 type jobExecer interface {
@@ -133,6 +138,12 @@ func (s *Store) JobEvents(jobID string) ([]domain.JobEvent, error) {
 	return events, rows.Err()
 }
 
+func (s *Store) HasActiveJob(ctx context.Context, instanceID, kind string) (bool, error) {
+	var active bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM jobs WHERE instance_id=? AND type=? AND status IN ('pending','running'))`, instanceID, kind).Scan(&active)
+	return active, err
+}
+
 func (s *Store) SaveJobWithEvent(record domain.JobRecord, event domain.JobEvent) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -194,6 +205,39 @@ ON CONFLICT(name) DO UPDATE SET value=excluded.value,updated_at=excluded.updated
 	}
 	s.notifyPrunedJobs(deleted)
 	return nil
+}
+
+func (s *Store) GameLogRetentionDays() (int, error) {
+	var raw string
+	err := s.db.QueryRow(`SELECT value FROM system_settings WHERE name=?`, gameLogRetentionDaysKey).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return DefaultGameLogRetentionDays, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	days, err := strconv.Atoi(raw)
+	if err != nil || days < MinGameLogRetentionDays || days > MaxGameLogRetentionDays {
+		return 0, fmt.Errorf("invalid stored game log retention days %q", raw)
+	}
+	return days, nil
+}
+
+func (s *Store) SetGameLogRetentionDays(days int) error {
+	if days < MinGameLogRetentionDays || days > MaxGameLogRetentionDays {
+		return fmt.Errorf("game log retention days must be between %d and %d", MinGameLogRetentionDays, MaxGameLogRetentionDays)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO system_settings(name,value,updated_at) VALUES(?,?,?)
+ON CONFLICT(name) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
+		gameLogRetentionDaysKey, strconv.Itoa(days), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) PruneCompletedJobs() error {

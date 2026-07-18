@@ -27,6 +27,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/gamelogs"
 	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/metrics"
@@ -80,6 +81,101 @@ func TestJobLogHistoryStreamAndDownload(t *testing.T) {
 	<-done
 	if !strings.Contains(stream.Body.String(), "id: 2") || !strings.Contains(stream.Body.String(), "event: job-log") {
 		t.Fatalf("stream=%q", stream.Body.String())
+	}
+}
+
+func TestGameLogsHTTPContract(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	if err := db.CreateInstance(context.Background(), domain.Instance{ID: "logs", NodeID: "local", Name: "logs", GamePort: 27015}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	gm := gamelogs.NewManager(root, gamelogs.Options{})
+	_ = os.MkdirAll(filepath.Join(root, "instances", "logs", "logs", "game"), 0755)
+	name := "server..log"
+	content := strings.Repeat("x", 70*1024)
+	if err := os.WriteFile(filepath.Join(root, "instances", "logs", "logs", "game", name), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	s = New(db, s.auth, WithGameLogs(gm, nil))
+	c := loginCookie(t, s)
+	tr := authenticatedJSON(t, s, c, http.MethodGet, "/api/instances/logs/game-logs/tree", "")
+	var tree []gamelogs.Entry
+	if tr.Code != 200 || json.Unmarshal(tr.Body.Bytes(), &tree) != nil || len(tree) != 1 || tree[0].Kind != "game" || tree[0].Path != name {
+		t.Fatalf("tree=%d %s", tr.Code, tr.Body.String())
+	}
+	pr := authenticatedJSON(t, s, c, http.MethodGet, "/api/instances/logs/game-logs/preview?kind=game&path="+url.QueryEscape(name), "")
+	var preview gamelogs.Preview
+	if pr.Code != 200 || json.Unmarshal(pr.Body.Bytes(), &preview) != nil || len(preview.Text) != len(content) || preview.Truncated {
+		t.Fatalf("preview=%d %s", pr.Code, pr.Body.String())
+	}
+	dr := authenticatedJSON(t, s, c, http.MethodGet, "/api/instances/logs/game-logs/download?kind=game&path="+url.QueryEscape(name), "")
+	if dr.Code != 200 || !strings.Contains(dr.Header().Get("Content-Disposition"), "filename*=") {
+		t.Fatalf("download=%d headers=%v", dr.Code, dr.Header())
+	}
+	traversal := authenticatedJSON(t, s, c, http.MethodGet, "/api/instances/logs/game-logs/preview?kind=game&path="+url.QueryEscape("../"+name), "")
+	if traversal.Code != 422 {
+		t.Fatalf("traversal=%d %s", traversal.Code, traversal.Body.String())
+	}
+	bad := authenticatedJSON(t, s, c, http.MethodGet, "/api/instances/logs/game-logs/preview?kind=bad&path=x", "")
+	if bad.Code != 422 {
+		t.Fatalf("bad=%d", bad.Code)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/instances/logs/game-logs/tree", nil)
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != 401 {
+		t.Fatalf("auth=%d", rr.Code)
+	}
+	set := authenticatedJSON(t, s, c, http.MethodGet, "/api/settings/game-logs", "")
+	if set.Code != 200 || !strings.Contains(set.Body.String(), "14") {
+		t.Fatalf("settings=%d %s", set.Code, set.Body.String())
+	}
+	put := authenticatedJSON(t, s, c, http.MethodPut, "/api/settings/game-logs", `{"retention_days":30} trailing`)
+	if put.Code != 503 {
+		t.Fatalf("trailing=%d", put.Code)
+	}
+	if got := authenticatedJSON(t, s, c, http.MethodPut, "/api/settings/game-logs", `{"retention_days":30}`).Code; got != 503 {
+		t.Fatalf("nil scheduler=%d", got)
+	}
+}
+
+func TestPutGameLogSettingsQueuesCleanupOnlyWhenRetentionDecreases(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	if err := db.CreateInstance(context.Background(), domain.Instance{ID: "logs", NodeID: "local", Name: "logs", GamePort: 27015}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	manager := gamelogs.NewManager(root, gamelogs.Options{})
+	logScheduler := gamelogs.NewScheduler(db, jobs.NewManager(), manager)
+	s = New(db, s.auth, WithGameLogs(manager, logScheduler))
+	cookie := loginCookie(t, s)
+
+	for _, tc := range []struct {
+		name   string
+		days   int
+		queued int
+	}{
+		{name: "lower", days: 7, queued: 1},
+		{name: "higher", days: 30, queued: 0},
+		{name: "equal", days: 30, queued: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := authenticatedJSON(t, s, cookie, http.MethodPut, "/api/settings/game-logs", fmt.Sprintf(`{"retention_days":%d}`, tc.days))
+			var body struct {
+				RetentionDays int                    `json:"retention_days"`
+				Enqueue       gamelogs.EnqueueResult `json:"enqueue"`
+			}
+			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &body) != nil || body.RetentionDays != tc.days || body.Enqueue.Queued != tc.queued {
+				t.Fatalf("response=%d %s", response.Code, response.Body.String())
+			}
+			stored, err := db.GameLogRetentionDays()
+			if err != nil || stored != tc.days {
+				t.Fatalf("stored=%d err=%v", stored, err)
+			}
+		})
 	}
 }
 

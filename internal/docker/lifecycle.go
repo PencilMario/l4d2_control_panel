@@ -14,6 +14,8 @@ import (
 const ManagedLabel = "io.l4d2-panel.managed"
 const InstanceLabel = "io.l4d2-panel.instance-id"
 const RoleLabel = "io.l4d2-panel.role"
+const GameLogMountsLabel = "io.l4d2-panel.game-log-mounts"
+const GameLogMountsVersion = "v1"
 
 type ContainerSpec struct {
 	Name, Image, NetworkMode string
@@ -45,7 +47,7 @@ func BuildContainerSpecWithGamePath(root, gamePath string, v domain.Instance) (C
 	if err != nil {
 		return ContainerSpec{}, err
 	}
-	return ContainerSpec{Name: "l4d2-" + v.ID, Image: v.RuntimeImage, NetworkMode: "host", Labels: map[string]string{ManagedLabel: "true", InstanceLabel: v.ID, RoleLabel: "game"}, Mounts: []string{gamePath + ":/opt/l4d2/game", filepath.Join(base, "private") + ":/opt/l4d2/private", filepath.Join(root, "shared-vpk") + ":/opt/l4d2/shared-vpk:ro"}, Env: []string{"SRCDS_PORT=" + strconv.Itoa(v.GamePort), "SRCDS_TV_PORT=" + strconv.Itoa(v.SourceTVPort), "L4D2_PLUGIN_PORTS=" + strings.Join(pluginPorts, ","), "SRCDS_MAP=" + v.StartMap, "SRCDS_MODE=" + v.GameMode, "SRCDS_TICKRATE=" + strconv.Itoa(v.Tickrate), "SRCDS_MAXPLAYERS=" + strconv.Itoa(v.MaxPlayers), "SRCDS_EXTRA_ARGS=" + v.ExtraArgs, "SRCDS_EXTRA_ARGS_JSON=" + string(extraJSON)}}, nil
+	return ContainerSpec{Name: "l4d2-" + v.ID, Image: v.RuntimeImage, NetworkMode: "host", Labels: map[string]string{ManagedLabel: "true", InstanceLabel: v.ID, RoleLabel: "game", GameLogMountsLabel: GameLogMountsVersion}, Mounts: []string{gamePath + ":/opt/l4d2/game", filepath.Join(base, "private") + ":/opt/l4d2/private", filepath.Join(root, "shared-vpk") + ":/opt/l4d2/shared-vpk:ro", filepath.Join(base, "logs", "game") + ":/opt/l4d2/game/left4dead2/logs", filepath.Join(base, "logs", "sourcemod") + ":/opt/l4d2/game/left4dead2/addons/sourcemod/logs"}, Env: []string{"SRCDS_PORT=" + strconv.Itoa(v.GamePort), "SRCDS_TV_PORT=" + strconv.Itoa(v.SourceTVPort), "L4D2_PLUGIN_PORTS=" + strings.Join(pluginPorts, ","), "SRCDS_MAP=" + v.StartMap, "SRCDS_MODE=" + v.GameMode, "SRCDS_TICKRATE=" + strconv.Itoa(v.Tickrate), "SRCDS_MAXPLAYERS=" + strconv.Itoa(v.MaxPlayers), "SRCDS_EXTRA_ARGS=" + v.ExtraArgs, "SRCDS_EXTRA_ARGS_JSON=" + string(extraJSON)}}, nil
 }
 func SupervisorExec(containerID, operation string) (ExecSpec, error) {
 	allowed := map[string][]string{"attach": {"l4d2-supervisor", "attach"}, "status": {"l4d2-supervisor", "status", "--json"}, "stop": {"l4d2-supervisor", "stop"}}

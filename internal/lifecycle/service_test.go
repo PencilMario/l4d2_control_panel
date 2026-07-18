@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -38,10 +39,12 @@ type fakeEngine struct {
 	containers                []docker.Container
 	removed                   bool
 	events                    *[]string
+	createdSpec               docker.ContainerSpec
 }
 
-func (f *fakeEngine) Create(context.Context, docker.ContainerSpec) (string, error) {
+func (f *fakeEngine) Create(_ context.Context, spec docker.ContainerSpec) (string, error) {
 	f.created = true
+	f.createdSpec = spec
 	if f.events != nil {
 		*f.events = append(*f.events, "create")
 	}
@@ -58,11 +61,23 @@ func (f *fakeEngine) RunSupervisor(_ context.Context, _ string, op string) error
 	f.execOperation = op
 	return nil
 }
-func (f *fakeEngine) Stop(context.Context, string, int) error { f.stopped = true; return nil }
+func (f *fakeEngine) Stop(context.Context, string, int) error {
+	f.stopped = true
+	if f.events != nil {
+		*f.events = append(*f.events, "stop")
+	}
+	return nil
+}
 func (f *fakeEngine) ListManaged(context.Context) ([]docker.Container, error) {
 	return f.containers, nil
 }
-func (f *fakeEngine) Remove(context.Context, string) error { f.removed = true; return nil }
+func (f *fakeEngine) Remove(context.Context, string) error {
+	f.removed = true
+	if f.events != nil {
+		*f.events = append(*f.events, "remove")
+	}
+	return nil
+}
 
 type freePorts struct{}
 
@@ -79,10 +94,50 @@ type fixedSpace uint64
 
 func (s fixedSpace) Available(string) (uint64, error) { return uint64(s), nil }
 
+type controlledHealth struct {
+	mu      sync.Mutex
+	calls   []string
+	release chan struct{}
+	called  chan string
+}
+
+func (h *controlledHealth) Wait(_ context.Context, instance domain.Instance) error {
+	h.mu.Lock()
+	h.calls = append(h.calls, instance.ContainerID)
+	h.mu.Unlock()
+	if h.called != nil {
+		h.called <- instance.ContainerID
+	}
+	if instance.ContainerID == "old" {
+		<-h.release
+	}
+	return nil
+}
+
+func (h *controlledHealth) recorded() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.calls...)
+}
+
 type fakeProvisioner struct {
 	repo   *store.Store
 	events *[]string
 	err    error
+}
+
+type fakeLogPreparer struct {
+	events *[]string
+	err    error
+	check  func() error
+}
+
+func (p fakeLogPreparer) Prepare(_ context.Context, instanceID string) error {
+	*p.events = append(*p.events, "logs:"+instanceID)
+	if p.check != nil {
+		return p.check()
+	}
+	return p.err
 }
 
 func (p fakeProvisioner) Prepare(ctx context.Context, value domain.Instance) error {
@@ -107,11 +162,11 @@ func TestStartPreparesSelectedPackageBeforeCreatingContainer(t *testing.T) {
 	}
 	events := []string{}
 	engine := &fakeEngine{events: &events}
-	service := New(db, engine, freePorts{}, root, WithProvisioner(fakeProvisioner{repo: db, events: &events}))
+	service := New(db, engine, freePorts{}, root, WithProvisioner(fakeProvisioner{repo: db, events: &events}), WithLogPreparer(fakeLogPreparer{events: &events}))
 	if err := service.Start(context.Background(), value.ID); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(events, ",") != "prepare,create,start" {
+	if strings.Join(events, ",") != "prepare,logs:prepared,create,start" {
 		t.Fatalf("events=%v", events)
 	}
 	got, err := db.Instance(context.Background(), value.ID)
@@ -120,6 +175,56 @@ func TestStartPreparesSelectedPackageBeforeCreatingContainer(t *testing.T) {
 	}
 	if got.PackageVersion != "package-a" || got.ActualState != domain.StateRunning {
 		t.Fatalf("instance=%#v", got)
+	}
+}
+
+func TestStartDoesNotCreateContainerWhenLogPreparationFails(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	value := domain.Instance{ID: "failed-logs", NodeID: "local", Name: "failed logs", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", ActualState: domain.StateStopped}
+	if err := db.CreateInstance(context.Background(), value); err != nil {
+		t.Fatal(err)
+	}
+	events := []string{}
+	engine := &fakeEngine{events: &events}
+	service := New(db, engine, freePorts{}, root, WithLogPreparer(fakeLogPreparer{events: &events, err: errors.New("migration failed")}))
+	if err := service.Start(context.Background(), value.ID); err == nil {
+		t.Fatal("expected log preparation failure")
+	}
+	got, err := db.Instance(context.Background(), value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if engine.created || got.ActualState != domain.StateFaulted || strings.Join(events, ",") != "logs:failed-logs" {
+		t.Fatalf("engine=%#v instance=%#v events=%v", engine, got, events)
+	}
+}
+
+func TestStartLeavesLogDirectoryOwnershipToLogPreparer(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	value := domain.Instance{ID: "log-owner", NodeID: "local", Name: "log owner", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", ActualState: domain.StateStopped}
+	if err := db.CreateInstance(context.Background(), value); err != nil {
+		t.Fatal(err)
+	}
+	events := []string{}
+	base := filepath.Join(root, "instances", value.ID)
+	preparer := fakeLogPreparer{events: &events, check: func() error {
+		if _, err := os.Lstat(filepath.Join(base, "logs")); !os.IsNotExist(err) {
+			return errors.New("lifecycle created logs before preparer")
+		}
+		return os.MkdirAll(filepath.Join(base, "logs", "game"), 0o750)
+	}}
+	if err := New(db, &fakeEngine{}, freePorts{}, root, WithLogPreparer(preparer)).Start(context.Background(), value.ID); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -294,7 +399,7 @@ func TestReconcileMarksMissingAndReturnsUnknownContainers(t *testing.T) {
 	known.GamePort = 27016
 	_ = db.CreateInstance(context.Background(), missing)
 	_ = db.CreateInstance(context.Background(), known)
-	engine := &fakeEngine{containers: []docker.Container{{ID: "known-container", State: "running", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "known", docker.RoleLabel: "game"}}, {ID: "unknown-container", State: "running", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "unknown", docker.RoleLabel: "game"}}}}
+	engine := &fakeEngine{containers: []docker.Container{{ID: "known-container", State: "running", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "known", docker.RoleLabel: "game", docker.GameLogMountsLabel: docker.GameLogMountsVersion}}, {ID: "unknown-container", State: "running", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "unknown", docker.RoleLabel: "game"}}}}
 	unknown, err := New(db, engine, freePorts{}, root).Reconcile(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -303,6 +408,114 @@ func TestReconcileMarksMissingAndReturnsUnknownContainers(t *testing.T) {
 	gotKnown, _ := db.Instance(context.Background(), "known")
 	if gotMissing.ActualState != domain.StateOrphaned || gotKnown.ContainerID != "known-container" || gotKnown.ActualState != domain.StateRunning || len(unknown) != 1 || unknown[0].ID != "unknown-container" {
 		t.Fatalf("missing=%#v known=%#v unknown=%#v", gotMissing, gotKnown, unknown)
+	}
+}
+
+func TestReconcileRebuildsLegacyGameContainersWithPersistentLogMounts(t *testing.T) {
+	for _, tc := range []struct {
+		name, containerState, mountVersion string
+		desired, actual                    domain.InstanceState
+		wantEvents                         string
+	}{
+		{name: "running", containerState: "running", desired: domain.StateRunning, actual: domain.StateRunning, wantEvents: "logs:abc,stop,remove,logs:abc,create,start"},
+		{name: "stopped", containerState: "exited", desired: domain.StateStopped, actual: domain.StateStopped, wantEvents: "logs:abc,remove,logs:abc,create"},
+		{name: "v0", containerState: "exited", mountVersion: "v0", desired: domain.StateStopped, actual: domain.StateStopped, wantEvents: "logs:abc,remove,logs:abc,create"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			db, _ := store.Open(filepath.Join(root, "panel.db"))
+			defer db.Close()
+			instance := domain.Instance{ID: "abc", NodeID: "local", Name: "one", ContainerID: "old", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: tc.desired, ActualState: tc.actual}
+			if err := db.CreateInstance(context.Background(), instance); err != nil {
+				t.Fatal(err)
+			}
+			events := []string{}
+			engine := &fakeEngine{events: &events, containers: []docker.Container{{ID: "old", State: tc.containerState, Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "abc", docker.RoleLabel: "game", docker.GameLogMountsLabel: tc.mountVersion}}}}
+			service := New(db, engine, freePorts{}, root, WithLogPreparer(fakeLogPreparer{events: &events}))
+			if _, err := service.Reconcile(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := db.Instance(context.Background(), "abc")
+			if strings.Join(events, ",") != tc.wantEvents || got.DesiredState != tc.desired || got.ActualState != tc.actual || got.ContainerID != "container-1" {
+				t.Fatalf("events=%v instance=%#v", events, got)
+			}
+			if engine.createdSpec.Labels[docker.GameLogMountsLabel] != docker.GameLogMountsVersion || !strings.Contains(strings.Join(engine.createdSpec.Mounts, "|"), filepath.Join(root, "instances", "abc", "logs", "game")) {
+				t.Fatalf("created spec=%#v", engine.createdSpec)
+			}
+		})
+	}
+}
+
+func TestReconcileLegacyRunningContainerChecksHealthOnlyAfterRebuild(t *testing.T) {
+	root := t.TempDir()
+	db, _ := store.Open(filepath.Join(root, "panel.db"))
+	defer db.Close()
+	instance := domain.Instance{ID: "abc", NodeID: "local", Name: "one", ContainerID: "old", GamePort: 27015, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}
+	_ = db.CreateInstance(context.Background(), instance)
+	engine := &fakeEngine{containers: []docker.Container{{ID: "old", State: "running", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "abc", docker.RoleLabel: "game"}}}}
+	health := &controlledHealth{release: make(chan struct{})}
+	defer close(health.release)
+	if _, err := New(db, engine, freePorts{}, root, WithHealth(health)).Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := db.Instance(context.Background(), "abc")
+	if calls := health.recorded(); len(calls) != 1 || calls[0] != "container-1" || got.ContainerID != "container-1" || got.ActualState != domain.StateRunning {
+		t.Fatalf("health calls=%v instance=%#v", calls, got)
+	}
+}
+
+func TestReconcileLegacyUpgradePreparationFailureKeepsContainerRetryable(t *testing.T) {
+	root := t.TempDir()
+	db, _ := store.Open(filepath.Join(root, "panel.db"))
+	defer db.Close()
+	instance := domain.Instance{ID: "abc", NodeID: "local", Name: "one", ContainerID: "old", GamePort: 27015, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}
+	_ = db.CreateInstance(context.Background(), instance)
+	events := []string{}
+	engine := &fakeEngine{events: &events, containers: []docker.Container{{ID: "old", State: "running", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "abc", docker.RoleLabel: "game"}}}}
+	_, err := New(db, engine, freePorts{}, root, WithLogPreparer(fakeLogPreparer{events: &events, err: errors.New("migration failed")})).Reconcile(context.Background())
+	got, _ := db.Instance(context.Background(), "abc")
+	if err == nil || !strings.Contains(err.Error(), "upgrade legacy game container abc") || engine.removed || got.ContainerID != "old" || got.DesiredState != domain.StateRunning {
+		t.Fatalf("err=%v engine=%#v instance=%#v", err, engine, got)
+	}
+}
+
+func TestReconcileLeavesCurrentGameContainerUntouched(t *testing.T) {
+	root := t.TempDir()
+	db, _ := store.Open(filepath.Join(root, "panel.db"))
+	defer db.Close()
+	instance := domain.Instance{ID: "abc", NodeID: "local", Name: "one", GamePort: 27015, RuntimeImage: "runtime", DesiredState: domain.StateStopped, ActualState: domain.StateStopped}
+	_ = db.CreateInstance(context.Background(), instance)
+	engine := &fakeEngine{containers: []docker.Container{{ID: "current", State: "exited", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "abc", docker.RoleLabel: "game", docker.GameLogMountsLabel: docker.GameLogMountsVersion}}}}
+	if _, err := New(db, engine, freePorts{}, root).Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if engine.removed || engine.created {
+		t.Fatalf("current container was rebuilt: %#v", engine)
+	}
+}
+
+func TestReconcileCurrentRunningContainerKeepsAsynchronousHealthCheck(t *testing.T) {
+	root := t.TempDir()
+	db, _ := store.Open(filepath.Join(root, "panel.db"))
+	defer db.Close()
+	instance := domain.Instance{ID: "abc", NodeID: "local", Name: "one", GamePort: 27015, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}
+	_ = db.CreateInstance(context.Background(), instance)
+	engine := &fakeEngine{containers: []docker.Container{{ID: "current", State: "running", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "abc", docker.RoleLabel: "game", docker.GameLogMountsLabel: docker.GameLogMountsVersion}}}}
+	called := make(chan string, 1)
+	health := &controlledHealth{release: make(chan struct{}), called: called}
+	if _, err := New(db, engine, freePorts{}, root, WithHealth(health)).Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case id := <-called:
+		if id != "current" {
+			t.Fatalf("health checked %q", id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("current container health check did not run asynchronously")
+	}
+	if engine.removed || engine.created {
+		t.Fatalf("current container was rebuilt: %#v", engine)
 	}
 }
 

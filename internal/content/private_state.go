@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -328,7 +329,11 @@ func (m *PrivateManager) readPrivateManifest(instanceID string) (privateManifest
 }
 
 func validateManifestEntry(path string, entry manifestEntry) error {
-	if path == "" || strings.Contains(path, "\\") || filepath.IsAbs(path) || filepath.ToSlash(filepath.Clean(filepath.FromSlash(path))) != path || path == "." || strings.HasPrefix(path, "../") {
+	if path == "" || strings.Contains(path, "\\") || pathpkg.IsAbs(path) || pathpkg.Clean(path) != path || path == "." || strings.HasPrefix(path, "../") {
+		return errors.New("invalid private manifest path")
+	}
+	first := strings.SplitN(path, "/", 2)[0]
+	if len(first) >= 2 && first[1] == ':' {
 		return errors.New("invalid private manifest path")
 	}
 	switch entry.Kind {

@@ -21,3 +21,20 @@ describe("schedule help dialog layout", () => {
     expect(rule).toContain("max-width: none");
   });
 });
+
+describe("game log highlighting", () => {
+  it("styles structural tokens and every normal/bright ANSI foreground distinctly", () => {
+    for (const token of ["timestamp", "plugin", "module", "emphasis", "player", "exception", "stack"]) {
+      expect(css).toMatch(new RegExp(`\\.log-token-${token}\\s*\\{`));
+    }
+
+    const colors = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"];
+    for (const color of colors) {
+      const normal = css.match(new RegExp(`\\.log-ansi-${color}\\s*\\{([^}]*)\\}`))?.[1] ?? "";
+      const bright = css.match(new RegExp(`\\.log-ansi-bright-${color}\\s*\\{([^}]*)\\}`))?.[1] ?? "";
+      expect(normal).toMatch(/color:/);
+      expect(bright).toMatch(/color:/);
+      expect(bright).not.toBe(normal);
+    }
+  });
+});

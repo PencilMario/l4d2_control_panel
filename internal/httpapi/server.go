@@ -25,6 +25,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/gamelogs"
 	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/maintenance"
@@ -63,14 +64,16 @@ type Server struct {
 	sharedGameMigration interface {
 		Migrate(context.Context) error
 	}
-	schedules       *scheduler.Service
-	secrets         *secrets.Service
-	resources       ResourceProvider
-	performance     PerformanceProvider
-	system          SystemProvider
-	secureCookie    bool
-	vpkRestarts     VPKRestartRegistrar
-	maintenanceGate *maintenance.Gate
+	schedules        *scheduler.Service
+	gameLogs         *gamelogs.Manager
+	gameLogScheduler *gamelogs.Scheduler
+	secrets          *secrets.Service
+	resources        ResourceProvider
+	performance      PerformanceProvider
+	system           SystemProvider
+	secureCookie     bool
+	vpkRestarts      VPKRestartRegistrar
+	maintenanceGate  *maintenance.Gate
 }
 
 func WithPrivateUploads(manager *content.PrivateUploadManager) Option {
@@ -144,6 +147,9 @@ func WithSharedGameMigration(service interface {
 func WithScheduler(service *scheduler.Service) Option {
 	return func(s *Server) { s.schedules = service }
 }
+func WithGameLogs(manager *gamelogs.Manager, scheduler *gamelogs.Scheduler) Option {
+	return func(s *Server) { s.gameLogs = manager; s.gameLogScheduler = scheduler }
+}
 func WithSecrets(service *secrets.Service) Option { return func(s *Server) { s.secrets = service } }
 
 type ResourceProvider interface {
@@ -194,6 +200,12 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Post("/api/game/update", s.updateSharedGame)
 		r.Post("/api/game/migrate", s.migrateSharedGame)
 		r.Get("/api/instances/{id}/overview", s.instanceOverview)
+		r.Get("/api/instances/{id}/game-logs/tree", s.gameLogsTree)
+		r.Get("/api/instances/{id}/game-logs/preview", s.gameLogsPreview)
+		r.Get("/api/instances/{id}/game-logs/download", s.gameLogsDownload)
+		r.Get("/api/settings/game-logs", s.getGameLogSettings)
+		r.Put("/api/settings/game-logs", s.putGameLogSettings)
+		r.Post("/api/settings/game-logs/cleanup", s.cleanupGameLogs)
 		r.Get("/api/instances/{id}/performance-history", s.instancePerformanceHistory)
 		r.Post("/api/instances", s.createInstance)
 		r.Put("/api/instances/{id}", s.updateInstance)

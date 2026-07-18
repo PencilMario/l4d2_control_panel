@@ -17,11 +17,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/gamelogs"
 	"github.com/not0721here/l4d2-control-panel/internal/httpapi"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/metrics"
 	"github.com/not0721here/l4d2-control-panel/internal/players"
@@ -67,6 +70,37 @@ func (l *fixtureLifecycle) Start(ctx context.Context, id string) error {
 	instance.DesiredState = domain.StateRunning
 	instance.ActualState = domain.StateRunning
 	return l.db.UpdateInstance(ctx, instance)
+}
+
+func seedGameLogs(root, id string) error {
+	logs := []struct {
+		kind, name, content string
+		age                 time.Duration
+	}{
+		{kind: "game", name: "server.log", content: "2026-07-18 12:00:00 ERROR instance=" + id + " UserID=42 127.0.0.1:27015\n"},
+		{kind: "sourcemod", name: "errors/current-error.log", content: "2026-07-18 12:00:01 [SM] ERROR plugin:fixture.smx UserID=42\n"},
+		{kind: "sourcemod", name: "errors/aged-error.log", content: "2026-06-01 12:00:00 ERROR expired fixture log\n", age: 30 * 24 * time.Hour},
+	}
+	for _, value := range logs {
+		path := filepath.Join(root, "instances", id, "logs", value.kind, filepath.FromSlash(value.name))
+		if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+			return err
+		}
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			if err := os.WriteFile(path, []byte(value.content), 0640); err != nil {
+				return err
+			}
+			if value.age > 0 {
+				modified := time.Now().Add(-value.age)
+				if err := os.Chtimes(path, modified, modified); err != nil {
+					return err
+				}
+			}
+		} else if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (l *fixtureLifecycle) Stop(ctx context.Context, id string) error {
@@ -239,8 +273,8 @@ func (fixtureSystem) Info(context.Context) (docker.Info, error) {
 
 type fixtureGameUpdater struct{}
 
-func (fixtureGameUpdater) HasMaintenance(context.Context, string) (bool, error) { return false, nil }
-func (fixtureGameUpdater) UpdateGame(context.Context, string, domain.Instance) error {
+func (*fixtureGameUpdater) HasMaintenance(context.Context, string) (bool, error) { return false, nil }
+func (*fixtureGameUpdater) UpdateGame(context.Context, string, domain.Instance) error {
 	time.Sleep(250 * time.Millisecond)
 	return nil
 }
@@ -248,6 +282,14 @@ func (fixtureGameUpdater) UpdateGame(context.Context, string, domain.Instance) e
 type fixtureDispatcher struct{}
 
 func (fixtureDispatcher) Dispatch(context.Context, domain.ScheduledTask) error { return nil }
+
+func newFixtureJobServices(root string, db *store.Store) (*jobs.Manager, *joblogs.Manager, error) {
+	logManager, err := joblogs.Open(filepath.Join(root, "joblogs"), joblogs.Options{})
+	if err != nil {
+		return nil, nil, err
+	}
+	return jobs.NewPersistentManager(db, jobs.WithLogSink(logManager)), logManager, nil
+}
 
 func main() {
 	root, cleanup, err := fixtureRoot()
@@ -288,10 +330,20 @@ func main() {
 		log.Fatal(err)
 	}
 	lifecycle := &fixtureLifecycle{db: db, root: root}
-	jobManager := jobs.NewPersistentManager(db)
+	jobManager, jobLogManager, err := newFixtureJobServices(root, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer jobLogManager.Close()
 	seedJobs(db)
+	gameLogManager := gamelogs.NewManager(root, gamelogs.Options{})
+	gameLogScheduler := gamelogs.NewScheduler(db, jobManager, gameLogManager)
+	if err := gameLogScheduler.Start(); err != nil {
+		log.Fatal(err)
+	}
+	defer gameLogScheduler.Stop()
 	packageUpdates := &updates.Coordinator{Lifecycle: lifecycle, Deployer: pipeline, Instances: db}
-	gameUpdates := &updates.GameCoordinator{Root: root, Instances: db, Lifecycle: lifecycle, Updater: fixtureGameUpdater{}, Private: private, Packages: packages, Deployer: pipeline}
+	gameUpdates := &updates.GameCoordinator{Root: root, Instances: db, Lifecycle: lifecycle, Updater: &fixtureGameUpdater{}, Private: private, Packages: packages, Deployer: pipeline}
 	schedules := scheduler.NewService(db, fixtureDispatcher{})
 	defer schedules.Stop()
 
@@ -299,7 +351,9 @@ func main() {
 	api := httpapi.New(
 		db,
 		sessions,
+		httpapi.WithGameLogs(gameLogManager, gameLogScheduler),
 		httpapi.WithOperations(lifecycle, jobManager),
+		httpapi.WithJobLogs(jobLogManager),
 		httpapi.WithConsole(console),
 		httpapi.WithPlayers(fixturePlayers{}),
 		httpapi.WithContent(uploads, private, packages, pipeline, packageUpdates),
@@ -314,6 +368,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/__e2e/private-lower", privateLowerDiagnostic(root))
 	mux.HandleFunc("/__e2e/console-output", consoleOutputControl(console))
+	mux.HandleFunc("/__e2e/seed-game-logs", seedGameLogsControl(root, db))
 	mux.Handle("/api/", api.Handler())
 	mux.Handle("/", spaHandler(webRoot()))
 	address := os.Getenv("L4D2_E2E_LISTEN")
@@ -324,6 +379,32 @@ func main() {
 	log.Printf("e2e fixture listening on http://%s", address)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
+	}
+}
+
+func seedGameLogsControl(root string, db *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		id := r.URL.Query().Get("id")
+		if _, err := uuid.Parse(id); err != nil {
+			http.Error(w, "invalid instance id", http.StatusBadRequest)
+			return
+		}
+		if _, err := db.Instance(r.Context(), id); errors.Is(err, store.ErrNotFound) {
+			http.Error(w, "instance not found", http.StatusNotFound)
+			return
+		} else if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := seedGameLogs(root, id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 

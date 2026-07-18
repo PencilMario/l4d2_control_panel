@@ -142,10 +142,27 @@ instances/<id>/game/
 instances/<id>/private/
 instances/<id>/backups/
 instances/<id>/console/
+instances/<id>/logs/game/
+instances/<id>/logs/sourcemod/
 shared-vpk/
 ```
 
 Rebuilding or deleting a game container preserves these directories unless the administrator explicitly confirms data deletion. Content precedence is `package < shared VPK < private overlay`.
+
+Each instance's **Game Logs** page reads the persistent `logs/game` and
+`logs/sourcemod` trees, including nested SourceMod directories, and supports
+previewing and downloading individual files. These paths are Panel-owned
+persistent data mounts: reinstalling game files, redeploying plugins, or
+rebuilding the game container does not remove them. Permanently deleting an
+instance with its data removes its logs with the rest of that instance.
+
+Game logs are retained for 14 days by default. The value can be changed from 1
+to 365 days under **System Settings > Game Logs**. Saving a new value queues a
+cleanup for every instance; increasing it does not restore files already
+deleted. **Clean up now** starts the same persistent `cleanup_game_logs` jobs
+without duplicating an active cleanup for an instance. Queue, deduplication and
+failure counts are shown in Settings, while per-instance scan/deletion
+statistics remain visible in the persistent task feed and task logs.
 
 After a new shared VPK is published, each running instance receives one deferred restart task. The task waits indefinitely while players are online and restarts the instance when it becomes empty. Three consecutive player-query failures are treated as an abnormal state and trigger the restart. Stopped or uninstalled instances are not started automatically; multiple VPK uploads merge into the same per-instance task.
 
