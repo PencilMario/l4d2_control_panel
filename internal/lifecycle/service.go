@@ -48,6 +48,7 @@ func (s *Service) Reconcile(ctx context.Context) ([]docker.Container, error) {
 		}
 	}
 	known := make(map[string]bool, len(instances))
+	legacy := make([]string, 0)
 	for _, instance := range instances {
 		known[instance.ID] = true
 		container, hasGame := gameByID[instance.ID]
@@ -74,6 +75,9 @@ func (s *Service) Reconcile(ctx context.Context) ([]docker.Container, error) {
 			if err := s.repo.UpdateInstance(ctx, instance); err != nil {
 				return nil, err
 			}
+			if container.Labels[docker.GameLogMountsLabel] == "" {
+				legacy = append(legacy, instance.ID)
+			}
 			if container.State == "running" && s.health != nil {
 				candidate := instance
 				go func() {
@@ -90,6 +94,11 @@ func (s *Service) Reconcile(ctx context.Context) ([]docker.Container, error) {
 			if err := s.repo.UpdateInstance(ctx, instance); err != nil {
 				return nil, err
 			}
+		}
+	}
+	for _, instanceID := range legacy {
+		if err := s.Rebuild(ctx, instanceID); err != nil {
+			return nil, fmt.Errorf("upgrade legacy game container %s: %w", instanceID, err)
 		}
 	}
 	unknown := make([]docker.Container, 0)
@@ -286,6 +295,11 @@ func (s *Service) Rebuild(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	if s.logPreparer != nil {
+		if err := s.logPreparer.Prepare(ctx, instance.ID); err != nil {
+			return fmt.Errorf("prepare game logs for rebuild: %w", err)
+		}
+	}
 	wasRunning := instance.DesiredState == domain.StateRunning || instance.ActualState == domain.StateRunning || instance.ActualState == domain.StateStarting || instance.ActualState == domain.StateInstalling
 	if wasRunning {
 		if err := s.Stop(ctx, id); err != nil {
@@ -312,7 +326,22 @@ func (s *Service) Rebuild(ctx context.Context, id string) error {
 	if wasRunning {
 		return s.Start(ctx, id)
 	}
-	return nil
+	if s.logPreparer != nil {
+		if err := s.logPreparer.Prepare(ctx, instance.ID); err != nil {
+			return s.fault(ctx, instance, err)
+		}
+	}
+	spec, err := docker.BuildContainerSpec(s.dataRoot, instance)
+	if err != nil {
+		return s.fault(ctx, instance, err)
+	}
+	containerID, err := s.engine.Create(ctx, spec)
+	if err != nil {
+		return s.fault(ctx, instance, err)
+	}
+	instance.ContainerID = containerID
+	instance.DesiredState, instance.ActualState = domain.StateStopped, domain.StateStopped
+	return s.repo.UpdateInstance(ctx, instance)
 }
 func (s *Service) Delete(ctx context.Context, id string, deleteData bool) error {
 	ctx, release, err := s.lease(ctx)

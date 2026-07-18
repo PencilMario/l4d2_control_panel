@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/go-chi/chi/v5"
+	"github.com/not0721here/l4d2-control-panel/internal/gamelogs"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 	"io"
 	"net/http"
@@ -40,8 +41,13 @@ func validLogQuery(r *http.Request) (string, string, error) {
 	if kind != "game" && kind != "sourcemod" {
 		return "", "", errors.New("invalid kind")
 	}
-	if path == "" || strings.IndexByte(path, 0) >= 0 || filepath.IsAbs(path) || strings.Contains(path, "..") {
+	if path == "" || strings.IndexByte(path, 0) >= 0 || filepath.IsAbs(path) {
 		return "", "", errors.New("invalid path")
+	}
+	for _, component := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if component == ".." {
+			return "", "", errors.New("invalid path")
+		}
 	}
 	return kind, path, nil
 }
@@ -131,11 +137,19 @@ func (s *Server) putGameLogSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 422, nil)
 		return
 	}
+	oldDays, err := s.store.GameLogRetentionDays()
+	if err != nil {
+		writeJSON(w, 500, nil)
+		return
+	}
 	if err := s.store.SetGameLogRetentionDays(in.RetentionDays); err != nil {
 		writeJSON(w, 422, nil)
 		return
 	}
-	result := s.gameLogScheduler.EnqueueAll(context.Background())
+	result := gamelogs.EnqueueResult{Errors: []string{}, JobIDs: []string{}}
+	if in.RetentionDays < oldDays {
+		result = s.gameLogScheduler.EnqueueAll(context.Background())
+	}
 	writeJSON(w, 200, map[string]any{"retention_days": in.RetentionDays, "enqueue": result})
 }
 func (s *Server) cleanupGameLogs(w http.ResponseWriter, r *http.Request) {

@@ -38,10 +38,12 @@ type fakeEngine struct {
 	containers                []docker.Container
 	removed                   bool
 	events                    *[]string
+	createdSpec               docker.ContainerSpec
 }
 
-func (f *fakeEngine) Create(context.Context, docker.ContainerSpec) (string, error) {
+func (f *fakeEngine) Create(_ context.Context, spec docker.ContainerSpec) (string, error) {
 	f.created = true
+	f.createdSpec = spec
 	if f.events != nil {
 		*f.events = append(*f.events, "create")
 	}
@@ -58,11 +60,23 @@ func (f *fakeEngine) RunSupervisor(_ context.Context, _ string, op string) error
 	f.execOperation = op
 	return nil
 }
-func (f *fakeEngine) Stop(context.Context, string, int) error { f.stopped = true; return nil }
+func (f *fakeEngine) Stop(context.Context, string, int) error {
+	f.stopped = true
+	if f.events != nil {
+		*f.events = append(*f.events, "stop")
+	}
+	return nil
+}
 func (f *fakeEngine) ListManaged(context.Context) ([]docker.Container, error) {
 	return f.containers, nil
 }
-func (f *fakeEngine) Remove(context.Context, string) error { f.removed = true; return nil }
+func (f *fakeEngine) Remove(context.Context, string) error {
+	f.removed = true
+	if f.events != nil {
+		*f.events = append(*f.events, "remove")
+	}
+	return nil
+}
 
 type freePorts struct{}
 
@@ -358,7 +372,7 @@ func TestReconcileMarksMissingAndReturnsUnknownContainers(t *testing.T) {
 	known.GamePort = 27016
 	_ = db.CreateInstance(context.Background(), missing)
 	_ = db.CreateInstance(context.Background(), known)
-	engine := &fakeEngine{containers: []docker.Container{{ID: "known-container", State: "running", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "known", docker.RoleLabel: "game"}}, {ID: "unknown-container", State: "running", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "unknown", docker.RoleLabel: "game"}}}}
+	engine := &fakeEngine{containers: []docker.Container{{ID: "known-container", State: "running", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "known", docker.RoleLabel: "game", docker.GameLogMountsLabel: docker.GameLogMountsVersion}}, {ID: "unknown-container", State: "running", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "unknown", docker.RoleLabel: "game"}}}}
 	unknown, err := New(db, engine, freePorts{}, root).Reconcile(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -367,6 +381,70 @@ func TestReconcileMarksMissingAndReturnsUnknownContainers(t *testing.T) {
 	gotKnown, _ := db.Instance(context.Background(), "known")
 	if gotMissing.ActualState != domain.StateOrphaned || gotKnown.ContainerID != "known-container" || gotKnown.ActualState != domain.StateRunning || len(unknown) != 1 || unknown[0].ID != "unknown-container" {
 		t.Fatalf("missing=%#v known=%#v unknown=%#v", gotMissing, gotKnown, unknown)
+	}
+}
+
+func TestReconcileRebuildsLegacyGameContainersWithPersistentLogMounts(t *testing.T) {
+	for _, tc := range []struct {
+		name, containerState string
+		desired, actual      domain.InstanceState
+		wantEvents           string
+	}{
+		{name: "running", containerState: "running", desired: domain.StateRunning, actual: domain.StateRunning, wantEvents: "logs:abc,stop,remove,logs:abc,create,start"},
+		{name: "stopped", containerState: "exited", desired: domain.StateStopped, actual: domain.StateStopped, wantEvents: "logs:abc,remove,logs:abc,create"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			db, _ := store.Open(filepath.Join(root, "panel.db"))
+			defer db.Close()
+			instance := domain.Instance{ID: "abc", NodeID: "local", Name: "one", ContainerID: "old", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: tc.desired, ActualState: tc.actual}
+			if err := db.CreateInstance(context.Background(), instance); err != nil {
+				t.Fatal(err)
+			}
+			events := []string{}
+			engine := &fakeEngine{events: &events, containers: []docker.Container{{ID: "old", State: tc.containerState, Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "abc", docker.RoleLabel: "game"}}}}
+			service := New(db, engine, freePorts{}, root, WithLogPreparer(fakeLogPreparer{events: &events}))
+			if _, err := service.Reconcile(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := db.Instance(context.Background(), "abc")
+			if strings.Join(events, ",") != tc.wantEvents || got.DesiredState != tc.desired || got.ActualState != tc.actual || got.ContainerID != "container-1" {
+				t.Fatalf("events=%v instance=%#v", events, got)
+			}
+			if engine.createdSpec.Labels[docker.GameLogMountsLabel] != docker.GameLogMountsVersion || !strings.Contains(strings.Join(engine.createdSpec.Mounts, "|"), filepath.Join(root, "instances", "abc", "logs", "game")) {
+				t.Fatalf("created spec=%#v", engine.createdSpec)
+			}
+		})
+	}
+}
+
+func TestReconcileLegacyUpgradePreparationFailureKeepsContainerRetryable(t *testing.T) {
+	root := t.TempDir()
+	db, _ := store.Open(filepath.Join(root, "panel.db"))
+	defer db.Close()
+	instance := domain.Instance{ID: "abc", NodeID: "local", Name: "one", ContainerID: "old", GamePort: 27015, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}
+	_ = db.CreateInstance(context.Background(), instance)
+	events := []string{}
+	engine := &fakeEngine{events: &events, containers: []docker.Container{{ID: "old", State: "running", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "abc", docker.RoleLabel: "game"}}}}
+	_, err := New(db, engine, freePorts{}, root, WithLogPreparer(fakeLogPreparer{events: &events, err: errors.New("migration failed")})).Reconcile(context.Background())
+	got, _ := db.Instance(context.Background(), "abc")
+	if err == nil || !strings.Contains(err.Error(), "upgrade legacy game container abc") || engine.removed || got.ContainerID != "old" || got.DesiredState != domain.StateRunning {
+		t.Fatalf("err=%v engine=%#v instance=%#v", err, engine, got)
+	}
+}
+
+func TestReconcileLeavesCurrentGameContainerUntouched(t *testing.T) {
+	root := t.TempDir()
+	db, _ := store.Open(filepath.Join(root, "panel.db"))
+	defer db.Close()
+	instance := domain.Instance{ID: "abc", NodeID: "local", Name: "one", GamePort: 27015, RuntimeImage: "runtime", DesiredState: domain.StateStopped, ActualState: domain.StateStopped}
+	_ = db.CreateInstance(context.Background(), instance)
+	engine := &fakeEngine{containers: []docker.Container{{ID: "current", State: "exited", Labels: map[string]string{docker.ManagedLabel: "true", docker.InstanceLabel: "abc", docker.RoleLabel: "game", docker.GameLogMountsLabel: docker.GameLogMountsVersion}}}}
+	if _, err := New(db, engine, freePorts{}, root).Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if engine.removed || engine.created {
+		t.Fatalf("current container was rebuilt: %#v", engine)
 	}
 }
 

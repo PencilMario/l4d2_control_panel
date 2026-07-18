@@ -14,7 +14,7 @@ func TestBuildContainerSpecUsesManagedHostNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.NetworkMode != "host" || spec.Labels[ManagedLabel] != "true" || spec.Labels[InstanceLabel] != "abc" {
+	if spec.NetworkMode != "host" || spec.Labels[ManagedLabel] != "true" || spec.Labels[InstanceLabel] != "abc" || spec.Labels[GameLogMountsLabel] != GameLogMountsVersion {
 		t.Fatalf("unsafe spec: %#v", spec)
 	}
 	want := filepath.Join(root, "instances", "abc", "game") + ":/opt/l4d2/game"

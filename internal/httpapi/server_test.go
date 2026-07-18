@@ -93,7 +93,7 @@ func TestGameLogsHTTPContract(t *testing.T) {
 	root := t.TempDir()
 	gm := gamelogs.NewManager(root, gamelogs.Options{})
 	_ = os.MkdirAll(filepath.Join(root, "instances", "logs", "logs", "game"), 0755)
-	name := "bad name.log"
+	name := "server..log"
 	content := strings.Repeat("x", 70*1024)
 	if err := os.WriteFile(filepath.Join(root, "instances", "logs", "logs", "game", name), []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -113,6 +113,10 @@ func TestGameLogsHTTPContract(t *testing.T) {
 	dr := authenticatedJSON(t, s, c, http.MethodGet, "/api/instances/logs/game-logs/download?kind=game&path="+url.QueryEscape(name), "")
 	if dr.Code != 200 || !strings.Contains(dr.Header().Get("Content-Disposition"), "filename*=") {
 		t.Fatalf("download=%d headers=%v", dr.Code, dr.Header())
+	}
+	traversal := authenticatedJSON(t, s, c, http.MethodGet, "/api/instances/logs/game-logs/preview?kind=game&path="+url.QueryEscape("../"+name), "")
+	if traversal.Code != 422 {
+		t.Fatalf("traversal=%d %s", traversal.Code, traversal.Body.String())
 	}
 	bad := authenticatedJSON(t, s, c, http.MethodGet, "/api/instances/logs/game-logs/preview?kind=bad&path=x", "")
 	if bad.Code != 422 {
@@ -134,6 +138,44 @@ func TestGameLogsHTTPContract(t *testing.T) {
 	}
 	if got := authenticatedJSON(t, s, c, http.MethodPut, "/api/settings/game-logs", `{"retention_days":30}`).Code; got != 503 {
 		t.Fatalf("nil scheduler=%d", got)
+	}
+}
+
+func TestPutGameLogSettingsQueuesCleanupOnlyWhenRetentionDecreases(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	if err := db.CreateInstance(context.Background(), domain.Instance{ID: "logs", NodeID: "local", Name: "logs", GamePort: 27015}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	manager := gamelogs.NewManager(root, gamelogs.Options{})
+	logScheduler := gamelogs.NewScheduler(db, jobs.NewManager(), manager)
+	s = New(db, s.auth, WithGameLogs(manager, logScheduler))
+	cookie := loginCookie(t, s)
+
+	for _, tc := range []struct {
+		name   string
+		days   int
+		queued int
+	}{
+		{name: "lower", days: 7, queued: 1},
+		{name: "higher", days: 30, queued: 0},
+		{name: "equal", days: 30, queued: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := authenticatedJSON(t, s, cookie, http.MethodPut, "/api/settings/game-logs", fmt.Sprintf(`{"retention_days":%d}`, tc.days))
+			var body struct {
+				RetentionDays int                    `json:"retention_days"`
+				Enqueue       gamelogs.EnqueueResult `json:"enqueue"`
+			}
+			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &body) != nil || body.RetentionDays != tc.days || body.Enqueue.Queued != tc.queued {
+				t.Fatalf("response=%d %s", response.Code, response.Body.String())
+			}
+			stored, err := db.GameLogRetentionDays()
+			if err != nil || stored != tc.days {
+				t.Fatalf("stored=%d err=%v", stored, err)
+			}
+		})
 	}
 }
 
