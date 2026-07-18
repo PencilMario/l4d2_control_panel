@@ -678,20 +678,6 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
           </div>
         </div>
         <nav aria-label="主导航">
-          {page === "gamelogs" ? <label className="instance-selector">
-            当前实例
-            <select
-              aria-label="当前实例"
-              value={selectedInstance?.id ?? ""}
-              disabled={!instances.length}
-              onChange={(event) => setSelectedInstanceID(event.target.value)}
-            >
-              {!instances.length ? <option value="">暂无实例</option> : null}
-              {instances.map((instance) => (
-                <option key={instance.id} value={instance.id}>{instance.name}</option>
-              ))}
-            </select>
-          </label> : null}
           <Nav
             active={page === "overview"}
             onClick={() => setPage("overview")}
@@ -717,7 +703,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
             active={page === "gamelogs"}
             onClick={() => setPage("gamelogs")}
             icon={<ScrollText />}
-            disabled={!selectedInstance}
+            disabled={!instances.length}
           >
             游戏日志
           </Nav>
@@ -833,9 +819,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
         )}
         {page === "jobs" && <JobsPage onOpenLogs={(selected) => { setLogJob(selected); setPage("joblogs"); }} />}
         {page === "joblogs" && logJob ? <JobLogsPage job={logJob} onBack={() => setPage("jobs")} /> : null}
-        {page === "gamelogs" && selectedInstance ? (
-          <GameLogsPage key={selectedInstance.id} instanceID={selectedInstance.id} />
-        ) : null}
+        {page === "gamelogs" ? <GameLogsPage instances={instances} /> : null}
         {page === "schedules" && (
           <SchedulesPage instances={instances} packages={packages} />
         )}{" "}
