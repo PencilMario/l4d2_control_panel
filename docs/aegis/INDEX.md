@@ -11,6 +11,7 @@
 - [Player match summary and operations view](specs/2026-07-16-player-match-operations-design.md)
 - [Private files ZIP import and export](specs/2026-07-16-private-files-zip-import-export-design.md)
 - [Schedule management and task descriptions](specs/2026-07-16-schedule-management-design.md)
+- [Shared game body and instance overlays](specs/2026-07-17-shared-game-overlay-design.md)
 - [Frontend motion and asynchronous action guards](specs/2026-07-16-frontend-motion-and-action-guards-design.md)
 
 ## Implementation Plans
@@ -21,6 +22,7 @@
 - [Instance selective game and plugin package reinstall](plans/2026-07-15-instance-selective-reinstall.md)
 - [Instance startup configuration and package selection](plans/2026-07-15-instance-startup-packages.md)
 - [Private overlay file manager and console follow behavior](plans/2026-07-15-private-file-manager-console-follow.md)
+- [Shared game body and instance overlays](plans/2026-07-17-shared-game-overlay.md)
 
 ## Active Work
 
