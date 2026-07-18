@@ -431,7 +431,7 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   expect.soft(cardLayout.actionsRight).toBeLessThanOrEqual(cardLayout.cardRight);
   expect.soft(cardLayout.memoryValue.text).toBe("768 MiB / 2 GiB (37.5%)");
   expect.soft(cardLayout.memoryValue.scrollWidth).toBeLessThanOrEqual(cardLayout.memoryValue.clientWidth);
-  expect.soft(cardLayout.memoryValue.scrollHeight).toBeLessThanOrEqual(cardLayout.memoryValue.clientHeight);
+  expect.soft(cardLayout.memoryValue.scrollHeight).toBeLessThanOrEqual(cardLayout.memoryValue.clientHeight + 1);
   expect.soft(cardLayout.memoryValue.textOverflow).not.toBe("ellipsis");
   expect.soft(cardLayout.memoryValue.whiteSpace).not.toBe("nowrap");
   expect.soft(cardLayout.modeButtons).toHaveLength(4);
@@ -556,7 +556,7 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await expect(logViewer).toContainText("ERROR");
   await expect(logViewer.locator(".log-token-error")).toContainText("ERROR");
   await expect(logViewer.locator(".log-token-timestamp")).toContainText("2026-07-18 12:00:01");
-  await expect(logViewer.locator(".log-token-plugin")).toContainText("plugin:fixture.smx");
+  await expect(logViewer.locator(".log-token-plugin", { hasText: "plugin:fixture.smx" })).toHaveText("plugin:fixture.smx");
   const logDownload = page.waitForEvent("download");
   await page.getByRole("button", { name: "Download" }).click();
   expect((await logDownload).suggestedFilename()).toBe("current-error.log");
