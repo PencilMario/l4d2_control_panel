@@ -1135,7 +1135,9 @@ func TestPrivateManifestRejectsInvalidEntries(t *testing.T) {
 		entry manifestEntry
 	}{
 		{name: "parent", path: "../escape.cfg", entry: manifestEntry{Kind: "file", Hash: strings.Repeat("a", 64)}},
-		{name: "absolute", path: "C:/escape.cfg", entry: manifestEntry{Kind: "file", Hash: strings.Repeat("a", 64)}},
+		{name: "drive absolute", path: "C:/escape.cfg", entry: manifestEntry{Kind: "file", Hash: strings.Repeat("a", 64)}},
+		{name: "drive relative", path: "C:relative", entry: manifestEntry{Kind: "file", Hash: strings.Repeat("a", 64)}},
+		{name: "UNC", path: "//server/share", entry: manifestEntry{Kind: "file", Hash: strings.Repeat("a", 64)}},
 		{name: "backslash", path: `cfg\escape.cfg`, entry: manifestEntry{Kind: "file", Hash: strings.Repeat("a", 64)}},
 		{name: "kind", path: "cfg/x", entry: manifestEntry{Kind: "link"}},
 		{name: "directory hash", path: "cfg", entry: manifestEntry{Kind: "directory", Hash: "bad"}},
@@ -1161,6 +1163,13 @@ func TestPrivateManifestRejectsInvalidEntries(t *testing.T) {
 				t.Fatal("diff trusted invalid manifest")
 			}
 		})
+	}
+}
+
+func TestPrivateManifestAcceptsCleanSlashPath(t *testing.T) {
+	entry := manifestEntry{Kind: "file", Hash: strings.Repeat("a", 64)}
+	if err := validateManifestEntry("cfg/server.cfg", entry); err != nil {
+		t.Fatal(err)
 	}
 }
 
