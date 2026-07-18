@@ -12,7 +12,45 @@ import (
 	"time"
 
 	"github.com/not0721here/l4d2-control-panel/internal/content"
+	"github.com/not0721here/l4d2-control-panel/internal/domain"
 )
+
+type pipelineOverlayResetter struct{ calls [][]string }
+
+func (r *pipelineOverlayResetter) ResetManagedPaths(_ context.Context, _, _ string, paths []string) error {
+	r.calls = append(r.calls, append([]string(nil), paths...))
+	return nil
+}
+
+type pipelineSharedState struct{ state domain.SharedGameState }
+
+func (s pipelineSharedState) SharedGameState(context.Context) (domain.SharedGameState, error) {
+	return s.state, nil
+}
+
+func TestFullPackageUpdateResetsManagedOverlayPaths(t *testing.T) {
+	root := t.TempDir()
+	resetter := &pipelineOverlayResetter{}
+	pipeline := New(root).WithSharedOverlay(resetter, pipelineSharedState{state: domain.SharedGameState{ActiveReleaseID: "release-1", MigrationState: "ready"}})
+	if err := pipeline.Apply(context.Background(), "abc", zipFile(t, map[string]string{"cfg/plugin.cfg": "new"}), "v1", Full); err != nil {
+		t.Fatal(err)
+	}
+	if len(resetter.calls) != 1 || len(resetter.calls[0]) != 1 || resetter.calls[0][0] != "left4dead2/cfg/plugin.cfg" {
+		t.Fatalf("calls=%#v", resetter.calls)
+	}
+}
+
+func TestHotPackageUpdateDoesNotUnmountOverlay(t *testing.T) {
+	root := t.TempDir()
+	resetter := &pipelineOverlayResetter{}
+	pipeline := New(root).WithSharedOverlay(resetter, pipelineSharedState{state: domain.SharedGameState{ActiveReleaseID: "release-1", MigrationState: "ready"}})
+	if err := pipeline.Apply(context.Background(), "abc", zipFile(t, map[string]string{"cfg/plugin.cfg": "new"}), "v1", Hot); err != nil {
+		t.Fatal(err)
+	}
+	if len(resetter.calls) != 0 {
+		t.Fatalf("calls=%#v", resetter.calls)
+	}
+}
 
 func TestHotUpdateAppliesAllowedFilesAndPrivateLast(t *testing.T) {
 	root := t.TempDir()

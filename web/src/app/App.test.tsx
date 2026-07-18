@@ -1154,7 +1154,7 @@ describe("App", () => {
     await userEvent.click(screen.getByRole("button", { name: "保存计划" }));
     expect(await screen.findByRole("status")).toHaveTextContent("计划已保存");
     expect(submitted).toMatchObject({
-      instance_id: "1",
+		instance_id: "",
       online_policy: "skip",
     });
   });
@@ -1303,16 +1303,15 @@ describe("App", () => {
     expect(input).toHaveValue(25);
   });
 
-  it("selects both forced reinstall targets by default", async () => {
+  it("reinstalls only the selected instance plugin package", async () => {
     const request = deferred<Response>();
     const fetchMock = vi.fn(() => request.promise);
     vi.stubGlobal("fetch", fetchMock);
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "更新" }));
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(screen.getByRole("dialog")).toHaveTextContent("重新安装实例组件");
-    expect(screen.getByRole("checkbox", { name: "重新安装游戏本体" })).toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "重新安装实例插件包" })).toBeChecked();
+		expect(screen.getByRole("dialog")).toHaveTextContent("重新安装实例插件包");
+		expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     const confirm = screen.getByRole("button", { name: "确认重新安装" });
     act(() => {
       confirm.click();
@@ -1327,14 +1326,14 @@ describe("App", () => {
         method: "POST",
         body: JSON.stringify({
           confirm: true,
-          reinstall_game: true,
+			reinstall_game: false,
           reinstall_package: true,
         }),
       }),
     );
   });
 
-  it("submits one selected reinstall target and disables an empty selection", async () => {
+  it("does not expose game-body reinstall controls on an instance", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response('{"ID":"job-1","Status":"pending"}', {
         status: 202,
@@ -1344,25 +1343,18 @@ describe("App", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "更新" }));
-    const game = screen.getByRole("checkbox", { name: "重新安装游戏本体" });
-    const packageOption = screen.getByRole("checkbox", { name: "重新安装实例插件包" });
-    await userEvent.click(packageOption);
+		expect(screen.queryByText("重新安装游戏本体")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "确认重新安装" }));
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/instances/1/game-update",
       expect.objectContaining({
         body: JSON.stringify({
           confirm: true,
-          reinstall_game: true,
-          reinstall_package: false,
+			reinstall_game: false,
+			reinstall_package: true,
         }),
       }),
     );
-
-    await userEvent.click(screen.getByRole("button", { name: "更新" }));
-    await userEvent.click(screen.getByRole("checkbox", { name: "重新安装游戏本体" }));
-    await userEvent.click(screen.getByRole("checkbox", { name: "重新安装实例插件包" }));
-    expect(screen.getByRole("button", { name: "确认重新安装" })).toBeDisabled();
   });
 
   it("does not request a package reinstall when the instance has no selected package", async () => {
@@ -1375,20 +1367,9 @@ describe("App", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<App initialInstances={[{ ...instance, package_id: "", applied_package_id: "" }]} />);
     await userEvent.click(screen.getByRole("button", { name: "更新" }));
-    expect(screen.getByRole("checkbox", { name: "重新安装游戏本体" })).toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "重新安装实例插件包" })).not.toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "重新安装实例插件包" })).toBeDisabled();
-    await userEvent.click(screen.getByRole("button", { name: "确认重新安装" }));
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/instances/1/game-update",
-      expect.objectContaining({
-        body: JSON.stringify({
-          confirm: true,
-          reinstall_game: true,
-          reinstall_package: false,
-        }),
-      }),
-    );
+		expect(screen.getByRole("dialog")).toHaveTextContent("尚未选择插件包");
+		expect(screen.getByRole("button", { name: "确认重新安装" })).toBeDisabled();
+		expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("confirms full package updates before submitting them", async () => {

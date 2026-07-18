@@ -2,7 +2,7 @@ services:
   panel-init:
     image: ${ALPINE_IMAGE:-alpine:3.22}
     user: "0:0"
-    command: ["sh", "-c", "mkdir -p \"$$DATA_ROOT\" && chown -R 10001:10001 \"$$DATA_ROOT\""]
+    command: ["sh", "-c", "mkdir -p \"$$DATA_ROOT\" && chown 10001:10001 \"$$DATA_ROOT\""]
     environment:
       DATA_ROOT: ${L4D2_PANEL_DATA_ROOT:-/srv/l4d2-panel}
     volumes:
@@ -49,6 +49,27 @@ services:
     cap_drop: [ALL]
     cap_add: [NET_RAW]
     security_opt: [no-new-privileges:true]
+  overlay-helper:
+    image: l4d2-overlay-helper:latest
+    build:
+      context: .
+      dockerfile: overlay-helper/Dockerfile
+      args:
+        GO_IMAGE: ${GO_IMAGE:-golang:1.25-alpine}
+        ALPINE_IMAGE: ${ALPINE_IMAGE:-alpine:3.22}
+    restart: unless-stopped
+    network_mode: none
+    read_only: true
+    user: "0:10001"
+    environment:
+      L4D2_PANEL_DATA_ROOT: ${L4D2_PANEL_DATA_ROOT:-/srv/l4d2-panel}
+      OVERLAY_HELPER_SOCKET: /run/l4d2-panel/overlay.sock
+    volumes:
+      - ${L4D2_PANEL_DATA_ROOT:-/srv/l4d2-panel}:${L4D2_PANEL_DATA_ROOT:-/srv/l4d2-panel}:rshared
+      - panel-overlay-run:/run/l4d2-panel
+    cap_drop: [ALL]
+    cap_add: [SYS_ADMIN, DAC_OVERRIDE, FOWNER, MKNOD, CHOWN]
+    security_opt: [no-new-privileges:true, apparmor:unconfined, seccomp:unconfined]
   panel:
     build:
       context: .
@@ -63,12 +84,15 @@ services:
         condition: service_completed_successfully
       socket-proxy:
         condition: service_started
+      overlay-helper:
+        condition: service_started
     environment:
       L4D2_PANEL_LISTEN: 0.0.0.0:8080
       L4D2_PANEL_GAME_HOST: ${L4D2_PANEL_GAME_HOST:?set the host address SRCDS answers on}
       L4D2_PANEL_DATA_ROOT: ${L4D2_PANEL_DATA_ROOT:-/srv/l4d2-panel}
       L4D2_PANEL_ADMIN_PASSWORD: ${L4D2_PANEL_ADMIN_PASSWORD:?set admin password}
       DOCKER_HOST: unix:///run/l4d2-panel/proxy.sock
+      L4D2_PANEL_OVERLAY_SOCKET: /run/l4d2-panel-overlay/overlay.sock
       L4D2_PANEL_DOWNLOAD_PROXY: ${L4D2_PANEL_DOWNLOAD_PROXY:-}
       HTTP_PROXY: ${L4D2_PANEL_DOWNLOAD_PROXY:-}
       HTTPS_PROXY: ${L4D2_PANEL_DOWNLOAD_PROXY:-}
@@ -79,8 +103,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ${L4D2_PANEL_DATA_ROOT:-/srv/l4d2-panel}:${L4D2_PANEL_DATA_ROOT:-/srv/l4d2-panel}
+      - ${L4D2_PANEL_DATA_ROOT:-/srv/l4d2-panel}:${L4D2_PANEL_DATA_ROOT:-/srv/l4d2-panel}:rshared
       - panel-proxy-run:/run/l4d2-panel
+      - panel-overlay-run:/run/l4d2-panel-overlay
+    cap_add: [CHOWN]
     security_opt: [no-new-privileges:true]
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/api/health"]
@@ -90,3 +116,4 @@ services:
 
 volumes:
   panel-proxy-run:
+  panel-overlay-run:

@@ -15,6 +15,7 @@ func TestControlServicesUseSharedUnixProxyAndPublishOnlyPanel(t *testing.T) {
 	services := serviceBlocks(t, compose)
 	proxyInit := services["proxy-init"]
 	proxy := services["socket-proxy"]
+	overlayHelper := services["overlay-helper"]
 	panel := services["panel"]
 	hostNetworkServices := make([]string, 0, 1)
 	for name, block := range services {
@@ -56,6 +57,18 @@ func TestControlServicesUseSharedUnixProxyAndPublishOnlyPanel(t *testing.T) {
 	if strings.Contains(panel, "/var/run/docker.sock") {
 		t.Fatal("Panel must never mount the raw Docker socket")
 	}
+	assertContains(t, overlayHelper, "network_mode: none", "overlay helper disabled networking")
+	assertContains(t, overlayHelper, "cap_drop: [ALL]", "overlay helper cap_drop")
+	assertContains(t, overlayHelper, "cap_add: [SYS_ADMIN, DAC_OVERRIDE, FOWNER, MKNOD, CHOWN]", "overlay helper mount and copy-up capabilities")
+	assertContains(t, overlayHelper, "apparmor:unconfined", "overlay helper AppArmor exception")
+	assertContains(t, overlayHelper, "seccomp:unconfined", "overlay helper seccomp exception")
+	assertContains(t, overlayHelper, "read_only: true", "overlay helper read-only root")
+	assertContains(t, overlayHelper, "panel-overlay-run:/run/l4d2-panel", "overlay helper socket volume")
+	assertContains(t, overlayHelper, ":rshared", "overlay helper shared mount propagation")
+	if strings.Contains(panel, "SYS_ADMIN") || strings.Contains(proxy, "SYS_ADMIN") {
+		t.Fatal("SYS_ADMIN must be limited to overlay-helper")
+	}
+	assertContains(t, panel, "panel-overlay-run:/run/l4d2-panel-overlay", "Panel overlay helper socket volume")
 	assertContains(t, panel, "panel-proxy-run:/run/l4d2-panel", "Panel shared run volume")
 	assertContains(t, panel, "DOCKER_HOST: unix:///run/l4d2-panel/proxy.sock", "Panel Unix Docker host")
 	assertContains(t, panel, `ports:
@@ -125,7 +138,7 @@ func serviceBlocks(t *testing.T, compose string) map[string]string {
 		}
 	}
 	flush()
-	for _, required := range []string{"socket-proxy", "panel"} {
+	for _, required := range []string{"socket-proxy", "overlay-helper", "panel"} {
 		if _, ok := services[required]; !ok {
 			t.Fatalf("service %q not found", required)
 		}

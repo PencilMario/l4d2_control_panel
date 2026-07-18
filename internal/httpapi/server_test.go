@@ -1104,10 +1104,10 @@ func TestGameUpdateAcceptsSelectiveReinstallContract(t *testing.T) {
 		status    int
 		gameCalls int
 	}{
-		{name: "legacy game only", body: `{"confirm":true}`, status: http.StatusAccepted, gameCalls: 1},
-		{name: "game only", body: `{"confirm":true,"reinstall_game":true,"reinstall_package":false}`, status: http.StatusAccepted, gameCalls: 1},
+		{name: "legacy game only", body: `{"confirm":true}`, status: http.StatusConflict},
+		{name: "game only", body: `{"confirm":true,"reinstall_game":true,"reinstall_package":false}`, status: http.StatusConflict},
 		{name: "package only", body: `{"confirm":true,"reinstall_game":false,"reinstall_package":true}`, status: http.StatusAccepted},
-		{name: "combined", body: `{"confirm":true,"reinstall_game":true,"reinstall_package":true}`, status: http.StatusAccepted, gameCalls: 1},
+		{name: "combined", body: `{"confirm":true,"reinstall_game":true,"reinstall_package":true}`, status: http.StatusConflict},
 		{name: "empty", body: `{"confirm":true,"reinstall_game":false,"reinstall_package":false}`, status: http.StatusUnprocessableEntity},
 	}
 	for _, tt := range tests {
@@ -1149,6 +1149,135 @@ func TestGameUpdateAcceptsSelectiveReinstallContract(t *testing.T) {
 	}
 }
 
+type apiSharedGameUpdater struct{ policy string }
+
+func (u *apiSharedGameUpdater) Update(_ context.Context, policy string) error {
+	u.policy = policy
+	return nil
+}
+
+type apiSharedGameMigration struct{ calls int }
+
+type recordingSharedGameMigration struct{ calls int }
+
+func (m *recordingSharedGameMigration) Migrate(context.Context) error {
+	m.calls++
+	return nil
+}
+
+func TestCreatingFirstInstanceQueuesSharedGameInitialization(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	migration := &recordingSharedGameMigration{}
+	manager := jobs.NewPersistentManager(db)
+	s = New(db, s.auth, WithContent(nil, nil, s.packages, s.updates, nil), WithOperations(nil, manager), WithSharedGameMigration(migration))
+	cookie := loginCookie(t, s)
+	body := fmt.Sprintf(`{"name":"First","game_port":27015,"start_map":"map","game_mode":"coop","tickrate":100,"max_players":8,"package_id":%q}`, defaultPackageID(t, s))
+	response := authenticatedJSON(t, s, cookie, http.MethodPost, "/api/instances", body)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	deadline := time.Now().Add(time.Second)
+	for migration.calls == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if migration.calls != 1 {
+		t.Fatalf("migration calls=%d", migration.calls)
+	}
+	jobsList, err := db.Jobs(context.Background(), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, job := range jobsList {
+		if job.Type == "shared_game_migration" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("shared migration jobs=%d jobs=%#v", count, jobsList)
+	}
+}
+
+func TestCreatingAdditionalInstanceDoesNotQueueSharedGameInitialization(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	if err := db.SaveSharedGameState(context.Background(), domain.SharedGameState{ActiveReleaseID: "release-1", MigrationState: "ready"}); err != nil {
+		t.Fatal(err)
+	}
+	migration := &recordingSharedGameMigration{}
+	manager := jobs.NewPersistentManager(db)
+	s = New(db, s.auth, WithContent(nil, nil, s.packages, s.updates, nil), WithOperations(nil, manager), WithSharedGameMigration(migration))
+	cookie := loginCookie(t, s)
+	body := fmt.Sprintf(`{"name":"Additional","game_port":27016,"start_map":"map","game_mode":"coop","tickrate":100,"max_players":8,"package_id":%q}`, defaultPackageID(t, s))
+	response := authenticatedJSON(t, s, cookie, http.MethodPost, "/api/instances", body)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if migration.calls != 0 {
+		t.Fatalf("migration calls=%d", migration.calls)
+	}
+}
+
+func (m *apiSharedGameMigration) Migrate(context.Context) error {
+	m.calls++
+	return nil
+}
+
+func TestGlobalGameStatusAndUpdate(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	if err := db.SaveSharedGameState(context.Background(), domain.SharedGameState{ActiveReleaseID: "release-1", MigrationState: "ready"}); err != nil {
+		t.Fatal(err)
+	}
+	updater := &apiSharedGameUpdater{}
+	manager := jobs.NewPersistentManager(db)
+	s = New(db, s.auth, WithOperations(&fakeLifecycle{}, manager), WithSharedGameUpdates(updater))
+	cookie := loginCookie(t, s)
+	status := authenticatedJSON(t, s, cookie, http.MethodGet, "/api/game", "")
+	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), "release-1") {
+		t.Fatalf("status=%d body=%s", status.Code, status.Body.String())
+	}
+	response := authenticatedJSON(t, s, cookie, http.MethodPost, "/api/game/update", `{"confirm":true,"online_policy":"wait"}`)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var job jobs.Job
+	if err := json.Unmarshal(response.Body.Bytes(), &job); err != nil {
+		t.Fatal(err)
+	}
+	if job.InstanceID != "" {
+		t.Fatalf("job=%#v", job)
+	}
+	if got := waitForJob(t, manager, job.ID); got.Status != jobs.Succeeded || updater.policy != "wait" {
+		t.Fatalf("job=%#v policy=%q", got, updater.policy)
+	}
+}
+
+func TestGlobalGameMigrationRequiresConfirmationAndQueuesGlobalJob(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	migration := &apiSharedGameMigration{}
+	manager := jobs.NewPersistentManager(db)
+	s = New(db, s.auth, WithOperations(&fakeLifecycle{}, manager), WithSharedGameMigration(migration))
+	cookie := loginCookie(t, s)
+	missing := authenticatedJSON(t, s, cookie, http.MethodPost, "/api/game/migrate", `{"confirm":false}`)
+	if missing.Code != http.StatusPreconditionRequired {
+		t.Fatalf("status=%d body=%s", missing.Code, missing.Body.String())
+	}
+	response := authenticatedJSON(t, s, cookie, http.MethodPost, "/api/game/migrate", `{"confirm":true}`)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var job jobs.Job
+	if err := json.Unmarshal(response.Body.Bytes(), &job); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitForJob(t, manager, job.ID); got.Status != jobs.Succeeded || job.InstanceID != "" || migration.calls != 1 {
+		t.Fatalf("job=%#v calls=%d", got, migration.calls)
+	}
+}
+
 func TestCreateRejectsDuplicateDeclaredPorts(t *testing.T) {
 	s, db := testServer(t)
 	defer db.Close()
@@ -1184,17 +1313,17 @@ func TestScheduleAcceptsSnakeCaseJSONAndRejectsUnknownFields(t *testing.T) {
 	cookie := loginCookie(t, s)
 
 	t.Run("snake case", func(t *testing.T) {
-		r := httptest.NewRequest(http.MethodPost, "/api/schedules", bytes.NewBufferString(`{"instance_id":"abc","type":"game_update","cron":"0 4 * * *","timezone":"Asia/Hong_Kong","online_policy":"skip","enabled":true,"payload":"{}"}`))
+		r := httptest.NewRequest(http.MethodPost, "/api/schedules", bytes.NewBufferString(`{"instance_id":"","type":"game_update","cron":"0 4 * * *","timezone":"Asia/Hong_Kong","online_policy":"skip","enabled":true,"payload":"{}"}`))
 		r.AddCookie(cookie)
 		w := httptest.NewRecorder()
 		s.Handler().ServeHTTP(w, r)
-		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"instance_id":"abc"`) || !strings.Contains(w.Body.String(), `"online_policy":"skip"`) {
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"instance_id":""`) || !strings.Contains(w.Body.String(), `"online_policy":"skip"`) {
 			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 		}
 	})
 
 	t.Run("unknown field", func(t *testing.T) {
-		r := httptest.NewRequest(http.MethodPost, "/api/schedules", bytes.NewBufferString(`{"instance_id":"abc","type":"game_update","cron":"0 4 * * *","timezone":"UTC","online_policy":"skip","enabled":true,"payload":"{}","surprise":true}`))
+		r := httptest.NewRequest(http.MethodPost, "/api/schedules", bytes.NewBufferString(`{"instance_id":"","type":"game_update","cron":"0 4 * * *","timezone":"UTC","online_policy":"skip","enabled":true,"payload":"{}","surprise":true}`))
 		r.AddCookie(cookie)
 		w := httptest.NewRecorder()
 		s.Handler().ServeHTTP(w, r)
@@ -1212,7 +1341,7 @@ func TestScheduleUpdateAndDeletePreserveSingleRecord(t *testing.T) {
 	s = New(db, s.auth, WithScheduler(schedules))
 	cookie := loginCookie(t, s)
 
-	created := authenticatedJSON(t, s, cookie, http.MethodPost, "/api/schedules", `{"instance_id":"abc","type":"game_update","cron":"0 4 * * *","timezone":"Asia/Hong_Kong","online_policy":"skip","enabled":true,"payload":"{}","last_run":"2026-07-15T20:00:00Z"}`)
+	created := authenticatedJSON(t, s, cookie, http.MethodPost, "/api/schedules", `{"instance_id":"","type":"game_update","cron":"0 4 * * *","timezone":"Asia/Hong_Kong","online_policy":"skip","enabled":true,"payload":"{}","last_run":"2026-07-15T20:00:00Z"}`)
 	if created.Code != http.StatusOK {
 		t.Fatalf("create: %d %s", created.Code, created.Body.String())
 	}
@@ -1220,7 +1349,7 @@ func TestScheduleUpdateAndDeletePreserveSingleRecord(t *testing.T) {
 	if err := json.Unmarshal(created.Body.Bytes(), &task); err != nil {
 		t.Fatal(err)
 	}
-	updatedBody := fmt.Sprintf(`{"id":%q,"instance_id":"abc","type":"game_update","cron":"30 5 * * *","timezone":"Asia/Hong_Kong","online_policy":"wait","enabled":false,"payload":"{}","last_run":"2026-07-15T20:00:00Z"}`, task.ID)
+	updatedBody := fmt.Sprintf(`{"id":%q,"instance_id":"","type":"game_update","cron":"30 5 * * *","timezone":"Asia/Hong_Kong","online_policy":"wait","enabled":false,"payload":"{}","last_run":"2026-07-15T20:00:00Z"}`, task.ID)
 	updated := authenticatedJSON(t, s, cookie, http.MethodPost, "/api/schedules", updatedBody)
 	if updated.Code != http.StatusOK {
 		t.Fatalf("update: %d %s", updated.Code, updated.Body.String())

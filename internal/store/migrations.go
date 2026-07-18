@@ -42,6 +42,12 @@ CREATE TABLE IF NOT EXISTS shared_vpk_restarts (
  status TEXT NOT NULL, failures INTEGER NOT NULL DEFAULT 0,
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS shared_game_state (
+ singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+ active_release_id TEXT NOT NULL DEFAULT '', previous_release_id TEXT NOT NULL DEFAULT '',
+ migration_state TEXT NOT NULL DEFAULT '', operation_id TEXT NOT NULL DEFAULT '',
+ operation_stage TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL
+);
 INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS instance_plugin_ports (
  instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,

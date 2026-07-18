@@ -27,7 +27,7 @@ const packages = [
 
 const gameUpdateTask = {
   id: "schedule-1",
-  instance_id: "instance-1",
+  instance_id: "",
   type: "game_update",
   cron: "0 4 * * *",
   timezone: "Asia/Hong_Kong",
@@ -154,7 +154,7 @@ describe("SchedulesPage", () => {
 
     await user.click(await screen.findByRole("button", { name: "编辑 游戏更新" }));
     expect(screen.getByLabelText("任务")).toBeDisabled();
-    expect(screen.getByLabelText("实例")).toBeDisabled();
+		expect(screen.queryByLabelText("实例")).not.toBeInTheDocument();
     expect(screen.getByLabelText("任务时区")).toHaveTextContent("Asia/Hong_Kong");
 
     await user.clear(screen.getByLabelText("Cron"));
@@ -171,7 +171,7 @@ describe("SchedulesPage", () => {
     );
     expect(JSON.parse(String(update?.init?.body))).toEqual({
       id: "schedule-1",
-      instance_id: "instance-1",
+		instance_id: "",
       type: "game_update",
       cron: "30 5 * * *",
       timezone: "Asia/Hong_Kong",

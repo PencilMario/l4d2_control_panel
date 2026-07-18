@@ -17,6 +17,8 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/lifecycle"
 	"github.com/not0721here/l4d2-control-panel/internal/maintenance"
 	"github.com/not0721here/l4d2-control-panel/internal/metrics"
+	sharedmigration "github.com/not0721here/l4d2-control-panel/internal/migration"
+	"github.com/not0721here/l4d2-control-panel/internal/overlayfs"
 	"github.com/not0721here/l4d2-control-panel/internal/players"
 	"github.com/not0721here/l4d2-control-panel/internal/ports"
 	"github.com/not0721here/l4d2-control-panel/internal/provisioning"
@@ -49,6 +51,8 @@ type jobWaiter interface {
 type samplerStopper interface {
 	Stop(context.Context) error
 }
+
+const startMinimumFreeBytes uint64 = 1 << 30
 
 func shutdownPanel(ctx context.Context, server httpShutdowner, stopScheduler func(), sampler samplerStopper, waiter jobWaiter) error {
 	httpErr := server.Shutdown(ctx)
@@ -143,6 +147,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	overlaySocket := os.Getenv("L4D2_PANEL_OVERLAY_SOCKET")
+	if overlaySocket == "" {
+		overlaySocket = "/run/l4d2-panel-overlay/overlay.sock"
+	}
+	overlayClient := overlayfs.NewClient(overlaySocket)
+	updatePipeline.WithSharedOverlay(overlayClient, db)
 	portChecker := ports.Checker{Configured: func(ctx context.Context) ([]ports.Reservation, error) {
 		instances, err := db.Instances(ctx)
 		if err != nil {
@@ -151,8 +161,9 @@ func main() {
 		return ports.Reservations(instances), nil
 	}, Listening: ports.IsListening}
 	healthChecker := health.Checker{Host: cfg.GameHost, Query: a2s.Client{}, Probe: engine}
-	instanceProvisioner := provisioning.Service{Root: cfg.DataRoot, Installer: engine, Packages: packageManager, Deployer: updatePipeline, Instances: db}
-	life := lifecycle.New(db, engine, portChecker, cfg.DataRoot, lifecycle.WithHealth(healthChecker), lifecycle.WithSpace(disk.Checker{}, 12<<30), lifecycle.WithProvisioner(instanceProvisioner))
+	instanceProvisioner := provisioning.Service{Root: cfg.DataRoot, Packages: packageManager, Deployer: updatePipeline, Instances: db, SharedState: db, Overlay: overlayClient}
+	sharedGate := maintenance.NewGate()
+	life := lifecycle.New(db, engine, portChecker, cfg.DataRoot, lifecycle.WithHealth(healthChecker), lifecycle.WithSpace(disk.Checker{}, startMinimumFreeBytes), lifecycle.WithProvisioner(instanceProvisioner), lifecycle.WithMaintenanceGate(sharedGate))
 	if unknown, reconcileErr := life.Reconcile(context.Background()); reconcileErr != nil {
 		log.Printf("container reconciliation deferred: %v", reconcileErr)
 	} else if len(unknown) > 0 {
@@ -174,7 +185,11 @@ func main() {
 	}
 	updateCoordinator := &updates.Coordinator{Lifecycle: life, Deployer: updatePipeline, Instances: db}
 	gameCoordinator := &updates.GameCoordinator{Root: cfg.DataRoot, Instances: db, Lifecycle: life, Updater: engine, Private: privateManager, Packages: packageManager, Deployer: updatePipeline}
-	dispatcher := automation.Dispatcher{Jobs: jobManager, Players: playerService, Packages: packageManager, PackagesUpdate: updateCoordinator, GameUpdate: gameCoordinator, Releases: releases.Client{}, Sources: db, Maintenance: maintenance.New(cfg.DataRoot), Secrets: secretService}
+	sharedPublisher := updates.FilesystemGamePublisher{Root: cfg.DataRoot}
+	sharedRebuilder := updates.SharedGameRebuilder{Overlay: overlayClient, Packages: packageManager, Deployer: updatePipeline, Private: privateManager}
+	sharedGameCoordinator := &updates.SharedGameCoordinator{Root: cfg.DataRoot, Instances: db, Players: playerService, Installer: engine, Reconciler: sharedRebuilder, Lifecycle: life, Gate: sharedGate}
+	sharedGameMigration := &sharedmigration.SharedGameService{Root: cfg.DataRoot, Instances: db, Installer: engine, Publisher: sharedPublisher, Layout: sharedmigration.FilesystemLayout{Root: cfg.DataRoot}, Reconciler: sharedRebuilder, Gate: sharedGate}
+	dispatcher := automation.Dispatcher{Jobs: jobManager, Players: playerService, Packages: packageManager, PackagesUpdate: updateCoordinator, GameUpdate: gameCoordinator, SharedGameUpdate: sharedGameCoordinator, Releases: releases.Client{}, Sources: db, Maintenance: maintenance.New(cfg.DataRoot), Gate: sharedGate, Secrets: secretService}
 	scheduleService := scheduler.NewService(db, dispatcher)
 	secureCookie := true
 	if configured := os.Getenv("L4D2_PANEL_SECURE_COOKIE"); configured != "" {
@@ -183,7 +198,7 @@ func main() {
 			log.Fatal("L4D2_PANEL_SECURE_COOKIE must be true or false")
 		}
 	}
-	api := httpapi.New(db, sessions, httpapi.WithOperations(life, jobManager), httpapi.WithJobLogs(jobLogManager), httpapi.WithConsole(engine), httpapi.WithPlayers(playerService), httpapi.WithContent(uploadManager, privateManager, packageManager, updatePipeline, updateCoordinator), httpapi.WithVPKRestartRegistrar(vpkRestartCoordinator), httpapi.WithPrivateUploads(privateUploadManager), httpapi.WithGameUpdates(gameCoordinator), httpapi.WithScheduler(scheduleService), httpapi.WithSecrets(secretService), httpapi.WithResources(engine), httpapi.WithPerformance(performanceSampler), httpapi.WithSystem(engine), httpapi.WithSecureCookie(secureCookie))
+	api := httpapi.New(db, sessions, httpapi.WithOperations(life, jobManager), httpapi.WithMaintenanceGate(sharedGate), httpapi.WithJobLogs(jobLogManager), httpapi.WithConsole(engine), httpapi.WithPlayers(playerService), httpapi.WithContent(uploadManager, privateManager, packageManager, updatePipeline, updateCoordinator), httpapi.WithVPKRestartRegistrar(vpkRestartCoordinator), httpapi.WithPrivateUploads(privateUploadManager), httpapi.WithGameUpdates(gameCoordinator), httpapi.WithSharedGameUpdates(sharedGameCoordinator), httpapi.WithSharedGameMigration(sharedGameMigration), httpapi.WithScheduler(scheduleService), httpapi.WithSecrets(secretService), httpapi.WithResources(engine), httpapi.WithPerformance(performanceSampler), httpapi.WithSystem(engine), httpapi.WithSecureCookie(secureCookie))
 	stopBackground := func() {
 		vpkRestartCoordinator.Stop()
 		scheduleService.Stop()

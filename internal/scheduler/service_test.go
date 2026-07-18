@@ -26,7 +26,7 @@ func TestServiceUpdatesDisablesAndDeletesExistingSchedule(t *testing.T) {
 	defer service.Stop()
 	ctx := context.Background()
 	lastRun := time.Date(2026, time.July, 15, 20, 0, 0, 0, time.UTC)
-	task := domain.ScheduledTask{ID: "task-1", InstanceID: "abc", Type: "game_update", Cron: "0 4 * * *", Timezone: "Asia/Hong_Kong", OnlinePolicy: "skip", Payload: `{}`, Enabled: true, LastRun: lastRun}
+	task := domain.ScheduledTask{ID: "task-1", Type: "game_update", Cron: "0 4 * * *", Timezone: "Asia/Hong_Kong", OnlinePolicy: "skip", Payload: `{}`, Enabled: true, LastRun: lastRun}
 	if err := service.Save(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestServicePersistsSchedulesAndRunsSharedDispatcher(t *testing.T) {
 	defer db.Close()
 	dispatcher := &fakeDispatcher{}
 	service := NewService(db, dispatcher)
-	task := domain.ScheduledTask{ID: "task-1", InstanceID: "abc", Type: "game_update", Cron: "0 4 * * *", Timezone: "Asia/Hong_Kong", OnlinePolicy: "skip", Payload: `{}`, Enabled: true}
+	task := domain.ScheduledTask{ID: "task-1", Type: "game_update", Cron: "0 4 * * *", Timezone: "Asia/Hong_Kong", OnlinePolicy: "skip", Payload: `{}`, Enabled: true}
 	if err := service.Save(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
@@ -89,5 +89,27 @@ func TestServicePersistsSchedulesAndRunsSharedDispatcher(t *testing.T) {
 	}
 	if dispatcher.ran != "task-1" {
 		t.Fatalf("ran=%q", dispatcher.ran)
+	}
+}
+
+func TestServiceValidatesTaskScope(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := NewService(db, &fakeDispatcher{})
+	defer service.Stop()
+	base := domain.ScheduledTask{ID: "task", Cron: "0 4 * * *", Timezone: "UTC", OnlinePolicy: "force", Payload: `{}`}
+	global := base
+	global.Type = "game_update"
+	global.InstanceID = "abc"
+	if err := service.Save(context.Background(), global); err == nil {
+		t.Fatal("global game update accepted instance")
+	}
+	instanceTask := base
+	instanceTask.Type = "backup"
+	if err := service.Save(context.Background(), instanceTask); err == nil {
+		t.Fatal("instance task accepted empty instance")
 	}
 }

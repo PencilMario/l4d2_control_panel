@@ -6,6 +6,7 @@ import (
 	"errors"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/maintenance"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +14,23 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestStartWaitsForGlobalMaintenanceLease(t *testing.T) {
+	gate := maintenance.NewGate()
+	release, err := gate.Exclusive(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	service := New(nil, nil, nil, t.TempDir(), WithMaintenanceGate(gate))
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := service.Start(ctx, "abc"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err=%v", err)
+	}
+}
 
 type fakeEngine struct {
 	created, started, stopped bool

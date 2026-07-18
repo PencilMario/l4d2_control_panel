@@ -45,6 +45,12 @@ func (s *Service) Save(ctx context.Context, task domain.ScheduledTask) error {
 	if task.OnlinePolicy != "skip" && task.OnlinePolicy != "wait" && task.OnlinePolicy != "force" {
 		return errors.New("online policy must be skip, wait or force")
 	}
+	if task.Type == "game_update" && task.InstanceID != "" {
+		return errors.New("game update is global and cannot target an instance")
+	}
+	if task.Type != "game_update" && task.Type != "release_check" && task.Type != "cleanup" && task.InstanceID == "" {
+		return errors.New("scheduled task requires an instance")
+	}
 	parsed, err := Parse(task.Cron, task.Timezone)
 	if err != nil {
 		return err

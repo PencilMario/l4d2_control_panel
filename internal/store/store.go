@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	_ "modernc.org/sqlite"
 )
@@ -82,7 +83,69 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = migrateGlobalGameSchedules(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
+}
+
+func migrateGlobalGameSchedules(db *sql.DB) error {
+	var applied int
+	if err := db.QueryRow(`SELECT count(*) FROM schema_migrations WHERE version=7`).Scan(&applied); err != nil {
+		return err
+	}
+	if applied > 0 {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query(`SELECT id,cron,timezone,online_policy,enabled FROM scheduled_tasks WHERE type='game_update' ORDER BY id`)
+	if err != nil {
+		return err
+	}
+	type schedule struct {
+		id, cron, timezone, policy string
+		enabled                    bool
+	}
+	var schedules []schedule
+	for rows.Next() {
+		var item schedule
+		if err := rows.Scan(&item.id, &item.cron, &item.timezone, &item.policy, &item.enabled); err != nil {
+			rows.Close()
+			return err
+		}
+		schedules = append(schedules, item)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, item := range schedules {
+		enabled := item.enabled
+		key := item.cron + "\x00" + item.timezone + "\x00" + item.policy
+		if enabled && seen[key] {
+			enabled = false
+			metadata := fmt.Sprintf(`{"reason":"duplicate_global_game_update","cron":%q,"timezone":%q,"online_policy":%q}`, item.cron, item.timezone, item.policy)
+			if _, err := tx.Exec(`INSERT INTO audit_events(id,action,target,result,metadata,created_at) VALUES(?,?,?,?,?,?)`, uuid.NewString(), "schedule_migration", item.id, "disabled", metadata, now); err != nil {
+				return err
+			}
+		}
+		if enabled {
+			seen[key] = true
+		}
+		if _, err := tx.Exec(`UPDATE scheduled_tasks SET instance_id='',enabled=? WHERE id=?`, enabled, item.id); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(7,?)`, now); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func migrateGitHubSources(db *sql.DB) error {
@@ -176,6 +239,27 @@ func migrateSelectedPackage(db *sql.DB) error {
 }
 func (s *Store) DB() *sql.DB  { return s.db }
 func (s *Store) Close() error { return s.db.Close() }
+
+func (s *Store) SaveSharedGameState(ctx context.Context, value domain.SharedGameState) error {
+	value.UpdatedAt = time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO shared_game_state(singleton,active_release_id,previous_release_id,migration_state,operation_id,operation_stage,updated_at) VALUES(1,?,?,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET active_release_id=excluded.active_release_id,previous_release_id=excluded.previous_release_id,migration_state=excluded.migration_state,operation_id=excluded.operation_id,operation_stage=excluded.operation_stage,updated_at=excluded.updated_at`, value.ActiveReleaseID, value.PreviousReleaseID, value.MigrationState, value.OperationID, value.OperationStage, value.UpdatedAt.Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *Store) SharedGameState(ctx context.Context) (domain.SharedGameState, error) {
+	var value domain.SharedGameState
+	var updated string
+	err := s.db.QueryRowContext(ctx, `SELECT active_release_id,previous_release_id,migration_state,operation_id,operation_stage,updated_at FROM shared_game_state WHERE singleton=1`).Scan(&value.ActiveReleaseID, &value.PreviousReleaseID, &value.MigrationState, &value.OperationID, &value.OperationStage, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return value, ErrNotFound
+	}
+	if err != nil {
+		return value, err
+	}
+	value.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated)
+	return value, err
+}
+
 func (s *Store) CreateInstance(ctx context.Context, v domain.Instance) error {
 	now := time.Now().UTC()
 	v.CreatedAt, v.UpdatedAt = now, now

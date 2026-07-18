@@ -74,16 +74,16 @@ const TASK_TYPE_ORDER: ScheduleTaskType[] = [
 const TASK_TYPES: Record<ScheduleTaskType, TaskTypeDefinition> = {
   game_update: {
     label: "游戏更新",
-    needsInstance: true,
+    needsInstance: false,
     usesPlayerPolicy: true,
-    target: "一个游戏实例。",
+    target: "共享游戏本体及所有依赖它的游戏实例。",
     steps:
-      "先应用在线玩家策略；允许执行后读取实例状态，必要时停止实例，通过维护流程运行 SteamCMD 更新或校验游戏文件，重新应用私有文件覆盖，再按原期望状态决定是否启动实例。",
+      "对所有活动实例应用在线玩家策略；全部符合条件后停止活动实例，发布新的共享游戏版本，重建各实例插件包与私有文件覆盖，再恢复原本期望运行的实例。",
     interruption:
-      "运行中或启动中的实例会停止。原本期望运行的实例在更新和健康检查成功后恢复运行；原本停止的实例保持停止。",
+      "所有活动实例会在同一维护事务中停止；任何一个实例不符合玩家策略都会阻止整个更新。",
     parameters: "不需要额外任务参数。",
     caution:
-      "耗时取决于 Steam 下载。失败会记录 scheduled_game_update Job；实例可能进入故障状态，需要检查任务日志。",
+      "耗时取决于 Steam 下载和实例数量。查询失败不会被当作空服；发布或重挂载失败会回滚到上一共享版本。",
   },
   package_hot: {
     label: "插件热更新",
@@ -442,6 +442,7 @@ export function SchedulesPage({
     setCron(task.cron);
     setPolicy(task.online_policy);
     setEnabled(task.enabled);
+	setInstanceID(task.type === "game_update" ? "" : task.instance_id);
     setScheduleError("");
     setScheduleStatus("");
   };
@@ -470,7 +471,7 @@ export function SchedulesPage({
       const body: Record<string, unknown> = editing
         ? {
             id: editing.id,
-            instance_id: editing.instance_id,
+			instance_id: TASK_TYPES[editing.type].needsInstance ? editing.instance_id : "",
             type: editing.type,
             cron,
             timezone: editing.timezone,

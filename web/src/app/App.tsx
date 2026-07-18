@@ -1138,11 +1138,11 @@ function Overview({
         <ReinstallDialog
           instance={reinstalling}
           close={() => setReinstalling(null)}
-          onConfirm={async (game, packageOption) => {
+          onConfirm={async () => {
             await queue(`/api/instances/${reinstalling.id}/game-update`, {
               confirm: true,
-              reinstall_game: game,
-              reinstall_package: packageOption,
+				reinstall_game: false,
+				reinstall_package: true,
             });
             setReinstalling(null);
           }}
@@ -1247,6 +1247,7 @@ function ContentPage({
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [sources, setSources] = useState<GitHubSource[]>([]);
   const [sourceEditor, setSourceEditor] = useState<GitHubSource | null>(null);
+	const [gamePolicy, setGamePolicy] = useState("wait");
   const contentActions = useAsyncLocks();
   const loadVPK = () => api<any[]>("/api/content/vpk").then(setVpks);
   const loadSources = () => api<GitHubSource[]>("/api/github-sources").then((items) => setSources(Array.isArray(items) ? items : []));
@@ -1371,6 +1372,32 @@ function ContentPage({
           ))}
         </select>
       </label>
+		<Panel
+			title="共享游戏本体"
+			action={
+				<button
+					className="danger"
+					disabled={contentActions.pending.has("game:update")}
+					aria-busy={contentActions.pending.has("game:update")}
+					onClick={() => {
+						if (!window.confirm("更新共享游戏本体？所有依赖实例均符合在线玩家策略后才会停止并更新。")) return;
+						void runContentAction("game:update", () => queue("/api/game/update", { confirm: true, online_policy: gamePolicy }));
+					}}
+				>
+					更新共享游戏本体
+				</button>
+			}
+		>
+			<label>
+				所有服务器在线玩家策略
+				<select aria-label="所有服务器在线玩家策略" value={gamePolicy} onChange={(event) => setGamePolicy(event.target.value)}>
+					<option value="skip">任一不符合则跳过</option>
+					<option value="wait">等待全部空服</option>
+					<option value="force">强制执行</option>
+				</select>
+			</label>
+			<p>该操作不绑定实例；任一活动服务器有玩家或查询失败时，等待/跳过策略会阻止整个更新。</p>
+		</Panel>
       <Panel
         title="共享 VPK"
         action={
@@ -2088,19 +2115,17 @@ function ReinstallDialog({
 }: {
   instance: Instance;
   close: () => void;
-  onConfirm: (game: boolean, packageOption: boolean) => Promise<void>;
+	onConfirm: () => Promise<void>;
 }) {
 	const hasPackage = Boolean(instance.package_id);
-  const [game, setGame] = useState(true);
-  const [packageOption, setPackageOption] = useState(hasPackage);
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
   const submit = async () => {
-    if (submittingRef.current || (!game && !packageOption)) return;
+		if (submittingRef.current || !hasPackage) return;
     submittingRef.current = true;
     setSubmitting(true);
     try {
-      await onConfirm(game, packageOption);
+			await onConfirm();
     } finally {
       submittingRef.current = false;
       setSubmitting(false);
@@ -2118,35 +2143,15 @@ function ReinstallDialog({
           <RefreshCw />
         </span>
         <p className="eyebrow">FORCED REINSTALL</p>
-        <h2 id="reinstall-title">重新安装实例组件</h2>
-        <p>{instance.name} 将在重新安装期间停止，并在完成后恢复原有运行状态。</p>
-        <fieldset className="reinstall-options">
-          <label>
-            <input
-              aria-label="重新安装游戏本体"
-              type="checkbox"
-              checked={game}
-              onChange={(event) => setGame(event.target.checked)}
-            />
-            <span><b>重新安装游戏本体</b><small>强制运行 SteamCMD 校验 App 222860</small></span>
-          </label>
-          <label>
-            <input
-              aria-label="重新安装实例插件包"
-              type="checkbox"
-              checked={packageOption}
-              disabled={!hasPackage}
-              onChange={(event) => setPackageOption(event.target.checked)}
-            />
-            <span><b>重新安装实例插件包</b><small>{hasPackage ? "完整部署当前选中的插件包" : "该实例尚未选择插件包"}</small></span>
-          </label>
-        </fieldset>
+		<h2 id="reinstall-title">重新安装实例插件包</h2>
+		<p>{instance.name} 将完整部署当前选中的插件包并重新应用私有文件。共享游戏本体不会在此操作中更新。</p>
+		<p>{hasPackage ? `当前插件包：${instance.package_id}` : "该实例尚未选择插件包。"}</p>
         <div>
           <button disabled={submitting} onClick={close}>取消</button>
           <button
             className="danger"
             aria-label="确认重新安装"
-            disabled={submitting || (!game && !packageOption)}
+			disabled={submitting || !hasPackage}
             aria-busy={submitting}
             onClick={() => void submit()}
           >

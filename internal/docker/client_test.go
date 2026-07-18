@@ -28,6 +28,10 @@ func dockerLogFrame(stream byte, body string) []byte {
 	return append(header, []byte(body)...)
 }
 
+func installSharedTest(ctx context.Context, engine *Engine, root string, instance domain.Instance) error {
+	return engine.InstallSharedGame(ctx, root, filepath.Join(root, "release"), instance, false)
+}
+
 func TestFollowLogsDecodesMultiplexedFramesAndPartialLines(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1.44/containers/abc/logs" || r.URL.Query().Get("follow") != "1" || r.URL.Query().Get("tail") != "200" {
@@ -255,6 +259,41 @@ func TestGameUpdateUsesFixedSteamCMDMaintenanceContainer(t *testing.T) {
 	}
 }
 
+func TestInstallSharedGameBindsExplicitReleasePath(t *testing.T) {
+	var created createRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/json"):
+			_ = json.NewEncoder(w).Encode([]Container{})
+		case strings.HasSuffix(r.URL.Path, "/containers/create"):
+			if err := json.NewDecoder(r.Body).Decode(&created); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"Id": "maintenance"})
+		case strings.HasSuffix(r.URL.Path, "/wait"):
+			_ = json.NewEncoder(w).Encode(map[string]int{"StatusCode": 0})
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	target := filepath.Join(root, "game", "staging", "job-1")
+	instance := domain.Instance{ID: "shared-game", RuntimeImage: "runtime:v1"}
+	if err := NewEngine(server.URL).InstallSharedGame(context.Background(), root, target, instance, true); err != nil {
+		t.Fatal(err)
+	}
+	if created.HostConfig.Binds[0] != target+":/opt/l4d2/game" {
+		t.Fatalf("binds=%v", created.HostConfig.Binds)
+	}
+	if created.Labels[InstanceLabel] != "shared-game" || created.Labels[RoleLabel] != "maintenance" {
+		t.Fatalf("labels=%v", created.Labels)
+	}
+	if !strings.Contains(strings.Join(created.Cmd, " "), "+app_update 222860 validate") {
+		t.Fatalf("command=%v", created.Cmd)
+	}
+}
+
 func TestRunMaintenanceReturnsExitCodeAndRecentOutput(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -317,7 +356,7 @@ func TestGameUpdateOverridesRuntimeEntrypointWithSteamCMD(t *testing.T) {
 	}
 }
 
-func TestGameInstallBootstrapsWindowsBeforeLinuxWithoutValidate(t *testing.T) {
+func TestSharedGameInstallBootstrapsWindowsBeforeLinuxWithoutValidate(t *testing.T) {
 	var created createRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -336,7 +375,7 @@ func TestGameInstallBootstrapsWindowsBeforeLinuxWithoutValidate(t *testing.T) {
 	}))
 	defer server.Close()
 	instance := domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"}
-	if err := NewEngine(server.URL).InstallGame(context.Background(), t.TempDir(), instance); err != nil {
+	if err := installSharedTest(context.Background(), NewEngine(server.URL), t.TempDir(), instance); err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(created.Cmd, " ")
@@ -347,7 +386,7 @@ func TestGameInstallBootstrapsWindowsBeforeLinuxWithoutValidate(t *testing.T) {
 	}
 }
 
-func TestAnonymousInstallRetriesMissingConfigurationThenSucceeds(t *testing.T) {
+func TestAnonymousSharedGameInstallRetriesMissingConfigurationThenSucceeds(t *testing.T) {
 	createCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -373,7 +412,7 @@ func TestAnonymousInstallRetriesMissingConfigurationThenSucceeds(t *testing.T) {
 	}))
 	defer server.Close()
 
-	err := NewEngine(server.URL).InstallGame(context.Background(), t.TempDir(), domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"})
+	err := installSharedTest(context.Background(), NewEngine(server.URL), t.TempDir(), domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +421,7 @@ func TestAnonymousInstallRetriesMissingConfigurationThenSucceeds(t *testing.T) {
 	}
 }
 
-func TestAnonymousInstallDoesNotRetryOtherFailure(t *testing.T) {
+func TestAnonymousSharedGameInstallDoesNotRetryOtherFailure(t *testing.T) {
 	createCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -402,7 +441,7 @@ func TestAnonymousInstallDoesNotRetryOtherFailure(t *testing.T) {
 	}))
 	defer server.Close()
 
-	err := NewEngine(server.URL).InstallGame(context.Background(), t.TempDir(), domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"})
+	err := installSharedTest(context.Background(), NewEngine(server.URL), t.TempDir(), domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"})
 	if err == nil || !strings.Contains(err.Error(), "steamcmd exited with code 8") {
 		t.Fatalf("err=%v", err)
 	}
@@ -411,7 +450,7 @@ func TestAnonymousInstallDoesNotRetryOtherFailure(t *testing.T) {
 	}
 }
 
-func TestAnonymousInstallDoesNotRetryDockerFailure(t *testing.T) {
+func TestAnonymousSharedGameInstallDoesNotRetryDockerFailure(t *testing.T) {
 	createCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -426,7 +465,7 @@ func TestAnonymousInstallDoesNotRetryDockerFailure(t *testing.T) {
 	}))
 	defer server.Close()
 
-	err := NewEngine(server.URL).InstallGame(context.Background(), t.TempDir(), domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"})
+	err := installSharedTest(context.Background(), NewEngine(server.URL), t.TempDir(), domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"})
 	if err == nil || !strings.Contains(err.Error(), "docker unavailable") {
 		t.Fatalf("err=%v", err)
 	}
@@ -435,7 +474,7 @@ func TestAnonymousInstallDoesNotRetryDockerFailure(t *testing.T) {
 	}
 }
 
-func TestAnonymousInstallStopsAfterThreeMissingConfigurationFailures(t *testing.T) {
+func TestAnonymousSharedGameInstallStopsAfterThreeMissingConfigurationFailures(t *testing.T) {
 	createCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -455,7 +494,7 @@ func TestAnonymousInstallStopsAfterThreeMissingConfigurationFailures(t *testing.
 	}))
 	defer server.Close()
 
-	err := NewEngine(server.URL).InstallGame(context.Background(), t.TempDir(), domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"})
+	err := installSharedTest(context.Background(), NewEngine(server.URL), t.TempDir(), domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"})
 	if err == nil || !strings.Contains(err.Error(), "after 3 attempts") || !strings.Contains(err.Error(), "code 8") {
 		t.Fatalf("err=%v", err)
 	}
@@ -464,7 +503,7 @@ func TestAnonymousInstallStopsAfterThreeMissingConfigurationFailures(t *testing.
 	}
 }
 
-func TestCredentialedGameInstallDoesNotValidate(t *testing.T) {
+func TestCredentialedSharedGameInstallDoesNotValidate(t *testing.T) {
 	var created createRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -484,7 +523,7 @@ func TestCredentialedGameInstallDoesNotValidate(t *testing.T) {
 	defer server.Close()
 	engine := NewEngine(server.URL, WithSteamCredentials(func() (string, string) { return "owner", "password" }))
 	instance := domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"}
-	if err := engine.InstallGame(context.Background(), t.TempDir(), instance); err != nil {
+	if err := installSharedTest(context.Background(), engine, t.TempDir(), instance); err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(created.Cmd, " ")

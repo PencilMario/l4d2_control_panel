@@ -269,25 +269,33 @@ func isMissingConfiguration(result maintenanceResult) bool {
 	return result.StatusCode != 0 && strings.Contains(result.Output, missingConfigurationMessage)
 }
 
-func (e *Engine) InstallGame(ctx context.Context, dataRoot string, instance domain.Instance) error {
+func (e *Engine) InstallSharedGame(ctx context.Context, dataRoot, target string, instance domain.Instance, validate bool) error {
+	return e.installSharedGame(ctx, dataRoot, target, instance, validate)
+}
+
+func (e *Engine) installSharedGame(ctx context.Context, dataRoot, target string, instance domain.Instance, validate bool) error {
 	login := e.steamLoginArgs()
 	command := []string{steamCMDEntrypoint}
 	anonymous := len(login) == 2 && login[1] == "anonymous"
 	if anonymous {
 		command = append(command, "+@sSteamCmdForcePlatformType", "windows", "+force_install_dir", "/opt/l4d2/game")
 		command = append(command, login...)
-		command = append(command, "+app_info_update", "1", "+app_update", "222860", "+@sSteamCmdForcePlatformType", "linux", "+app_update", "222860", "+quit")
+		command = append(command, "+app_info_update", "1", "+app_update", "222860", "+@sSteamCmdForcePlatformType", "linux", "+app_update", "222860")
 	} else {
 		command = append(command, "+@sSteamCmdForcePlatformType", "linux", "+force_install_dir", "/opt/l4d2/game")
 		command = append(command, login...)
-		command = append(command, "+app_info_update", "1", "+app_update", "222860", "+quit")
+		command = append(command, "+app_info_update", "1", "+app_update", "222860")
 	}
+	if validate {
+		command = append(command, "validate")
+	}
+	command = append(command, "+quit")
 	attempts := 1
 	if anonymous {
 		attempts = anonymousInstallAttempts
 	}
 	for attempt := 1; attempt <= attempts; attempt++ {
-		result, err := e.runMaintenance(ctx, dataRoot, instance, command)
+		result, err := e.runMaintenanceAt(ctx, dataRoot, target, instance, command)
 		if err != nil {
 			return err
 		}
@@ -317,6 +325,14 @@ func (e *Engine) UpdateGame(ctx context.Context, dataRoot string, instance domai
 }
 
 func (e *Engine) runMaintenance(ctx context.Context, dataRoot string, instance domain.Instance, command []string) (maintenanceResult, error) {
+	return e.runMaintenanceAt(ctx, dataRoot, filepath.Join(dataRoot, "instances", instance.ID, "game"), instance, command)
+}
+
+func (e *Engine) runMaintenanceAt(ctx context.Context, dataRoot, target string, instance domain.Instance, command []string) (maintenanceResult, error) {
+
+	if err := os.MkdirAll(target, 0o750); err != nil {
+		return maintenanceResult{}, err
+	}
 	steamCache := filepath.Join(dataRoot, "panel", "steamcmd", "Steam")
 	if err := os.MkdirAll(steamCache, 0o750); err != nil {
 		return maintenanceResult{}, err
@@ -338,7 +354,7 @@ func (e *Engine) runMaintenance(ctx context.Context, dataRoot string, instance d
 			}
 		}
 	} else {
-		body := createRequest{Image: instance.RuntimeImage, Entrypoint: command[:1], Env: e.runtimeEnv(nil), Cmd: command[1:], User: "steam", Labels: map[string]string{ManagedLabel: "true", InstanceLabel: instance.ID, RoleLabel: "maintenance"}, HostConfig: hostConfig{Binds: []string{filepath.Join(dataRoot, "instances", instance.ID, "game") + ":/opt/l4d2/game", steamCache + ":/home/steam/Steam"}, NetworkMode: "bridge", SecurityOpt: []string{"no-new-privileges"}}}
+		body := createRequest{Image: instance.RuntimeImage, Entrypoint: command[:1], Env: e.runtimeEnv(nil), Cmd: command[1:], User: "steam", Labels: map[string]string{ManagedLabel: "true", InstanceLabel: instance.ID, RoleLabel: "maintenance"}, HostConfig: hostConfig{Binds: []string{target + ":/opt/l4d2/game", steamCache + ":/home/steam/Steam"}, NetworkMode: "bridge", SecurityOpt: []string{"no-new-privileges"}}}
 		var created struct {
 			ID string `json:"Id"`
 		}

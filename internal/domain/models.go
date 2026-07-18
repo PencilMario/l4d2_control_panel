@@ -72,3 +72,12 @@ type ScheduledTask struct {
 	LastRun      time.Time `json:"last_run"`
 	NextRun      time.Time `json:"next_run"`
 }
+
+type SharedGameState struct {
+	ActiveReleaseID   string    `json:"active_release_id"`
+	PreviousReleaseID string    `json:"previous_release_id"`
+	MigrationState    string    `json:"migration_state"`
+	OperationID       string    `json:"operation_id"`
+	OperationStage    string    `json:"operation_stage"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}

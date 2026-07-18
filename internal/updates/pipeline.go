@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	archivecheck "github.com/not0721here/l4d2-control-panel/internal/archive"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
+	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/safepath"
 )
 
@@ -31,6 +32,12 @@ const (
 type Pipeline struct {
 	root        string
 	AfterDeploy func() error
+	overlay     interface {
+		ResetManagedPaths(context.Context, string, string, []string) error
+	}
+	sharedState interface {
+		SharedGameState(context.Context) (domain.SharedGameState, error)
+	}
 }
 
 type manifest struct {
@@ -71,6 +78,16 @@ type deployment struct {
 }
 
 func New(root string) *Pipeline { return &Pipeline{root: root} }
+
+func (p *Pipeline) WithSharedOverlay(overlay interface {
+	ResetManagedPaths(context.Context, string, string, []string) error
+}, sharedState interface {
+	SharedGameState(context.Context) (domain.SharedGameState, error)
+}) *Pipeline {
+	p.overlay = overlay
+	p.sharedState = sharedState
+	return p
+}
 
 func (p *Pipeline) Apply(ctx context.Context, instanceID, archivePath, version string, mode Mode) error {
 	transaction, err := p.Begin(ctx, instanceID, archivePath, version, mode)
@@ -185,6 +202,18 @@ func (p *Pipeline) Begin(ctx context.Context, instanceID, archivePath, version s
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
+	if mode == Full && p.overlay != nil && p.sharedState != nil {
+		state, stateErr := p.sharedState.SharedGameState(ctx)
+		if stateErr == nil && state.MigrationState == "ready" && state.ActiveReleaseID != "" {
+			overlayPaths := make([]string, len(paths))
+			for index, managedPath := range paths {
+				overlayPaths[index] = filepath.ToSlash(filepath.Join("left4dead2", filepath.FromSlash(managedPath)))
+			}
+			if err := p.overlay.ResetManagedPaths(ctx, instanceID, state.ActiveReleaseID, overlayPaths); err != nil {
+				return nil, err
+			}
+		}
+	}
 	entries := make([]journalEntry, 0, len(paths))
 	for _, path := range paths {
 		target, err := safepath.Join(game, path)

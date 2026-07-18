@@ -62,6 +62,35 @@ func TestOpenEnablesWALAndMigrates(t *testing.T) {
 	}
 }
 
+func TestSharedGameStateRoundTrip(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	if _, err := s.SharedGameState(ctx); err != ErrNotFound {
+		t.Fatalf("empty state error = %v", err)
+	}
+	want := domain.SharedGameState{
+		ActiveReleaseID:   "release-2",
+		PreviousReleaseID: "release-1",
+		MigrationState:    "ready",
+		OperationID:       "job-1",
+		OperationStage:    "published",
+	}
+	if err := s.SaveSharedGameState(ctx, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.SharedGameState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ActiveReleaseID != want.ActiveReleaseID || got.PreviousReleaseID != want.PreviousReleaseID || got.MigrationState != want.MigrationState || got.OperationID != want.OperationID || got.OperationStage != want.OperationStage || got.UpdatedAt.IsZero() {
+		t.Fatalf("state = %#v", got)
+	}
+}
+
 func TestInstanceCRUD(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {
@@ -226,6 +255,48 @@ func TestScheduledTasksPersist(t *testing.T) {
 	}
 	if err := s.DeleteScheduledTask(ctx, task.ID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestOpenMigratesGameUpdateSchedulesToGlobalAndDisablesDuplicates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "panel.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, task := range []domain.ScheduledTask{
+		{ID: "a", InstanceID: "instance-a", Type: "game_update", Cron: "0 4 * * *", Timezone: "UTC", OnlinePolicy: "wait", Payload: `{}`, Enabled: true},
+		{ID: "b", InstanceID: "instance-b", Type: "game_update", Cron: "0 4 * * *", Timezone: "UTC", OnlinePolicy: "wait", Payload: `{}`, Enabled: true},
+	} {
+		if err := s.SaveScheduledTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.DB().Exec(`DELETE FROM schema_migrations WHERE version=7`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	tasks, err := s.ScheduledTasks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 2 || tasks[0].InstanceID != "" || tasks[1].InstanceID != "" || !tasks[0].Enabled || tasks[1].Enabled {
+		t.Fatalf("tasks=%#v", tasks)
+	}
+	events, err := s.AuditEvents(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) == 0 || events[0].Action != "schedule_migration" || events[0].Target != "b" {
+		t.Fatalf("events=%#v", events)
 	}
 }
 

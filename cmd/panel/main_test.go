@@ -10,6 +10,13 @@ import (
 
 type fakeShutdowner struct{ events *[]string }
 
+func TestStartMinimumFreeBytesIsOneGiB(t *testing.T) {
+	const want = uint64(1 << 30)
+	if startMinimumFreeBytes != want {
+		t.Fatalf("start minimum free bytes=%d want=%d", startMinimumFreeBytes, want)
+	}
+}
+
 func (f fakeShutdowner) Shutdown(context.Context) error {
 	*f.events = append(*f.events, "http")
 	return nil

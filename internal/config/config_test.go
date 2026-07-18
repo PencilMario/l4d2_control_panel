@@ -18,10 +18,17 @@ func TestLoadCreatesPersistentLayout(t *testing.T) {
 	if cfg.ListenAddress != ":8080" {
 		t.Fatalf("ListenAddress = %q", cfg.ListenAddress)
 	}
-	for _, path := range []string{cfg.PanelDir, cfg.PackagesDir, cfg.InstancesDir, cfg.SharedVPKDir} {
+	for _, path := range []string{cfg.PanelDir, cfg.PackagesDir, cfg.InstancesDir, cfg.SharedVPKDir, cfg.GameDir, cfg.GameReleasesDir, cfg.GameStagingDir} {
 		if !isDirectory(path) {
 			t.Fatalf("expected directory %s", path)
 		}
+	}
+	if cfg.GameCurrentPath != filepath.Join(cfg.GameDir, "current") {
+		t.Fatalf("GameCurrentPath = %q", cfg.GameCurrentPath)
+	}
+	wantOverlay := filepath.Join(cfg.InstancesDir, "abc", "overlay")
+	if got := cfg.InstanceOverlayDir("abc"); got != wantOverlay {
+		t.Fatalf("InstanceOverlayDir = %q, want %q", got, wantOverlay)
 	}
 }
 

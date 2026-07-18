@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/maintenance"
 	"os"
 	"path/filepath"
 )
@@ -120,6 +121,7 @@ type Service struct {
 	space               SpaceChecker
 	provisioner         Provisioner
 	minimumInstallBytes uint64
+	maintenanceGate     *maintenance.Gate
 }
 type Option func(*Service)
 
@@ -130,6 +132,9 @@ func WithSpace(checker SpaceChecker, minimum uint64) Option {
 func WithProvisioner(provisioner Provisioner) Option {
 	return func(s *Service) { s.provisioner = provisioner }
 }
+func WithMaintenanceGate(gate *maintenance.Gate) Option {
+	return func(s *Service) { s.maintenanceGate = gate }
+}
 
 func New(repo Repository, engine Engine, ports PortChecker, dataRoot string, options ...Option) *Service {
 	service := &Service{repo: repo, engine: engine, ports: ports, dataRoot: dataRoot}
@@ -139,6 +144,11 @@ func New(repo Repository, engine Engine, ports PortChecker, dataRoot string, opt
 	return service
 }
 func (s *Service) Start(ctx context.Context, id string) error {
+	ctx, release, err := s.lease(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := s.ensureNoMaintenance(ctx, id); err != nil {
 		return err
 	}
@@ -218,6 +228,11 @@ func (s *Service) Start(ctx context.Context, id string) error {
 	return s.repo.UpdateInstance(ctx, v)
 }
 func (s *Service) Stop(ctx context.Context, id string) error {
+	ctx, release, err := s.lease(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := s.ensureNoMaintenance(ctx, id); err != nil {
 		return err
 	}
@@ -236,12 +251,22 @@ func (s *Service) Stop(ctx context.Context, id string) error {
 	return s.repo.UpdateInstance(ctx, v)
 }
 func (s *Service) Restart(ctx context.Context, id string) error {
+	ctx, release, err := s.lease(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := s.Stop(ctx, id); err != nil {
 		return err
 	}
 	return s.Start(ctx, id)
 }
 func (s *Service) Rebuild(ctx context.Context, id string) error {
+	ctx, release, err := s.lease(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := s.ensureNoMaintenance(ctx, id); err != nil {
 		return err
 	}
@@ -278,6 +303,11 @@ func (s *Service) Rebuild(ctx context.Context, id string) error {
 	return nil
 }
 func (s *Service) Delete(ctx context.Context, id string, deleteData bool) error {
+	ctx, release, err := s.lease(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := s.ensureNoMaintenance(ctx, id); err != nil {
 		return err
 	}
@@ -309,6 +339,13 @@ func (s *Service) Delete(ctx context.Context, id string, deleteData bool) error 
 		return os.RemoveAll(filepath.Join(s.dataRoot, "instances", id))
 	}
 	return nil
+}
+
+func (s *Service) lease(ctx context.Context) (context.Context, func(), error) {
+	if s.maintenanceGate == nil {
+		return ctx, func() {}, nil
+	}
+	return s.maintenanceGate.SharedContext(ctx)
 }
 func (s *Service) fault(ctx context.Context, v domain.Instance, cause error) error {
 	v.ActualState = domain.StateFaulted

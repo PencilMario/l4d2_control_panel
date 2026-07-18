@@ -36,6 +36,25 @@ type fakePackageUpdater struct {
 	mode  updates.Mode
 }
 
+type fakeSharedGameUpdater struct{ policy string }
+
+func (f *fakeSharedGameUpdater) Update(_ context.Context, policy string) error {
+	f.policy = policy
+	return nil
+}
+
+func TestScheduledGameUpdateUsesGlobalPolicy(t *testing.T) {
+	updater := &fakeSharedGameUpdater{}
+	d := Dispatcher{SharedGameUpdate: updater}
+	task := domain.ScheduledTask{Type: "game_update", OnlinePolicy: "wait"}
+	if err := d.run(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	if updater.policy != "wait" {
+		t.Fatalf("policy=%q", updater.policy)
+	}
+}
+
 func (f *fakePackageUpdater) ApplyPackage(context.Context, string, content.PackageVersion, updates.Mode) error {
 	f.calls++
 	return nil

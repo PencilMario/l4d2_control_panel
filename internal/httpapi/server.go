@@ -27,6 +27,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
+	"github.com/not0721here/l4d2-control-panel/internal/maintenance"
 	"github.com/not0721here/l4d2-control-panel/internal/metrics"
 	"github.com/not0721here/l4d2-control-panel/internal/players"
 	"github.com/not0721here/l4d2-control-panel/internal/releases"
@@ -56,13 +57,20 @@ type Server struct {
 	updateCoordinator *updates.Coordinator
 	releases          releases.Client
 	gameUpdates       *updates.GameCoordinator
-	schedules         *scheduler.Service
-	secrets           *secrets.Service
-	resources         ResourceProvider
-	performance       PerformanceProvider
-	system            SystemProvider
-	secureCookie      bool
-	vpkRestarts       VPKRestartRegistrar
+	sharedGameUpdates interface {
+		Update(context.Context, string) error
+	}
+	sharedGameMigration interface {
+		Migrate(context.Context) error
+	}
+	schedules       *scheduler.Service
+	secrets         *secrets.Service
+	resources       ResourceProvider
+	performance     PerformanceProvider
+	system          SystemProvider
+	secureCookie    bool
+	vpkRestarts     VPKRestartRegistrar
+	maintenanceGate *maintenance.Gate
 }
 
 func WithPrivateUploads(manager *content.PrivateUploadManager) Option {
@@ -88,6 +96,10 @@ func WithVPKRestartRegistrar(registrar VPKRestartRegistrar) Option {
 
 func WithOperations(lifecycle Lifecycle, manager *jobs.Manager) Option {
 	return func(s *Server) { s.lifecycle = lifecycle; s.jobs = manager }
+}
+
+func WithMaintenanceGate(gate *maintenance.Gate) Option {
+	return func(s *Server) { s.maintenanceGate = gate }
 }
 
 func WithJobLogs(manager *joblogs.Manager) Option { return func(s *Server) { s.jobLogs = manager } }
@@ -118,6 +130,16 @@ func WithContent(uploads *content.UploadManager, private *content.PrivateManager
 }
 func WithGameUpdates(coordinator *updates.GameCoordinator) Option {
 	return func(s *Server) { s.gameUpdates = coordinator }
+}
+func WithSharedGameUpdates(coordinator interface {
+	Update(context.Context, string) error
+}) Option {
+	return func(s *Server) { s.sharedGameUpdates = coordinator }
+}
+func WithSharedGameMigration(service interface {
+	Migrate(context.Context) error
+}) Option {
+	return func(s *Server) { s.sharedGameMigration = service }
 }
 func WithScheduler(service *scheduler.Service) Option {
 	return func(s *Server) { s.schedules = service }
@@ -160,6 +182,7 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 	r.Get("/api/health", s.health)
 	r.Group(func(r chi.Router) {
 		r.Use(s.requireAuth)
+		r.Use(s.instanceMutationLease)
 		r.Use(s.auditMutations)
 		r.Use(s.requireExistingPrivateInstance)
 		r.Post("/api/auth/logout", s.logout)
@@ -167,6 +190,9 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 			writeJSON(w, http.StatusOK, map[string]bool{"authenticated": true})
 		})
 		r.Get("/api/instances", s.listInstances)
+		r.Get("/api/game", s.gameStatus)
+		r.Post("/api/game/update", s.updateSharedGame)
+		r.Post("/api/game/migrate", s.migrateSharedGame)
 		r.Get("/api/instances/{id}/overview", s.instanceOverview)
 		r.Get("/api/instances/{id}/performance-history", s.instancePerformanceHistory)
 		r.Post("/api/instances", s.createInstance)
@@ -1067,6 +1093,10 @@ func (s *Server) updateGame(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 422, "reinstall_target_required", "at least one reinstall target is required")
 		return
 	}
+	if options.Game {
+		writeError(w, http.StatusConflict, "game_update_is_global", "game body updates are global; use /api/game/update")
+		return
+	}
 	id := chi.URLParam(r, "id")
 	job, ok := s.startJob(w, r, id, "game_update", func(ctx context.Context, reporter jobs.Reporter) error {
 		reporter.Progress("reinstall", 10, "reinstalling selected instance components")
@@ -1076,6 +1106,77 @@ func (s *Server) updateGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 202, job)
+}
+
+func (s *Server) gameStatus(w http.ResponseWriter, r *http.Request) {
+	state, err := s.store.SharedGameState(r.Context())
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusOK, domain.SharedGameState{})
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "shared_game_state_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, state)
+}
+
+func (s *Server) updateSharedGame(w http.ResponseWriter, r *http.Request) {
+	if s.sharedGameUpdates == nil || s.jobs == nil {
+		writeError(w, http.StatusServiceUnavailable, "updates_unavailable", "shared game update unavailable")
+		return
+	}
+	var input struct {
+		Confirm      bool   `json:"confirm"`
+		OnlinePolicy string `json:"online_policy"`
+	}
+	if decodeJSON(w, r, &input) != nil {
+		return
+	}
+	if !input.Confirm {
+		writeError(w, http.StatusPreconditionRequired, "confirmation_required", "shared game update requires confirmation")
+		return
+	}
+	if input.OnlinePolicy == "" {
+		input.OnlinePolicy = "wait"
+	}
+	if input.OnlinePolicy != "skip" && input.OnlinePolicy != "wait" && input.OnlinePolicy != "force" {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_online_policy", "online policy must be skip, wait or force")
+		return
+	}
+	job, ok := s.startJob(w, r, "", "game_update", func(ctx context.Context, reporter jobs.Reporter) error {
+		reporter.Progress("waiting_players", 5, "checking all dependent servers")
+		return s.sharedGameUpdates.Update(ctx, input.OnlinePolicy)
+	})
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusAccepted, job)
+}
+
+func (s *Server) migrateSharedGame(w http.ResponseWriter, r *http.Request) {
+	if s.sharedGameMigration == nil || s.jobs == nil {
+		writeError(w, http.StatusServiceUnavailable, "migration_unavailable", "shared game migration unavailable")
+		return
+	}
+	var input struct {
+		Confirm bool `json:"confirm"`
+	}
+	if decodeJSON(w, r, &input) != nil {
+		return
+	}
+	if !input.Confirm {
+		writeError(w, http.StatusPreconditionRequired, "confirmation_required", "shared game migration requires confirmation")
+		return
+	}
+	job, ok := s.startJob(w, r, "", "shared_game_migration", func(ctx context.Context, reporter jobs.Reporter) error {
+		reporter.Progress("preflight", 5, "validating stopped instances and shared storage")
+		return s.sharedGameMigration.Migrate(ctx)
+	})
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusAccepted, job)
 }
 
 func (s *Server) listPackages(w http.ResponseWriter, r *http.Request) {
@@ -1925,6 +2026,22 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+func (s *Server) instanceMutationLease(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.maintenanceGate == nil || r.Method == http.MethodGet || r.Method == http.MethodHead || !strings.HasPrefix(r.URL.Path, "/api/instances") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		ctx, release, err := s.maintenanceGate.SharedContext(r.Context())
+		if err != nil {
+			writeError(w, http.StatusConflict, "maintenance_gate_unavailable", err.Error())
+			return
+		}
+		defer release()
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
 func (s *Server) requireExistingPrivateInstance(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/instances/") && strings.Contains(r.URL.Path, "/private") {
@@ -1975,7 +2092,71 @@ func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 409, "instance_conflict", err.Error())
 		return
 	}
+	if err := s.queueSharedGameInitialization(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "shared_game_initialization_failed", err.Error())
+		return
+	}
 	writeJSON(w, 201, v)
+}
+
+func (s *Server) queueSharedGameInitialization(ctx context.Context) error {
+	if s.sharedGameMigration == nil || s.jobs == nil {
+		return nil
+	}
+	queue := func(ctx context.Context) error {
+		instances, err := s.store.Instances(ctx)
+		if err != nil {
+			return err
+		}
+		if len(instances) != 1 {
+			return nil
+		}
+		state, err := s.store.SharedGameState(ctx)
+		if errors.Is(err, store.ErrNotFound) {
+			state = domain.SharedGameState{}
+		} else if err != nil {
+			return err
+		}
+		if state.MigrationState == "ready" && state.ActiveReleaseID != "" {
+			return nil
+		}
+		if state.MigrationState == "installing" || state.MigrationState == "updating" {
+			return nil
+		}
+		activeJobs, err := s.store.Jobs(ctx, 100)
+		if err != nil {
+			return err
+		}
+		for _, job := range activeJobs {
+			if job.Type == "shared_game_migration" && (job.Status == string(jobs.Pending) || job.Status == string(jobs.Running)) {
+				return nil
+			}
+		}
+		state.MigrationState = "installing"
+		state.OperationStage = "queued"
+		if err := s.store.SaveSharedGameState(ctx, state); err != nil {
+			return err
+		}
+		_, err = s.jobs.Start(context.WithoutCancel(ctx), "", "shared_game_migration", func(jobCtx context.Context, reporter jobs.Reporter) error {
+			reporter.Progress("preflight", 5, "initializing shared game body")
+			return s.sharedGameMigration.Migrate(jobCtx)
+		})
+		if err != nil {
+			state.MigrationState = ""
+			state.OperationStage = ""
+			_ = s.store.SaveSharedGameState(ctx, state)
+		}
+		return err
+	}
+	if s.maintenanceGate == nil {
+		return queue(ctx)
+	}
+	locked, release, err := s.maintenanceGate.ExclusiveContext(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return queue(locked)
 }
 
 func validateDeclaredPorts(gamePort, sourceTVPort int, pluginPorts []int) error {

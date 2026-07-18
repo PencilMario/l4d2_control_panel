@@ -7,14 +7,22 @@ import (
 )
 
 type Config struct {
-	ListenAddress string
-	GameHost      string
-	DataRoot      string
-	PanelDir      string
-	PackagesDir   string
-	InstancesDir  string
-	SharedVPKDir  string
-	DatabasePath  string
+	ListenAddress   string
+	GameHost        string
+	DataRoot        string
+	PanelDir        string
+	PackagesDir     string
+	InstancesDir    string
+	SharedVPKDir    string
+	GameDir         string
+	GameReleasesDir string
+	GameStagingDir  string
+	GameCurrentPath string
+	DatabasePath    string
+}
+
+func (c Config) InstanceOverlayDir(instanceID string) string {
+	return filepath.Join(c.InstancesDir, instanceID, "overlay")
 }
 
 func Load() (Config, error) {
@@ -38,8 +46,12 @@ func Load() (Config, error) {
 	c.PackagesDir = filepath.Join(c.DataRoot, "packages")
 	c.InstancesDir = filepath.Join(c.DataRoot, "instances")
 	c.SharedVPKDir = filepath.Join(c.DataRoot, "shared-vpk")
+	c.GameDir = filepath.Join(c.DataRoot, "game")
+	c.GameReleasesDir = filepath.Join(c.GameDir, "releases")
+	c.GameStagingDir = filepath.Join(c.GameDir, "staging")
+	c.GameCurrentPath = filepath.Join(c.GameDir, "current")
 	c.DatabasePath = filepath.Join(c.PanelDir, "panel.db")
-	for _, p := range []string{c.PanelDir, filepath.Join(c.PackagesDir, "uploads"), filepath.Join(c.PackagesDir, "releases"), c.InstancesDir, c.SharedVPKDir} {
+	for _, p := range []string{c.PanelDir, filepath.Join(c.PackagesDir, "uploads"), filepath.Join(c.PackagesDir, "releases"), c.InstancesDir, c.SharedVPKDir, c.GameReleasesDir, c.GameStagingDir} {
 		if err := os.MkdirAll(p, 0o750); err != nil {
 			return Config{}, err
 		}

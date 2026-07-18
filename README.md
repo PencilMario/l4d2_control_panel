@@ -7,7 +7,7 @@ The Panel never mounts `/var/run/docker.sock`. A repository-owned socket proxy e
 ## Requirements
 
 - Linux x86-64 host with Docker Engine and Docker Compose.
-- At least 12 GiB free before a first game install; a current App 222860 install uses about 9.3 GiB.
+- At least 1 GiB free before starting an uninstalled instance; the shared game release is managed separately.
 - A TLS reverse proxy on the same host.
 - Go 1.24+ and Node 22+ only for local development.
 

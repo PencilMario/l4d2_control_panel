@@ -26,6 +26,19 @@ func TestBuildContainerSpecUsesManagedHostNetwork(t *testing.T) {
 		t.Fatalf("env=%v", spec.Env)
 	}
 }
+
+func TestBuildContainerSpecWithGamePathUsesOverlayMount(t *testing.T) {
+	root := t.TempDir()
+	gamePath := filepath.Join(root, "instances", "abc", "overlay", "merged")
+	spec, err := BuildContainerSpecWithGamePath(root, gamePath, domain.Instance{ID: "abc", RuntimeImage: "runtime:v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := gamePath + ":/opt/l4d2/game"
+	if spec.Mounts[0] != want {
+		t.Fatalf("mount=%q want=%q", spec.Mounts[0], want)
+	}
+}
 func TestSupervisorExecRejectsUnknownOperation(t *testing.T) {
 	if _, err := SupervisorExec("abc", "sh"); err == nil {
 		t.Fatal("expected rejection")

@@ -67,6 +67,11 @@ func (s *Service) Summary(ctx context.Context, id string) (Summary, error) {
 	}
 	return Summary{Map: info.Map, Players: info.Players, MaxPlayers: info.MaxPlayers}, nil
 }
+
+func (s *Service) PlayerCount(ctx context.Context, id string) (int, error) {
+	summary, err := s.Summary(ctx, id)
+	return summary.Players, err
+}
 func (s *Service) Online(ctx context.Context, id string) (Snapshot, error) {
 	instance, err := s.instances.Instance(ctx, id)
 	if err != nil {

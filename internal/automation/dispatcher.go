@@ -21,7 +21,10 @@ type Dispatcher struct {
 	PackagesUpdate interface {
 		ApplyPackage(context.Context, string, content.PackageVersion, updates.Mode) error
 	}
-	GameUpdate     *updates.GameCoordinator
+	GameUpdate       *updates.GameCoordinator
+	SharedGameUpdate interface {
+		Update(context.Context, string) error
+	}
 	Releases       releases.Client
 	ReleaseFetcher interface {
 		FetchLatest(context.Context, string, string, string, *content.PackageManager) (releases.FetchResult, error)
@@ -30,6 +33,7 @@ type Dispatcher struct {
 		GitHubSource(context.Context, string) (domain.GitHubSource, error)
 	}
 	Maintenance *maintenance.Manager
+	Gate        *maintenance.Gate
 	Secrets     interface {
 		Get(context.Context, string) (string, bool, error)
 	}
@@ -46,6 +50,21 @@ func (d Dispatcher) Dispatch(ctx context.Context, task domain.ScheduledTask) err
 }
 
 func (d Dispatcher) run(ctx context.Context, task domain.ScheduledTask) error {
+	if task.Type == "game_update" {
+		if d.SharedGameUpdate == nil {
+			return errors.New("shared game update unavailable")
+		}
+		return d.SharedGameUpdate.Update(ctx, task.OnlinePolicy)
+	}
+	if d.Gate != nil {
+		var release func()
+		var err error
+		ctx, release, err = d.Gate.SharedContext(ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
 	var input struct {
 		PackageID     string `json:"package_id"`
 		Repository    string `json:"repository"`
@@ -94,8 +113,6 @@ func (d Dispatcher) run(ctx context.Context, task domain.ScheduledTask) error {
 		return err
 	}
 	switch task.Type {
-	case "game_update":
-		return d.GameUpdate.Update(ctx, task.InstanceID)
 	case "package_hot", "package_full":
 		item, err := d.Packages.Get(input.PackageID)
 		if err != nil {
