@@ -161,6 +161,58 @@ func TestPrepareRejectsNonDirectoryPersistentComponent(t *testing.T) {
 	}
 }
 
+func TestPrepareRejectsPersistentLeafSymlinkRegardlessOfContent(t *testing.T) {
+	for _, test := range []struct {
+		name, source, outside string
+	}{
+		{name: "same content", source: "same", outside: "same"},
+		{name: "different content", source: "legacy", outside: "outside"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			base := filepath.Join(root, "instances", "instance-1")
+			source := filepath.Join(base, "overlay", "merged", "left4dead2", "logs", "server.log")
+			destination := filepath.Join(base, "logs", "game", "server.log")
+			outside := filepath.Join(root, "outside.log")
+			writeFile(t, source, test.source)
+			writeFile(t, outside, test.outside)
+			if err := os.MkdirAll(filepath.Dir(destination), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, destination); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+
+			if err := NewManager(root, Options{}).Prepare(context.Background(), "instance-1"); err == nil {
+				t.Fatal("expected persistent leaf symlink rejection")
+			}
+			assertFile(t, outside, test.outside)
+			matches, err := filepath.Glob(filepath.Join(filepath.Dir(destination), "server.migrated-*.log"))
+			if err != nil || len(matches) != 0 {
+				t.Fatalf("conflict copies=%v err=%v", matches, err)
+			}
+		})
+	}
+}
+
+func TestPrepareRejectsDirectoryAtPersistentFileLeaf(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "instances", "instance-1")
+	source := filepath.Join(base, "overlay", "merged", "left4dead2", "logs", "server.log")
+	destination := filepath.Join(base, "logs", "game", "server.log")
+	writeFile(t, source, "legacy")
+	if err := os.MkdirAll(destination, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewManager(root, Options{}).Prepare(context.Background(), "instance-1"); err == nil {
+		t.Fatal("expected directory leaf rejection")
+	}
+	info, err := os.Stat(destination)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("destination directory changed: info=%v err=%v", info, err)
+	}
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {

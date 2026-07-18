@@ -100,24 +100,43 @@ func migrateTree(ctx context.Context, sourceRoot, destinationRoot, stamp string)
 }
 
 func copyUnique(source, destination, stamp string, mode os.FileMode) error {
-	same, err := sameFileContent(source, destination)
-	if err == nil && same {
-		return nil
-	}
-	if err != nil && !os.IsNotExist(err) {
+	destinationExists, err := validateRegularLeaf(destination)
+	if err != nil {
 		return err
 	}
-	if err == nil {
-		match, err := findMatchingConflict(source, destination)
-		if err != nil || match {
-			return err
-		}
-		destination, err = nextConflictName(destination, stamp)
-		if err != nil {
-			return err
-		}
+	if !destinationExists {
+		return copyAtomic(source, destination, mode)
+	}
+	same, err := sameFileContent(source, destination)
+	if err != nil {
+		return err
+	}
+	if same {
+		return nil
+	}
+	match, err := findMatchingConflict(source, destination)
+	if err != nil || match {
+		return err
+	}
+	destination, err = nextConflictName(destination, stamp)
+	if err != nil {
+		return err
 	}
 	return copyAtomic(source, destination, mode)
+}
+
+func validateRegularLeaf(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("persistent log leaf is not a regular file: %s", path)
+	}
+	return true, nil
 }
 
 func sameFileContent(left, right string) (bool, error) {
@@ -140,6 +159,9 @@ func findMatchingConflict(source, destination string) (bool, error) {
 		return false, err
 	}
 	for _, candidate := range matches {
+		if _, err := validateRegularLeaf(candidate); err != nil {
+			return false, err
+		}
 		same, err := sameFileContent(source, candidate)
 		if err != nil {
 			return false, err
