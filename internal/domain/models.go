@@ -80,4 +80,7 @@ type SharedGameState struct {
 	OperationID       string    `json:"operation_id"`
 	OperationStage    string    `json:"operation_stage"`
 	UpdatedAt         time.Time `json:"updated_at"`
+	Version           string    `json:"version,omitempty"`
+	Path              string    `json:"path,omitempty"`
+	SizeBytes         int64     `json:"size_bytes,omitempty"`
 }

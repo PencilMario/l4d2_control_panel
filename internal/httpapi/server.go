@@ -1118,6 +1118,12 @@ func (s *Server) gameStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "shared_game_state_error", err.Error())
 		return
 	}
+	if state.Version == "" {
+		state.Version = state.ActiveReleaseID
+	}
+	if state.Path == "" && state.ActiveReleaseID != "" {
+		state.Path = "/data/game/current"
+	}
 	writeJSON(w, http.StatusOK, state)
 }
 
