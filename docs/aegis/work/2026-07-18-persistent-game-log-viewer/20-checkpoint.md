@@ -25,7 +25,7 @@
 - [x] Task 4：清理任务与每日排队
 - [x] Task 5：认证 HTTP API
 - [x] Task 6：安全高亮 React 查看器
-- [ ] Task 7：导航、设置、E2E 与文档（active）
+- [x] Task 7：导航、设置、E2E 与文档
 
 当前证据：
 
@@ -48,7 +48,7 @@
 
 阻塞项：无。
 
-下一步：Task 7 实现代理接入 App 导航与设置，补 E2E fixture/主旅程、README 和最终证据。
+下一步：最终全局代码审查与分支集成决策。
 
 ## ResumeStateHint
 
@@ -69,3 +69,5 @@
 Task 4 残余：单 Panel 进程内由 Scheduler mutex 保证 `HasActiveJob` 与提交串行；多个独立 Panel 进程之间查询/提交不是数据库原子 claim，当前部署模型不支持多进程共享同一数据根。
 
 Task 5 非阻塞观察：路径校验对包含 `..` 的合法文件名偏保守；预览后端错误统一映射 404；设置持久化与清理排队故障解耦并由响应暴露统计。
+
+最终证据：`sirphomesv` Docker 中 Linux 全量 Go 测试、`go vet ./...`、前端 149 项测试、生产构建，以及独立新 fixture 的 desktop/mobile Playwright 主旅程均通过。
