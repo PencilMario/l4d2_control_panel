@@ -2,9 +2,12 @@ package gamelogs
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -35,6 +38,113 @@ func TestTreeListsNestedLogsWithStableKindPathOrder(t *testing.T) {
 	}
 	if entries[0].Size != 1 || !entries[0].ModifiedAt.Equal(wantTime) || entries[0].ModifiedAt.Location() != time.UTC {
 		t.Fatalf("metadata=%+v", entries[0])
+	}
+}
+
+func TestCleanupDeletesOnlyStrictlyExpiredFilesAndEmptySubdirectories(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.FixedZone("local", 8*60*60))
+	base := filepath.Join(root, "instances", "i", "logs")
+	expired := filepath.Join(base, "sourcemod", "nested", "old.log")
+	exact := filepath.Join(base, "game", "exact.log")
+	fresh := filepath.Join(base, "game", "fresh.log")
+	writeFile(t, expired, "12345")
+	writeFile(t, exact, "exact")
+	writeFile(t, fresh, "fresh")
+	cutoff := now.UTC().Add(-14 * 24 * time.Hour)
+	for path, modified := range map[string]time.Time{
+		expired: cutoff.Add(-24 * time.Hour), exact: cutoff, fresh: cutoff.Add(24 * time.Hour),
+	} {
+		if err := os.Chtimes(path, modified, modified); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := NewManager(root, Options{Now: func() time.Time { return now }}).Cleanup(context.Background(), "i", 14)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Scanned != 3 || result.Expired != 1 || result.Deleted != 1 || result.ReleasedBytes != 5 || result.Skipped != 0 || len(result.Failures) != 0 {
+		t.Fatalf("result=%+v", result)
+	}
+	if _, err := os.Stat(expired); !os.IsNotExist(err) {
+		t.Fatalf("expired file remains: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(expired)); !os.IsNotExist(err) {
+		t.Fatalf("empty nested directory remains: %v", err)
+	}
+	for _, path := range []string{exact, fresh, filepath.Join(base, "game"), filepath.Join(base, "sourcemod")} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("retained path %s: %v", path, err)
+		}
+	}
+}
+
+func TestCleanupSkipsSymlinksWithoutFollowingThem(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "instances", "i", "logs")
+	outside := filepath.Join(root, "outside.log")
+	writeFile(t, outside, "outside")
+	if err := os.MkdirAll(filepath.Join(base, "game"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(base, "sourcemod"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "game", "linked.log")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	result, err := NewManager(root, Options{}).Cleanup(context.Background(), "i", 14)
+	if err != nil || result.Skipped != 1 || result.Deleted != 0 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	assertFile(t, outside, "outside")
+	if _, err := os.Lstat(link); err != nil {
+		t.Fatalf("symlink removed: %v", err)
+	}
+}
+
+func TestCleanupContinuesAfterDeleteFailureAndReturnsAggregateError(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "instances", "i", "logs")
+	failing := filepath.Join(base, "game", "fail.log")
+	deleted := filepath.Join(base, "sourcemod", "ok.log")
+	writeFile(t, failing, "failure")
+	writeFile(t, deleted, "ok")
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	_ = os.Chtimes(failing, old, old)
+	_ = os.Chtimes(deleted, old, old)
+	manager := NewManager(root, Options{Remove: func(path string) error {
+		if path == failing {
+			return fmt.Errorf("blocked at %s", root)
+		}
+		return os.Remove(path)
+	}})
+
+	result, err := manager.Cleanup(context.Background(), "i", 14)
+	if err == nil || result.Expired != 2 || result.Deleted != 1 || result.ReleasedBytes != 2 || len(result.Failures) != 1 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if !strings.Contains(result.Failures[0], "game/fail.log") || strings.Contains(result.Failures[0], root) {
+		t.Fatalf("failure is not safely relative: %q", result.Failures[0])
+	}
+	if _, err := os.Stat(deleted); !os.IsNotExist(err) {
+		t.Fatalf("independent file was not deleted: %v", err)
+	}
+}
+
+func TestCleanupRejectsInvalidRetentionAndCancellation(t *testing.T) {
+	manager := NewManager(t.TempDir(), Options{})
+	for _, days := range []int{0, 366} {
+		if _, err := manager.Cleanup(context.Background(), "i", days); err == nil {
+			t.Fatalf("retention %d accepted", days)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := manager.Cleanup(ctx, "i", 14); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation error=%v", err)
 	}
 }
 

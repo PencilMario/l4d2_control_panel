@@ -632,6 +632,48 @@ func TestCompletedJobLimitRejectsOutOfRangeValues(t *testing.T) {
 	}
 }
 
+func TestGameLogRetentionDaysDefaultsPersistsAndAcceptsBoundaries(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	days, err := s.GameLogRetentionDays()
+	if err != nil || days != DefaultGameLogRetentionDays {
+		t.Fatalf("default days=%d err=%v", days, err)
+	}
+	for _, want := range []int{MinGameLogRetentionDays, 23, MaxGameLogRetentionDays} {
+		if err := s.SetGameLogRetentionDays(want); err != nil {
+			t.Fatalf("SetGameLogRetentionDays(%d): %v", want, err)
+		}
+		got, err := s.GameLogRetentionDays()
+		if err != nil || got != want {
+			t.Fatalf("days=%d err=%v, want %d", got, err, want)
+		}
+	}
+}
+
+func TestGameLogRetentionDaysRejectsInvalidWithoutChangingValue(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.SetGameLogRetentionDays(30); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []int{0, 366} {
+		if err := s.SetGameLogRetentionDays(value); err == nil {
+			t.Fatalf("days %d was accepted", value)
+		}
+	}
+	days, err := s.GameLogRetentionDays()
+	if err != nil || days != 30 {
+		t.Fatalf("days=%d err=%v; want preserved value 30", days, err)
+	}
+}
+
 func TestJobsIncludesExecutionTimes(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {

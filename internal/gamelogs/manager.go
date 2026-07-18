@@ -30,13 +30,24 @@ type Preview struct {
 	ModifiedAt time.Time `json:"modified_at"`
 }
 
+type CleanupResult struct {
+	Scanned       int      `json:"scanned"`
+	Expired       int      `json:"expired"`
+	Deleted       int      `json:"deleted"`
+	Skipped       int      `json:"skipped"`
+	ReleasedBytes int64    `json:"released_bytes"`
+	Failures      []string `json:"failures"`
+}
+
 type Options struct {
-	Now func() time.Time
+	Now    func() time.Time
+	Remove func(string) error
 }
 
 type Manager struct {
 	root      string
 	now       func() time.Time
+	remove    func(string) error
 	locksMu   sync.Mutex
 	instances map[string]*sync.Mutex
 }
@@ -46,7 +57,112 @@ func NewManager(root string, options Options) *Manager {
 	if now == nil {
 		now = time.Now
 	}
-	return &Manager{root: root, now: now, instances: make(map[string]*sync.Mutex)}
+	remove := options.Remove
+	if remove == nil {
+		remove = os.Remove
+	}
+	return &Manager{root: root, now: now, remove: remove, instances: make(map[string]*sync.Mutex)}
+}
+
+func (m *Manager) Cleanup(ctx context.Context, instanceID string, retentionDays int) (CleanupResult, error) {
+	result := CleanupResult{Failures: make([]string, 0)}
+	if err := validateInstanceID(instanceID); err != nil {
+		return result, err
+	}
+	if retentionDays < 1 || retentionDays > 365 {
+		return result, errors.New("game log retention days must be between 1 and 365")
+	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	cutoff := m.now().UTC().Add(-time.Duration(retentionDays) * 24 * time.Hour)
+	instanceLock := m.instanceLock(instanceID)
+	instanceLock.Lock()
+	defer instanceLock.Unlock()
+
+	for _, kind := range []string{"game", "sourcemod"} {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		root := m.logRoot(instanceID, kind)
+		exists, err := validateDirectoryPath(m.root, root, true)
+		if err != nil {
+			return result, fmt.Errorf("inspect %s log root: %w", kind, err)
+		}
+		if !exists {
+			continue
+		}
+		directories := make([]string, 0)
+		err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			relative, relErr := filepath.Rel(root, path)
+			if relErr != nil {
+				return relErr
+			}
+			label := kind + "/" + filepath.ToSlash(relative)
+			if walkErr != nil {
+				if path == root {
+					return walkErr
+				}
+				result.Failures = append(result.Failures, label+": inspect failed")
+				if entry != nil && entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if path == root {
+				return nil
+			}
+			info, err := entry.Info()
+			if err != nil {
+				result.Failures = append(result.Failures, label+": inspect failed")
+				return nil
+			}
+			if info.Mode()&os.ModeSymlink != 0 || (!info.IsDir() && !info.Mode().IsRegular()) {
+				result.Skipped++
+				return nil
+			}
+			if info.IsDir() {
+				directories = append(directories, path)
+				return nil
+			}
+			result.Scanned++
+			if !info.ModTime().Before(cutoff) {
+				return nil
+			}
+			result.Expired++
+			if err := m.remove(path); err != nil {
+				result.Failures = append(result.Failures, label+": delete failed")
+				return nil
+			}
+			result.Deleted++
+			result.ReleasedBytes += info.Size()
+			return nil
+		})
+		if err != nil {
+			return result, fmt.Errorf("walk %s logs: %w", kind, err)
+		}
+		for index := len(directories) - 1; index >= 0; index-- {
+			if err := ctx.Err(); err != nil {
+				return result, err
+			}
+			directory := directories[index]
+			if err := m.remove(directory); err != nil {
+				entries, readErr := os.ReadDir(directory)
+				if readErr == nil && len(entries) > 0 {
+					continue
+				}
+				relative, _ := filepath.Rel(root, directory)
+				result.Failures = append(result.Failures, fmt.Sprintf("%s/%s: remove empty directory failed", kind, filepath.ToSlash(relative)))
+			}
+		}
+	}
+	if len(result.Failures) > 0 {
+		return result, fmt.Errorf("game log cleanup completed with %d failure(s)", len(result.Failures))
+	}
+	return result, nil
 }
 
 // Tree returns regular log files ordered first by kind and then by slash path.
