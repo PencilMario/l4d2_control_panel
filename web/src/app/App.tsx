@@ -1716,9 +1716,9 @@ function SettingsPage() {
   const [confirmedGameLogDays, setConfirmedGameLogDays] = useState(14);
   const [draftGameLogDays, setDraftGameLogDays] = useState("14");
   const [gameLogSettingsReady, setGameLogSettingsReady] = useState(false);
-  const [savingGameLogs, setSavingGameLogs] = useState(false);
-  const [cleaningGameLogs, setCleaningGameLogs] = useState(false);
+  const [gameLogBusy, setGameLogBusy] = useState<"save" | "cleanup" | "">("");
   const [gameLogsNotice, setGameLogsNotice] = useState("");
+  const gameLogRequestSequence = useRef(0);
   const settingsActions = useAsyncLocks();
   useEffect(() => {
     api<any>("/api/settings/steam")
@@ -1737,8 +1737,10 @@ function SettingsPage() {
         setJobSettingsReady(true);
       })
       .catch((reason) => setSettingsError(errorMessage(reason)));
+    const gameLogLoadSequence = ++gameLogRequestSequence.current;
     api<{ retention_days: number }>("/api/settings/game-logs")
       .then((settings) => {
+        if (gameLogLoadSequence !== gameLogRequestSequence.current) return;
         if (!Number.isInteger(settings.retention_days) || settings.retention_days < 1 || settings.retention_days > 365) {
           throw new Error("游戏日志设置数据无效");
         }
@@ -1746,7 +1748,11 @@ function SettingsPage() {
         setDraftGameLogDays(String(settings.retention_days));
         setGameLogSettingsReady(true);
       })
-      .catch((reason) => setSettingsError(errorMessage(reason)));
+      .catch((reason) => {
+        if (gameLogLoadSequence === gameLogRequestSequence.current) {
+          setSettingsError(errorMessage(reason));
+        }
+      });
   }, []);
   const saveSteam = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -1831,40 +1837,50 @@ function SettingsPage() {
     }
     setSettingsError("");
     setGameLogsNotice("");
-    setSavingGameLogs(true);
+    setGameLogBusy("save");
+    const sequence = ++gameLogRequestSequence.current;
     try {
       await settingsActions.run("game-logs", async () => {
         const saved = await api<{ retention_days: number; enqueue: EnqueueStats }>(
           "/api/settings/game-logs",
           { method: "PUT", body: JSON.stringify({ retention_days: days }) },
         );
-        setConfirmedGameLogDays(saved.retention_days);
-        setDraftGameLogDays(String(saved.retention_days));
-        setGameLogsNotice(`游戏日志设置已保存；${formatEnqueueStats(saved.enqueue)}`);
+        if (sequence === gameLogRequestSequence.current) {
+          setConfirmedGameLogDays(saved.retention_days);
+          setDraftGameLogDays(String(saved.retention_days));
+          setGameLogsNotice(`游戏日志设置已保存；${formatEnqueueStats(saved.enqueue)}`);
+        }
       });
     } catch (reason) {
-      setDraftGameLogDays(String(confirmedGameLogDays));
-      setSettingsError(errorMessage(reason));
+      if (sequence === gameLogRequestSequence.current) {
+        setDraftGameLogDays(String(confirmedGameLogDays));
+        setSettingsError(errorMessage(reason));
+      }
     } finally {
-      setSavingGameLogs(false);
+      if (sequence === gameLogRequestSequence.current) setGameLogBusy("");
     }
   };
   const cleanupGameLogs = async () => {
-    if (settingsActions.isLocked("game-logs-cleanup")) return;
+    if (settingsActions.isLocked("game-logs")) return;
     setSettingsError("");
     setGameLogsNotice("");
-    setCleaningGameLogs(true);
+    setGameLogBusy("cleanup");
+    const sequence = ++gameLogRequestSequence.current;
     try {
-      await settingsActions.run("game-logs-cleanup", async () => {
+      await settingsActions.run("game-logs", async () => {
         const result = await api<EnqueueStats>("/api/settings/game-logs/cleanup", {
           method: "POST",
         });
-        setGameLogsNotice(`清理任务已提交；${formatEnqueueStats(result)}`);
+        if (sequence === gameLogRequestSequence.current) {
+          setGameLogsNotice(`清理任务已提交；${formatEnqueueStats(result)}`);
+        }
       });
     } catch (reason) {
-      setSettingsError(errorMessage(reason));
+      if (sequence === gameLogRequestSequence.current) {
+        setSettingsError(errorMessage(reason));
+      }
     } finally {
-      setCleaningGameLogs(false);
+      if (sequence === gameLogRequestSequence.current) setGameLogBusy("");
     }
   };
   return (
@@ -1957,7 +1973,7 @@ function SettingsPage() {
               step={1}
               required
               value={draftGameLogDays}
-              disabled={!gameLogSettingsReady || savingGameLogs}
+              disabled={!gameLogSettingsReady || gameLogBusy !== ""}
               onChange={(event) => {
                 const value = event.target.value;
                 setDraftGameLogDays(value);
@@ -1976,21 +1992,21 @@ function SettingsPage() {
             className="create"
             type="submit"
             aria-label="保存游戏日志设置"
-            disabled={!gameLogSettingsReady || savingGameLogs}
-            aria-busy={savingGameLogs}
+            disabled={!gameLogSettingsReady || gameLogBusy !== ""}
+            aria-busy={gameLogBusy === "save"}
           >
-            {savingGameLogs ? "保存中…" : "保存"}
+            {gameLogBusy === "save" ? "保存中…" : "保存"}
           </button>
         </form>
         <button
           className="create"
           type="button"
           aria-label="立即清理游戏日志"
-          disabled={!gameLogSettingsReady || cleaningGameLogs}
-          aria-busy={cleaningGameLogs}
+          disabled={!gameLogSettingsReady || gameLogBusy !== ""}
+          aria-busy={gameLogBusy === "cleanup"}
           onClick={() => void cleanupGameLogs()}
         >
-          {cleaningGameLogs ? "提交中…" : "立即清理"}
+          {gameLogBusy === "cleanup" ? "提交中…" : "立即清理"}
         </button>
         {gameLogsNotice ? <p role="status">{gameLogsNotice}</p> : null}
       </section>

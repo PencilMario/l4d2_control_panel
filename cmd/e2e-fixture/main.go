@@ -61,9 +61,6 @@ func (l *fixtureLifecycle) Start(ctx context.Context, id string) error {
 	} else if err != nil {
 		return err
 	}
-	if err := seedGameLogs(l.root, id); err != nil {
-		return err
-	}
 	instance.ContainerID = "fixture-" + id
 	if instance.SelectedPackageID != "" {
 		instance.PackageVersion = instance.SelectedPackageID
@@ -272,11 +269,28 @@ func (fixtureSystem) Info(context.Context) (docker.Info, error) {
 	return docker.Info{ServerVersion: "fixture-29.6.1", ContainersRunning: 1}, nil
 }
 
-type fixtureGameUpdater struct{}
+type fixtureGameUpdater struct {
+	mu     sync.Mutex
+	root   string
+	seeded map[string]struct{}
+}
 
-func (fixtureGameUpdater) HasMaintenance(context.Context, string) (bool, error) { return false, nil }
-func (fixtureGameUpdater) UpdateGame(context.Context, string, domain.Instance) error {
+func newFixtureGameUpdater(root string) *fixtureGameUpdater {
+	return &fixtureGameUpdater{root: root, seeded: make(map[string]struct{})}
+}
+
+func (*fixtureGameUpdater) HasMaintenance(context.Context, string) (bool, error) { return false, nil }
+func (u *fixtureGameUpdater) UpdateGame(_ context.Context, id string, _ domain.Instance) error {
 	time.Sleep(250 * time.Millisecond)
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if _, exists := u.seeded[id]; exists {
+		return nil
+	}
+	if err := seedGameLogs(u.root, id); err != nil {
+		return err
+	}
+	u.seeded[id] = struct{}{}
 	return nil
 }
 
@@ -332,7 +346,7 @@ func main() {
 	}
 	defer gameLogScheduler.Stop()
 	packageUpdates := &updates.Coordinator{Lifecycle: lifecycle, Deployer: pipeline, Instances: db}
-	gameUpdates := &updates.GameCoordinator{Root: root, Instances: db, Lifecycle: lifecycle, Updater: fixtureGameUpdater{}, Private: private, Packages: packages, Deployer: pipeline}
+	gameUpdates := &updates.GameCoordinator{Root: root, Instances: db, Lifecycle: lifecycle, Updater: newFixtureGameUpdater(root), Private: private, Packages: packages, Deployer: pipeline}
 	schedules := scheduler.NewService(db, fixtureDispatcher{})
 	defer schedules.Stop()
 

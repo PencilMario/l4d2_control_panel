@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -131,6 +132,10 @@ func TestFixtureLifecycleSeedsPersistentGameLogs(t *testing.T) {
 	if err := db.CreateInstance(context.Background(), instance); err != nil {
 		t.Fatal(err)
 	}
+	updater := newFixtureGameUpdater(root)
+	if err := updater.UpdateGame(context.Background(), "logs", instance); err != nil {
+		t.Fatal(err)
+	}
 	if err := (&fixtureLifecycle{db: db, root: root}).Start(context.Background(), "logs"); err != nil {
 		t.Fatal(err)
 	}
@@ -153,12 +158,35 @@ func TestFixtureLifecycleSeedsPersistentGameLogs(t *testing.T) {
 	if err != nil || !strings.Contains(string(content), "ERROR") || !strings.Contains(string(content), "instance=logs") {
 		t.Fatalf("recent content=%q err=%v", content, err)
 	}
+	fixedModified := time.Date(2026, 7, 18, 12, 34, 56, 0, time.UTC)
+	if err := os.Chtimes(recent, fixedModified, fixedModified); err != nil {
+		t.Fatal(err)
+	}
 	if err := (&fixtureLifecycle{db: db, root: root}).Rebuild(context.Background(), "logs"); err != nil {
 		t.Fatal(err)
 	}
 	afterRebuild, err := os.ReadFile(recent)
 	if err != nil || !bytes.Equal(afterRebuild, content) {
 		t.Fatalf("rebuild content=%q want=%q err=%v", afterRebuild, content, err)
+	}
+	rebuiltInfo, err := os.Stat(recent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rebuiltInfo.ModTime().Equal(fixedModified) {
+		t.Fatalf("rebuild mtime=%v want=%v", rebuiltInfo.ModTime(), fixedModified)
+	}
+	if err := os.Remove(aged); err != nil {
+		t.Fatal(err)
+	}
+	if err := updater.UpdateGame(context.Background(), "logs", instance); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&fixtureLifecycle{db: db, root: root}).Rebuild(context.Background(), "logs"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(aged); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rebuild unexpectedly restored deleted log: %v", err)
 	}
 }
 

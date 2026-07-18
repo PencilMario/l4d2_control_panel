@@ -1431,6 +1431,7 @@ describe("App", () => {
     expect(input).toBeDisabled();
     expect(button).toBeDisabled();
     expect(button).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("button", { name: "立即清理游戏日志" })).toBeDisabled();
 
     save.resolve(Response.json(
       { error: { message: "保存游戏日志设置失败" } },
@@ -1439,6 +1440,26 @@ describe("App", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("保存游戏日志设置失败");
     expect(input).toHaveValue(14);
     await waitFor(() => expect(button).toBeEnabled());
+  });
+
+  it("disables game log retention and saving while cleanup is pending", async () => {
+    const cleanup = deferred<Response>();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/settings/game-logs/cleanup" && init?.method === "POST") return cleanup.promise;
+      if (path === "/api/settings/game-logs") return Response.json({ retention_days: 14 });
+      if (path === "/api/settings/jobs") return Response.json({ successful_job_limit: 25 });
+      return Response.json({ configured: false });
+    }));
+
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "系统设置" }));
+    const cleanupButton = await screen.findByRole("button", { name: "立即清理游戏日志" });
+    await userEvent.click(cleanupButton);
+    expect(screen.getByRole("spinbutton", { name: "游戏日志保留天数" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "保存游戏日志设置" })).toBeDisabled();
+    cleanup.resolve(Response.json({ Queued: 1, Deduplicated: 0, Failed: 0 }));
+    await waitFor(() => expect(cleanupButton).toBeEnabled());
   });
 
   it("reinstalls only the selected instance plugin package", async () => {
