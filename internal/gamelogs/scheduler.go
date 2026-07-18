@@ -63,7 +63,7 @@ func (s *Scheduler) EnqueueAll(ctx context.Context) EnqueueResult {
 			continue
 		}
 		id := instance.ID
-		job, err := s.jobs.Start(ctx, id, CleanupJobType, func(runCtx context.Context, reporter jobs.Reporter) error {
+		job, err := s.jobs.Start(context.WithoutCancel(ctx), id, CleanupJobType, func(runCtx context.Context, reporter jobs.Reporter) error {
 			days, err := s.store.GameLogRetentionDays()
 			if err != nil {
 				return fmt.Errorf("read game log retention: %w", err)

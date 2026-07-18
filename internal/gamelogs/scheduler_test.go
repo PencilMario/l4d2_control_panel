@@ -151,3 +151,22 @@ func TestSchedulerStartIsIdempotentAndStopWaits(t *testing.T) {
 	}
 	s.Stop()
 }
+
+func TestEnqueueAllJobSurvivesCallerCancellation(t *testing.T) {
+	root := t.TempDir()
+	repo := &schedulerRepo{instances: []domain.Instance{{ID: "i"}}, active: map[string]bool{}, days: 14}
+	jm := jobs.NewPersistentManager(repo)
+	ctx, cancel := context.WithCancel(context.Background())
+	result := NewScheduler(repo, jm, NewManager(root, Options{})).EnqueueAll(ctx)
+	cancel()
+	if result.Queued != 1 {
+		t.Fatalf("result=%+v", result)
+	}
+	if err := jm.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	job, ok := jm.Get(result.JobIDs[0])
+	if !ok || job.Status != jobs.Succeeded {
+		t.Fatalf("job=%+v ok=%v", job, ok)
+	}
+}
