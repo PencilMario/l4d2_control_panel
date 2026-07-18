@@ -20,8 +20,8 @@
 ## TodoCheckpointDraft
 
 - [x] Task 1：持久目录、迁移与容器挂载
-- [ ] Task 2：安全文件树、尾部预览与下载源（active）
-- [ ] Task 3：保留设置与清理行为
+- [x] Task 2：安全文件树、尾部预览与下载源
+- [ ] Task 3：保留设置与清理行为（active）
 - [ ] Task 4：清理任务与每日排队
 - [ ] Task 5：认证 HTTP API
 - [ ] Task 6：安全高亮 React 查看器
@@ -34,10 +34,13 @@
 - Task 1 commits：`7beb166`、`c91a319`、`91bc29b`、`5cf52f7`。
 - `go test -count=1 ./internal/gamelogs ./internal/docker ./internal/lifecycle`：通过。
 - Task 1 规格审查：通过；代码质量审查：Approved。
+- Task 2 commits：`078659d`、`8d76d55`、`2f77e42`。
+- `go test -count=1 ./internal/gamelogs ./internal/docker ./internal/lifecycle`：通过。
+- `go vet ./...`：通过；Task 2 规格审查与代码质量审查均通过。
 
 阻塞项：无。
 
-下一步：Task 2 实现代理按 TDD 增加只读文件树、尾部预览和安全下载定位。
+下一步：Task 3 实现代理按 TDD 增加默认 14 天设置和过期普通文件清理统计。
 
 ## ResumeStateHint
 
