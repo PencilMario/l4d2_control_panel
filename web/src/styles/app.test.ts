@@ -52,4 +52,9 @@ describe("game log highlighting", () => {
     expect(preview).toContain("min-height: 0");
     expect(preview).toContain("overflow: auto");
   });
+
+  it("bounds the game-log workspace in its parent grid track", () => {
+    const layout = css.match(/\.game-logs-page\s+\.private-files-layout\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(layout).toContain("grid-template-rows: minmax(0, 1fr)");
+  });
 });

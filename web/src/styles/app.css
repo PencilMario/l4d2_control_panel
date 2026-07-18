@@ -2703,6 +2703,7 @@ textarea:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
+.game-logs-page .private-files-layout { grid-template-rows: minmax(0, 1fr); }
 .game-log-workspace { grid-template-rows: auto minmax(0, 1fr); min-height: 0; padding: 0; overflow: hidden; }
 .game-log-tree-group + .game-log-tree-group { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); }
 .game-log-tree-group h3 { margin: 0 5px 5px; color: #7f8d86; font: 700 10px/1.3 monospace; letter-spacing: 0.08em; text-transform: uppercase; }
