@@ -69,28 +69,44 @@ func (l *memoryLogs) Append(_ context.Context, _, _ string, _ joblogs.Level, mes
 func (*memoryLogs) Finalize(context.Context, string) error { return nil }
 
 func TestEnqueueAllDeduplicatesConcurrentPersistentJobsAndContinuesFailures(t *testing.T) {
+	root := t.TempDir()
+	old := filepath.Join(root, "instances", "b", "logs", "game", "old.log")
+	writeFile(t, old, "expired")
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(old, now.Add(-20*24*time.Hour), now.Add(-20*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	removeStarted := make(chan struct{})
+	releaseRemove := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseRemove) }) })
+
 	repo := &schedulerRepo{instances: []domain.Instance{{ID: "a"}, {ID: "b"}, {ID: "c"}}, active: map[string]bool{"a:" + CleanupJobType: true}, days: 14, fail: map[string]error{"c": errors.New("db unavailable")}}
 	manager := jobs.NewPersistentManager(repo)
-	s := NewScheduler(repo, manager, NewManager(t.TempDir(), Options{}))
-	var wg sync.WaitGroup
+	cleaner := NewManager(root, Options{Now: func() time.Time { return now }, Remove: func(path string, _ os.FileInfo) error {
+		close(removeStarted)
+		<-releaseRemove
+		return os.Remove(path)
+	}})
+	s := NewScheduler(repo, manager, cleaner)
 	results := make(chan EnqueueResult, 2)
-	for range 2 {
-		wg.Add(1)
-		go func() { defer wg.Done(); results <- s.EnqueueAll(context.Background()) }()
+	go func() { results <- s.EnqueueAll(context.Background()) }()
+	firstResult := <-results
+	select {
+	case <-removeStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cleanup job did not reach remove")
 	}
-	wg.Wait()
-	close(results)
-	totalQueued := 0
-	for result := range results {
-		totalQueued += result.Queued
-	}
-	if totalQueued != 1 {
+	go func() { results <- s.EnqueueAll(context.Background()) }()
+	secondResult := <-results
+	if totalQueued := firstResult.Queued + secondResult.Queued; totalQueued != 1 {
 		t.Fatalf("queued=%d, want 1", totalQueued)
 	}
-	first := s.EnqueueAll(context.Background())
-	if first.Deduplicated != 2 || first.Failed != 1 {
-		t.Fatalf("result=%+v", first)
+	active := s.EnqueueAll(context.Background())
+	if active.Deduplicated != 2 || active.Failed != 1 {
+		t.Fatalf("result=%+v", active)
 	}
+	releaseOnce.Do(func() { close(releaseRemove) })
 	if err := manager.Wait(context.Background()); err != nil {
 		t.Fatal(err)
 	}
