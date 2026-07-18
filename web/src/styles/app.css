@@ -1984,6 +1984,25 @@ textarea:focus-visible {
   font-size: 12px;
   font-weight: 700;
 }
+.shared-game-update {
+  min-height: 40px;
+  padding: 9px 13px;
+  border: 1px solid #7a3c36;
+  border-radius: 6px;
+  background: #2a1715;
+  color: #ff9a91;
+  font-weight: 700;
+  cursor: pointer;
+}
+.shared-game-update:hover:not(:disabled) {
+  border-color: #b4564d;
+  background: #381c19;
+  color: #ffd2ce;
+}
+.shared-game-update:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
 .shared-game-policy select {
   width: 100%;
   min-height: 40px;

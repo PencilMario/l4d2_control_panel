@@ -1096,6 +1096,14 @@ describe("App", () => {
     vi.unstubAllGlobals();
   });
 
+  it("styles the shared game update action", async () => {
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
+
+    expect(screen.getByRole("button", { name: "更新共享游戏本体" }))
+      .toHaveClass("shared-game-update");
+  });
+
   it("reports the real control-node health", async () => {
     vi.stubGlobal(
       "fetch",
