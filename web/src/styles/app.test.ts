@@ -37,4 +37,10 @@ describe("game log highlighting", () => {
       expect(bright).not.toBe(normal);
     }
   });
+
+  it("uses the private workspace as the only game-log layout owner", () => {
+    expect(css).not.toMatch(/\.game-logs-layout\s*\{/);
+    expect(css).not.toMatch(/\.game-logs-tree-trigger\s*[,\{]/);
+    expect(css).toMatch(/\.game-log-workspace\s*\{/);
+  });
 });

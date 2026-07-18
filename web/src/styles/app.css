@@ -2647,16 +2647,12 @@ textarea:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
-.game-logs-shell { position: relative; }
-.game-logs-layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 16px; height: 100%; min-height: 420px; }
-.game-logs-layout aside { overflow: auto; border-right: 1px solid var(--line); }
-.game-logs-layout ul, .game-logs-drawer ul { padding: 0; list-style: none; }
-.game-logs-layout button, .game-logs-drawer button, .game-logs-tree-trigger { padding: 6px; border: 0; background: none; text-align: left; cursor: pointer; }
-.game-log-file-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.game-log-file-head div { display: flex; min-width: 0; flex-direction: column; }
-.game-log-file-head small { color: var(--muted); }
-.game-logs-tree-trigger, .game-logs-drawer, .game-logs-drawer-overlay { display: none; }
-.log-viewer { overflow: auto; color: #d8e0db; font-family: ui-monospace, monospace; line-height: 1.45; white-space: pre; }
+.game-log-workspace { grid-template-rows: auto minmax(0, 1fr); padding: 0; }
+.game-log-tree-group + .game-log-tree-group { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); }
+.game-log-tree-group h3 { margin: 0 5px 5px; color: #7f8d86; font: 700 10px/1.3 monospace; letter-spacing: 0.08em; text-transform: uppercase; }
+.game-log-preview { min-width: 0; padding: 0 14px 14px; overflow: auto; }
+.game-log-truncated { margin: 10px 0 0; padding: 8px 10px; border-left: 3px solid var(--amber); background: #211b10; color: #ffd58a; font-size: 11px; }
+.log-viewer { min-height: 400px; margin: 0; padding: 14px; overflow: auto; border: 1px solid #303b36; background: #080c0a; color: #d8e0db; font-family: ui-monospace, monospace; line-height: 1.45; white-space: pre; }
 .log-token-error { color: var(--red); }
 .log-token-warn { color: var(--amber); }
 .log-token-info { color: var(--acid); }
@@ -2685,11 +2681,3 @@ textarea:focus-visible {
 .log-ansi-bright-cyan { color: #7ed1cf; }
 .log-ansi-white { color: #c3ccc7; }
 .log-ansi-bright-white { color: #f2f6f3; }
-@media (max-width: 700px) {
-  .game-logs-layout { grid-template-columns: 1fr; }
-  .game-logs-tree { display: none; }
-  .game-logs-tree-trigger { display: inline-grid; place-items: center; }
-  .game-logs-drawer-overlay { position: fixed; z-index: 69; inset: 0; display: block; background: #050806b8; }
-  .game-logs-drawer { position: fixed; z-index: 70; inset: 0 auto 0 0; display: block; width: min(84vw, 320px); padding: 16px; overflow: auto; background: var(--panel); box-shadow: 12px 0 30px #0008; }
-  .game-logs-drawer > div:first-child { display: flex; align-items: center; justify-content: space-between; }
-}

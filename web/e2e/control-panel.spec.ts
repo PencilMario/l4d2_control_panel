@@ -556,12 +556,12 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   expect(seededGameLogs).toBe(true);
 
   await page.getByRole("button", { name: "游戏日志" }).click();
-  await expect(page.getByRole("heading", { name: "游戏日志" })).toBeVisible();
-  await page.getByRole("combobox", { name: "当前实例" }).selectOption(initiallySaved.id);
-  if (mobile) await page.getByRole("button", { name: "Open log tree" }).click();
-  await page.getByRole("button", { name: "Toggle sourcemod/errors" }).click();
-  await expect(page.getByRole("button", { name: "errors/aged-error.log" })).toBeVisible();
-  await page.getByRole("button", { name: "errors/current-error.log" }).click();
+  await expect(page.getByRole("heading", { name: "游戏日志", level: 1 })).toBeVisible();
+  await page.getByRole("combobox", { name: "目标实例" }).selectOption(initiallySaved.id);
+  if (mobile) await page.getByRole("button", { name: "打开文件树" }).click();
+  await page.getByRole("treeitem", { name: "Toggle sourcemod/errors" }).click();
+  await expect(page.getByRole("treeitem", { name: "errors/aged-error.log" })).toBeVisible();
+  await page.getByRole("treeitem", { name: "errors/current-error.log" }).click();
   const logViewer = page.locator(".log-viewer");
   await expect(logViewer).toContainText("ERROR");
   await expect(logViewer.locator(".log-token-error")).toContainText("ERROR");
@@ -580,10 +580,10 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   );
   await waitForJob(page, persistentLogReinstall.ID);
   await page.getByRole("button", { name: "游戏日志" }).click();
-  await page.getByRole("combobox", { name: "当前实例" }).selectOption(initiallySaved.id);
-  if (mobile) await page.getByRole("button", { name: "Open log tree" }).click();
-  await page.getByRole("button", { name: "Toggle sourcemod/errors" }).click();
-  await page.getByRole("button", { name: "errors/current-error.log" }).click();
+  await page.getByRole("combobox", { name: "目标实例" }).selectOption(initiallySaved.id);
+  if (mobile) await page.getByRole("button", { name: "打开文件树" }).click();
+  await page.getByRole("treeitem", { name: "Toggle sourcemod/errors" }).click();
+  await page.getByRole("treeitem", { name: "errors/current-error.log" }).click();
   await expect(page.locator(".log-viewer")).toContainText("plugin:fixture.smx");
 
   await page.getByRole("button", { name: "系统设置" }).click();

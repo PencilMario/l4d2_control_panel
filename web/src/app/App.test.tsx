@@ -1314,7 +1314,7 @@ describe("App", () => {
 
     render(<App initialInstances={[instance, second]} />);
     await userEvent.click(screen.getByRole("button", { name: "游戏日志" }));
-    expect(screen.getByRole("heading", { name: "游戏日志" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "游戏日志", level: 1 })).toBeVisible();
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         "/api/instances/1/game-logs/tree",
@@ -1322,8 +1322,8 @@ describe("App", () => {
       ),
     );
 
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "当前实例" }), "2");
-    expect(screen.getByRole("heading", { name: "游戏日志" })).toBeVisible();
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "目标实例" }), "2");
+    expect(screen.getByRole("heading", { name: "游戏日志", level: 1 })).toBeVisible();
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         "/api/instances/2/game-logs/tree",
