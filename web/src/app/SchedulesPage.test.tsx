@@ -204,16 +204,14 @@ describe("SchedulesPage", () => {
     ).toBe(true);
   });
 
-  it("creates hot-package schedules with the selected compatible package", async () => {
+  it("creates hot-package schedules from the instance package setting", async () => {
     const { requests } = mockSchedules([]);
     const user = userEvent.setup();
     render(<SchedulesPage instances={instances} packages={packages} />);
 
     await user.selectOptions(await screen.findByLabelText("任务"), "package_hot");
-    const packageSelect = screen.getByLabelText("插件包");
-    expect(within(packageSelect).getByRole("option", { name: "plugins-hot.zip · v2.1.0" })).toBeVisible();
-    expect(within(packageSelect).queryByRole("option", { name: "plugins-full.zip · v3.0.0" })).not.toBeInTheDocument();
-    await user.selectOptions(packageSelect, "package-hot");
+    expect(screen.queryByLabelText("插件包")).not.toBeInTheDocument();
+    expect(screen.getByText("使用目标实例当前配置的插件包；计划任务不会覆盖实例插件包设置。")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "保存计划" }));
 
     await screen.findByRole("status");
@@ -222,7 +220,25 @@ describe("SchedulesPage", () => {
     );
     const body = JSON.parse(String(create?.init?.body));
     expect(body.type).toBe("package_hot");
-    expect(JSON.parse(body.payload)).toEqual({ package_id: "package-hot" });
+    expect(JSON.parse(body.payload)).toEqual({});
+  });
+
+  it("creates GitHub updates from the instance package setting", async () => {
+    const { requests } = mockSchedules([]);
+    const user = userEvent.setup();
+    render(<SchedulesPage instances={instances} packages={packages} />);
+
+    await user.selectOptions(await screen.findByLabelText("任务"), "release_hot");
+    expect(screen.queryByLabelText("GitHub 源")).not.toBeInTheDocument();
+    expect(screen.getByText("使用目标实例当前配置的插件包；计划任务不会覆盖实例插件包设置。")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "保存计划" }));
+
+    const create = requests.find(
+      ({ path, init }) => path === "/api/schedules" && init?.method === "POST",
+    );
+    const body = JSON.parse(String(create?.init?.body));
+    expect(body.type).toBe("release_hot");
+    expect(JSON.parse(body.payload)).toEqual({});
   });
 
   it("creates cleanup schedules with an explicit retention period", async () => {

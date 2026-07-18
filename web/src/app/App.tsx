@@ -165,6 +165,9 @@ type SharedGameState = {
   migration_state?: string;
 };
 
+export const sharedGameVersionLabel = (state: SharedGameState) =>
+  state.version || (state.active_release_id ? "版本未知" : "未初始化");
+
 const errorMessage = (reason: unknown) =>
   reason instanceof Error ? reason.message : String(reason);
 const EMPTY_PERFORMANCE_HISTORY: PerformanceHistoryPoint[] = [];
@@ -971,7 +974,7 @@ function Overview({
         <Metric
           icon={<RefreshCw />}
           label="游戏本体版本"
-          value={sharedGame.version || sharedGame.active_release_id || "--"}
+          value={sharedGameVersionLabel(sharedGame)}
           note="共享安装"
         />
       </section>
@@ -1419,7 +1422,7 @@ function ContentPage({
 			}
 		>
 			<div className="shared-game-details">
-				<div><small>版本号</small><b>{sharedGame.version || sharedGame.active_release_id || "未初始化"}</b></div>
+				<div><small>版本号</small><b>{sharedGameVersionLabel(sharedGame)}</b></div>
 				<div><small>保存位置</small><code>{sharedGame.path || "/data/game/current"}</code></div>
 				<div><small>占用空间</small><b>{sharedGame.size_bytes ? formatBytes(sharedGame.size_bytes) : "--"}</b></div>
 				<div><small>状态</small><b>{sharedGame.migration_state === "ready" ? "就绪" : sharedGame.migration_state || "未知"}</b></div>

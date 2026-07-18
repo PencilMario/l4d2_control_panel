@@ -11,6 +11,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/players"
 	"github.com/not0721here/l4d2-control-panel/internal/releases"
 	"github.com/not0721here/l4d2-control-panel/internal/updates"
+	"regexp"
 	"time"
 )
 
@@ -31,6 +32,9 @@ type Dispatcher struct {
 	}
 	Sources interface {
 		GitHubSource(context.Context, string) (domain.GitHubSource, error)
+	}
+	Instances interface {
+		Instance(context.Context, string) (domain.Instance, error)
 	}
 	Maintenance *maintenance.Manager
 	Gate        *maintenance.Gate
@@ -77,7 +81,7 @@ func (d Dispatcher) run(ctx context.Context, task domain.ScheduledTask) error {
 			return err
 		}
 	}
-	if input.SourceID != "" {
+	if task.Type == "release_check" && input.SourceID != "" {
 		if d.Sources == nil {
 			return errors.New("GitHub source not found")
 		}
@@ -88,6 +92,15 @@ func (d Dispatcher) run(ctx context.Context, task domain.ScheduledTask) error {
 		input.Repository, input.AssetPattern = source.Repository, source.AssetPattern
 	}
 	if task.Type == "release_hot" || task.Type == "release_full" {
+		selected, err := d.selectedPackage(ctx, task)
+		if err != nil {
+			return err
+		}
+		if selected.SourceRepository == "" {
+			return errors.New("selected package has no GitHub source")
+		}
+		input.Repository = selected.SourceRepository
+		input.AssetPattern = "^" + regexp.QuoteMeta(selected.Filename) + "$"
 		fetcher := d.ReleaseFetcher
 		if fetcher == nil {
 			fetcher = d.Releases
@@ -114,7 +127,7 @@ func (d Dispatcher) run(ctx context.Context, task domain.ScheduledTask) error {
 	}
 	switch task.Type {
 	case "package_hot", "package_full":
-		item, err := d.Packages.Get(input.PackageID)
+		item, err := d.selectedPackage(ctx, task)
 		if err != nil {
 			return err
 		}
@@ -143,6 +156,30 @@ func (d Dispatcher) run(ctx context.Context, task domain.ScheduledTask) error {
 	default:
 		return errors.New("unsupported scheduled task type")
 	}
+}
+
+func (d Dispatcher) selectedPackage(ctx context.Context, task domain.ScheduledTask) (content.PackageVersion, error) {
+	if task.InstanceID == "" {
+		return content.PackageVersion{}, errors.New("scheduled package update requires an instance")
+	}
+	if d.Instances == nil {
+		return content.PackageVersion{}, errors.New("instance repository unavailable")
+	}
+	instance, err := d.Instances.Instance(ctx, task.InstanceID)
+	if err != nil {
+		return content.PackageVersion{}, err
+	}
+	if instance.SelectedPackageID == "" {
+		return content.PackageVersion{}, errors.New("instance has no selected package")
+	}
+	if d.Packages == nil {
+		return content.PackageVersion{}, errors.New("package repository unavailable")
+	}
+	item, err := d.Packages.Get(instance.SelectedPackageID)
+	if err != nil {
+		return content.PackageVersion{}, err
+	}
+	return item, nil
 }
 
 func (d Dispatcher) waitForPlayers(ctx context.Context, task domain.ScheduledTask) error {

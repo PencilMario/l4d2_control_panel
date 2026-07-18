@@ -71,6 +71,7 @@ type Server struct {
 	secureCookie    bool
 	vpkRestarts     VPKRestartRegistrar
 	maintenanceGate *maintenance.Gate
+	sharedGamePath  string
 }
 
 func WithPrivateUploads(manager *content.PrivateUploadManager) Option {
@@ -140,6 +141,9 @@ func WithSharedGameMigration(service interface {
 	Migrate(context.Context) error
 }) Option {
 	return func(s *Server) { s.sharedGameMigration = service }
+}
+func WithSharedGamePath(path string) Option {
+	return func(s *Server) { s.sharedGamePath = path }
 }
 func WithScheduler(service *scheduler.Service) Option {
 	return func(s *Server) { s.schedules = service }
@@ -1118,8 +1122,12 @@ func (s *Server) gameStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "shared_game_state_error", err.Error())
 		return
 	}
-	if state.Version == "" {
-		state.Version = state.ActiveReleaseID
+	if state.ActiveReleaseID != "" && s.sharedGamePath != "" {
+		if version, versionErr := readSharedGameVersion(s.sharedGamePath); versionErr == nil {
+			state.Version = version
+		} else {
+			state.Version = ""
+		}
 	}
 	if state.Path == "" && state.ActiveReleaseID != "" {
 		state.Path = "/data/game/current"

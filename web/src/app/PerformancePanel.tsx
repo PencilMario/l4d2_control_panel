@@ -48,6 +48,10 @@ const MODES: Mode[] = ["CPU", "内存", "网络", "磁盘"];
 export const LINE_CONNECTS_NULLS = false;
 const SNAPSHOT_KEYS: ReadonlyArray<keyof PerformanceSnapshot> = [
   "image_size_bytes",
+  "game_size_bytes",
+  "private_size_bytes",
+  "backups_size_bytes",
+  "console_size_bytes",
   "cpu_percent",
   "memory_bytes",
   "memory_limit_bytes",

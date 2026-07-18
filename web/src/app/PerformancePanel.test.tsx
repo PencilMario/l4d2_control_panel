@@ -17,6 +17,10 @@ import {
 
 const snapshot: PerformanceSnapshot = {
   image_size_bytes: 5 * 1024 ** 3,
+  game_size_bytes: 512 * 1024 ** 2,
+  private_size_bytes: 128 * 1024 ** 2,
+  backups_size_bytes: 64 * 1024 ** 2,
+  console_size_bytes: 32 * 1024 ** 2,
   cpu_percent: 0,
   memory_bytes: 0,
   memory_limit_bytes: 2 * 1024 ** 3,
@@ -143,7 +147,8 @@ describe("PerformancePanel", () => {
     expect(screen.getByText("1h 1m 1s")).toBeInTheDocument();
     expect(screen.getByText("0 ms")).toBeInTheDocument();
     expect(screen.getByText("总占用")).toBeInTheDocument();
-    expect(screen.getByText("5 GiB")).toBeInTheDocument();
+    expect(screen.getByText("5.7 GiB")).toBeInTheDocument();
+    expect(screen.getByText("游戏 512 MiB · 私有 128 MiB · 备份 64 MiB · 日志 32 MiB · 镜像 5 GiB")).toBeInTheDocument();
     expect(screen.queryByText("玩家")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "网络" })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("button", { name: "CPU" })).toHaveAttribute("aria-pressed", "true");
@@ -155,6 +160,13 @@ describe("PerformancePanel", () => {
     expect(screen.getByText("磁盘读", { selector: ".performance-legend span" })).toBeInTheDocument();
     expect(screen.getByText("磁盘写", { selector: ".performance-legend span" })).toBeInTheDocument();
     expect(screen.getByTestId("performance-chart")).toHaveAttribute("data-series-count", "2");
+  });
+
+  it("treats storage fields as memoized snapshot data", () => {
+    expect(performancePanelPropsEqual(
+      { snapshot, history, loading: false },
+      { snapshot: { ...snapshot, game_size_bytes: 99 }, history, loading: false },
+    )).toBe(false);
   });
 
   it("shows null as -- while retaining zero and simplified network legends", () => {

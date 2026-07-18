@@ -9,7 +9,7 @@ import {
 import { StrictMode } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { App, mergePerformanceHistory, prunePerformanceHistory, type Instance } from "./App";
+import { App, mergePerformanceHistory, prunePerformanceHistory, sharedGameVersionLabel, type Instance } from "./App";
 const instance: Instance = {
   id: "1",
   name: "深夜战役",
@@ -49,6 +49,14 @@ const apiInstance = {
   CreatedAt: "2026-07-15T00:00:00Z",
   UpdatedAt: "2026-07-15T00:00:00Z",
 };
+
+describe("sharedGameVersionLabel", () => {
+  it("uses the game version without exposing the release ID", () => {
+    expect(sharedGameVersionLabel({ version: "2.2.4.3", active_release_id: "release-uuid" })).toBe("2.2.4.3");
+    expect(sharedGameVersionLabel({ active_release_id: "release-uuid" })).toBe("版本未知");
+    expect(sharedGameVersionLabel({})).toBe("未初始化");
+  });
+});
 const stoppedOverview = {
   actual_state: "stopped",
   container_running: false,
