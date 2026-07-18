@@ -63,6 +63,7 @@ func (s *Service) Reconcile(ctx context.Context) ([]docker.Container, error) {
 			continue
 		}
 		if hasGame {
+			needsUpgrade := container.Labels[docker.GameLogMountsLabel] != docker.GameLogMountsVersion
 			if container.State == "running" {
 				if s.health == nil {
 					instance.ActualState = domain.StateRunning
@@ -75,10 +76,10 @@ func (s *Service) Reconcile(ctx context.Context) ([]docker.Container, error) {
 			if err := s.repo.UpdateInstance(ctx, instance); err != nil {
 				return nil, err
 			}
-			if container.Labels[docker.GameLogMountsLabel] == "" {
+			if needsUpgrade {
 				legacy = append(legacy, instance.ID)
 			}
-			if container.State == "running" && s.health != nil {
+			if container.State == "running" && s.health != nil && !needsUpgrade {
 				candidate := instance
 				go func() {
 					if err := s.health.Wait(context.Background(), candidate); err != nil {
