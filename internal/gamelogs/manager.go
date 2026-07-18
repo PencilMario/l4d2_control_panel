@@ -122,7 +122,14 @@ func (m *Manager) Preview(ctx context.Context, instanceID, kind, relative string
 	return previewOpenFile(file, info, limit)
 }
 
-func previewOpenFile(file *os.File, info os.FileInfo, limit int64) (Preview, error) {
+func previewOpenFile(file *os.File, validatedInfo os.FileInfo, limit int64) (Preview, error) {
+	if !validatedInfo.Mode().IsRegular() {
+		return Preview{}, errors.New("log path is not a regular file")
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return Preview{}, fmt.Errorf("inspect open log: %w", err)
+	}
 	size := info.Size()
 	start := int64(0)
 	if size > limit {

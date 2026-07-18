@@ -153,12 +153,41 @@ func TestPreviewOpenFileSafelyHandlesShorteningAfterStat(t *testing.T) {
 	if err := os.Truncate(path, 3); err != nil {
 		t.Fatal(err)
 	}
+	current, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	preview, err := previewOpenFile(file, info, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preview.Text != "" || !preview.Truncated || preview.Size != 10 || !preview.ModifiedAt.Equal(info.ModTime().UTC()) {
+	if preview.Text != "012" || preview.Truncated || preview.Size != 3 || !preview.ModifiedAt.Equal(current.ModTime().UTC()) {
+		t.Fatalf("preview after shortening=%+v", preview)
+	}
+}
+
+func TestPreviewOpenFileUsesActualTailAfterShorteningAboveLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rotating.log")
+	writeFile(t, path, "0123456789")
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	initial, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, 7); err != nil {
+		t.Fatal(err)
+	}
+
+	preview, err := previewOpenFile(file, initial, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Text != "3456" || !preview.Truncated || preview.Size != 7 {
 		t.Fatalf("preview after shortening=%+v", preview)
 	}
 }
