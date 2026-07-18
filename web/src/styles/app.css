@@ -2632,3 +2632,4 @@ textarea:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
+.game-logs-layout{display:grid;grid-template-columns:280px 1fr;gap:16px;height:100%;min-height:420px}.game-logs-layout aside{border-right:1px solid var(--border,#ddd);overflow:auto}.game-logs-layout ul{list-style:none;padding:0}.game-logs-layout button{background:none;border:0;padding:6px;text-align:left;cursor:pointer}.log-viewer{white-space:pre;overflow:auto;font-family:ui-monospace,monospace;line-height:1.45}.log-token-error{color:#d33}.log-token-warn{color:#a66b00}.log-token-info{color:#287a3d}.log-token-address,.log-token-user,.log-token-file{color:#2768b3}@media(max-width:700px){.game-logs-layout{grid-template-columns:1fr}.game-logs-layout aside{border-right:0;max-height:220px}}
