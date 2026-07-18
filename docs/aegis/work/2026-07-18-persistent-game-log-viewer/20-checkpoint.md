@@ -22,8 +22,8 @@
 - [x] Task 1：持久目录、迁移与容器挂载
 - [x] Task 2：安全文件树、尾部预览与下载源
 - [x] Task 3：保留设置与清理行为
-- [ ] Task 4：清理任务与每日排队（active）
-- [ ] Task 5：认证 HTTP API
+- [x] Task 4：清理任务与每日排队
+- [ ] Task 5：认证 HTTP API（active）
 - [ ] Task 6：安全高亮 React 查看器
 - [ ] Task 7：导航、设置、E2E 与文档
 
@@ -39,10 +39,12 @@
 - `go vet ./...`：通过；Task 2 规格审查与代码质量审查均通过。
 - Task 3 commits：`23098d8`、`3991732`、`381a234`。
 - `go test -count=1 ./...` 与 `go vet ./...`：通过；Task 3 规格审查与代码质量审查均通过。
+- Task 4 commits：`1df49c0`、`ce86a5e`。
+- 目标任务/调度测试、`go vet` 与 diff 检查通过；规格审查与代码质量审查均通过。
 
 阻塞项：无。
 
-下一步：Task 4 实现代理把清理接入实例 Job、去重批量排队、每日调度与生产依赖注入。
+下一步：Task 5 实现代理增加认证日志树/预览/下载 API、保留设置与清理排队接口。
 
 ## ResumeStateHint
 
@@ -59,3 +61,5 @@
 残余风险：基于路径的文件 API 无法抵御拥有宿主 DataRoot 写权限的特权 actor 在校验后替换目录；该 actor 已可直接篡改数据库与实例数据，不属于现有 Panel safepath 威胁模型。
 
 清理在删除前通过 `Lstat`/`SameFile` 复核身份，但跨平台 `Lstat -> Remove` 仍有极窄竞态；彻底消除需要平台专用目录句柄协议，当前作为有界残余保留。
+
+Task 4 残余：单 Panel 进程内由 Scheduler mutex 保证 `HasActiveJob` 与提交串行；多个独立 Panel 进程之间查询/提交不是数据库原子 claim，当前部署模型不支持多进程共享同一数据根。
