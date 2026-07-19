@@ -1,42 +1,58 @@
 # L4D2 Control Panel
 
-Single-host, single-administrator control plane for persistent Left 4 Dead 2 dedicated servers. A Go API owns SQLite state, jobs, content deployment, A2S and a fixed native-console bridge; a React SPA provides instance, player, update, content and Cron operations.
+面向单台 Linux 主机、单管理员的 Left 4 Dead 2 专用服务器控制面板。Go 服务负责实例状态、SQLite 数据、后台任务、内容部署、A2S 查询和原生控制台连接，React 页面提供实例、玩家、文件、更新、日志与计划任务管理。
 
-The Panel never mounts `/var/run/docker.sock`. A repository-owned socket proxy exposes only the Docker API paths required for labeled game and maintenance containers through a mode `0660` Unix socket in a named volume. Game instances run unprivileged with host networking and persistent bind mounts.
+项目默认采用受限 Docker Socket 代理，不会把 `/var/run/docker.sock` 挂载到 Panel；游戏实例以非特权用户运行，并使用持久化目录保存游戏文件和管理数据。
 
-## Requirements
+## 页面预览
 
-- Linux x86-64 host. The deployment script can install Docker Engine and the
-  Compose plugin automatically on Debian and Ubuntu; other distributions must
-  provide them before deployment.
-- At least 1 GiB free before starting an uninstalled instance; the shared game release is managed separately.
-- A TLS reverse proxy on the same host.
-- Go 1.24+ and Node 22+ only for local development.
+> 截图来自实际部署环境，实例名、节点、端口、插件包和版本标识已替换为演示数据。
 
-## Deploy
+![服务器总览与性能监控](docs/images/overview.png)
 
-On a clean Debian or Ubuntu host, run:
+![共享游戏本体、VPK 与插件包管理](docs/images/content-repository.png)
+
+## 核心能力
+
+- **实例管理**：创建、配置、启动、停止、更新和永久删除多个 L4D2 游戏实例。
+- **实时观测**：查看实际状态、地图、玩家数、CPU、内存、网络、磁盘、进程数、运行时间和 A2S 延迟。
+- **性能历史**：每 5 秒采样一次，内存中保留最近约 1 小时的性能曲线；Panel 重启后重新开始记录。
+- **内容仓库**：管理共享游戏本体、共享 VPK、插件包和每实例私有覆盖层。
+- **文件与控制台**：编辑私有文件、导入/导出 ZIP、查看快照，并连接原生 SRCDS 控制台。
+- **玩家操作**：查看对局摘要和在线玩家，可执行踢出与永久封禁。
+- **任务与日志**：后台任务持久化、SSE 实时进度、完整任务日志以及游戏日志浏览和下载。
+- **计划维护**：使用 Cron 安排游戏更新、插件更新、重启和日志清理，并配置在线玩家处理策略。
+
+## 环境要求
+
+- Linux x86-64 主机。
+- Debian 或 Ubuntu 可由部署脚本自动安装 Docker Engine 和 Compose 插件；其他发行版需预先安装。
+- 未安装实例首次启动前至少保留 1 GiB 可用空间；共享游戏本体单独管理。
+- 生产环境需要同主机 TLS 反向代理。
+- 本地开发需要 Go 1.24+ 和 Node.js 22+。
+
+## 一键部署
+
+在全新的 Debian 或 Ubuntu 主机执行：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/PencilMario/l4d2_control_panel/main/deploy.sh | sudo bash
 ```
 
-The script installs missing Docker packages, clones the repository to
-`/opt/l4d2-control-panel`, creates `/opt/l4d2-control-panel/.env` with mode
-`0600`, generates a random administrator password, builds the images and waits
-for `/api/health`. Save the password printed at the end of the first successful
-deployment. Persistent game and Panel data remain under `/srv/l4d2-panel`.
+部署脚本会：
 
-Run the same one-line command again to update, or use the installed copy:
+1. 安装缺失的 Docker 组件；
+2. 克隆仓库到 `/opt/l4d2-control-panel`；
+3. 创建权限为 `0600` 的 `.env`；
+4. 生成随机管理员密码；
+5. 构建并启动服务；
+6. 等待 `/api/health` 就绪。
 
-```sh
-sudo bash /opt/l4d2-control-panel/deploy.sh
-```
+首次成功后请立即保存终端打印的管理员密码。持久数据默认位于 `/srv/l4d2-panel`。
 
-Updates preserve `.env`, named volumes and `/srv/l4d2-panel`. The script refuses
-to overwrite local repository changes, only fast-forwards `main`, and attempts
-to restore the previous commit and service version if the new deployment fails.
-Alternative repositories, branches and installation directories are supported:
+再次执行同一命令即可更新。脚本会保留 `.env`、命名卷和数据目录；检测到仓库存在本地修改时会拒绝覆盖，只允许快进 `main`，新版本部署失败时会尝试恢复上一提交和服务版本。
+
+也可以指定仓库、分支和安装目录：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/PencilMario/l4d2_control_panel/main/deploy.sh \
@@ -44,43 +60,38 @@ curl -fsSL https://raw.githubusercontent.com/PencilMario/l4d2_control_panel/main
       --branch main --install-dir /opt/l4d2-control-panel
 ```
 
-Useful operations after deployment:
-
-```sh
-cd /opt/l4d2-control-panel
-sudo docker compose --env-file .env ps
-sudo docker compose --env-file .env logs --tail=100 -f panel socket-proxy overlay-helper
-curl --fail http://127.0.0.1:18081/api/health
-```
-
-The installer does not configure TLS, a firewall, DNS or a reverse proxy.
-
-### Manual Compose deployment
+## 手动部署
 
 ```sh
 cp .env.example .env
-# Set a long random administrator password, and set L4D2_PANEL_GAME_HOST to
-# the LAN/Tailscale address on which SRCDS answers A2S (not 127.0.0.1).
+# 设置高强度管理员密码，并按下文确认 L4D2_PANEL_GAME_HOST。
 docker compose --env-file .env config --quiet
 docker compose --env-file .env --profile images build runtime-image
 docker compose --env-file .env up -d --build
 ```
 
-The Panel remains on the Compose network and publishes only its configured HTTP port. The restricted proxy uses host networking so its packet capture sees game traffic, but exposes no TCP listener:
+Panel 对外发布 `0.0.0.0:${L4D2_PANEL_HTTP_PORT:-18081}`，容器内监听 `8080`。受限 Docker 代理只通过命名卷中的 `/run/l4d2-panel/proxy.sock` 与 Panel 通信，不开放 TCP 监听。
 
-- Panel: `0.0.0.0:${L4D2_PANEL_HTTP_PORT:-18081}` (published from container port `8080`)
-- restricted Docker proxy: `/run/l4d2-panel/proxy.sock` in the `panel-proxy-run` named volume shared with the Panel
+## 必要配置
 
-The proxy drops all capabilities and adds only `NET_RAW`, runs with a read-only root filesystem and `no-new-privileges`, and owns the shared socket as UID/GID 10001. The Panel receives only that restricted filesystem capability; it does not receive the Docker Engine socket.
+主要配置位于部署目录的 `.env`：
 
-The overview samples each instance every five seconds and keeps the latest 720 observations in Panel memory (about one hour). CPU, memory, block I/O, process count and uptime come from Docker; A2S supplies map, players and query latency; the restricted proxy counts RX/TX bytes only for the instance's declared game, SourceTV and plugin ports. History is intentionally reset when the Panel restarts and network values become unavailable if packet capture cannot run; other metrics continue independently.
+| 变量 | 说明 | 默认值 |
+| --- | --- | --- |
+| `L4D2_PANEL_ADMIN_PASSWORD` | 管理员密码，首次启动必须提供 | 无 |
+| `L4D2_PANEL_DATA_ROOT` | Panel 与游戏实例持久数据根目录 | `/srv/l4d2-panel` |
+| `L4D2_PANEL_HTTP_PORT` | 宿主机 HTTP 端口 | `18081` |
+| `L4D2_PANEL_GAME_HOST` | Panel 发起 A2S 查询时使用的宿主机地址 | `host.docker.internal` |
+| `L4D2_PANEL_DOWNLOAD_PROXY` | GitHub Release、SteamCMD 等下载代理 | 空 |
+| `L4D2_PANEL_SECURE_COOKIE` | 是否只通过 HTTPS 发送会话 Cookie | `true` |
 
-For direct HTTP access, set `L4D2_PANEL_SECURE_COOKIE=false`. Keep the default
-`true` when the Panel is served through HTTPS.
+`L4D2_PANEL_GAME_HOST` 是必填项。使用仓库提供的 Compose 配置时应保留 `host.docker.internal`；Panel 通过默认桥接网络访问使用宿主机网络的 SRCDS。不要改成 `127.0.0.1`，回环地址通常无法从 Panel 容器返回正确的 A2S 数据。
 
-`L4D2_PANEL_GAME_HOST` is intentionally required. When the Panel runs in the provided Docker Compose stack, use `host.docker.internal`; the Panel uses Docker's default bridge and Compose maps this name to the same bridge gateway so it can query host-network SRCDS UDP ports. Loopback, host external addresses, and cross-bridge gateway paths may not return A2S traffic correctly from the Panel container.
+如需代理下载，在 `.env` 中设置 `L4D2_PANEL_DOWNLOAD_PROXY`。该值会同时作为 `HTTP_PROXY` 和 `HTTPS_PROXY` 传入 Panel 与 SteamCMD 维护容器；仅在确有额外内网地址时覆盖 `L4D2_PANEL_NO_PROXY`。
 
-Put HTTPS in front of the Panel. For example, Caddy can proxy WebSocket and SSE traffic without extra directives:
+## HTTPS 与安全边界
+
+默认会话 Cookie 使用 `Secure`、`HttpOnly` 和 `SameSite=Strict`，正常使用时应通过 HTTPS 访问。例如使用 Caddy：
 
 ```caddyfile
 panel.example.com {
@@ -88,51 +99,65 @@ panel.example.com {
 }
 ```
 
-Session cookies are `Secure`, `HttpOnly` and `SameSite=Strict`; use the HTTPS origin for normal browser operation. The Panel does not manage firewall rules.
+仅在可信网络中直接使用 HTTP 时，才把 `L4D2_PANEL_SECURE_COOKIE` 设置为 `false`。部署脚本不会配置 TLS、防火墙、DNS 或反向代理。
 
-If GitHub Release or Steam downloads require a proxy, set
-`L4D2_PANEL_DOWNLOAD_PROXY` in `.env`. The Panel uses it as `HTTP_PROXY` and
-`HTTPS_PROXY`, and passes it to SteamCMD maintenance containers. Override
-`L4D2_PANEL_NO_PROXY` only when additional internal hosts must bypass it.
-Digest-pinned `NODE_IMAGE`, `GO_IMAGE`, `ALPINE_IMAGE` and an alternate
-`STEAMCMD_IMAGE` can also be supplied without changing the Docker daemon.
+安全模型要点：
 
-## SteamCMD first install
+- Panel 不挂载 Docker Engine Socket。
+- 仓库自带的 Socket 代理只暴露带指定标签的游戏/维护容器所需 API 路径。
+- 代理通过权限为 `0660` 的 Unix Socket 提供能力，Panel 只接收这个受限文件系统入口。
+- 游戏实例使用宿主机网络，但以 UID/GID `10001`、非特权模式运行。
+- 游戏、私有覆盖层、备份、控制台和日志目录均持久化；共享内容按只读或受控流程挂载。
 
-Current L4D2 Steam content returns `Missing configuration` when an empty Linux install is requested directly. Before the first game container is created, the Panel uses a restricted maintenance container for the established anonymous bootstrap sequence:
+## 首次使用
 
-1. select the Windows platform and install App 222860;
-2. switch to Linux and finish the initial `app_update 222860` without validation;
-3. deploy the instance's selected plugin package and replay its private overlay;
-4. create the run-only game container and start `srcds_run` only after every stage succeeds.
+1. 登录 Panel，进入“内容仓库”。
+2. 上传至少一个 ZIP 插件包。
+3. 初始化或更新共享游戏本体。
+4. 创建游戏实例，选择插件包并设置端口、地图、模式、Tickrate 与玩家上限。
+5. 启动实例，确认 A2S、玩家、性能、控制台和日志均正常。
 
-Later game updates and explicit integrity checks use a fixed Linux-only SteamCMD maintenance container with `validate`. Optional licensed Steam credentials can be encrypted from System Settings, but anonymous installation is supported and no credentials are written to container logs.
+当前 L4D2 Steam 内容在空 Linux 目录直接安装时可能返回 `Missing configuration`。Panel 的首次安装流程会先使用 Windows 平台内容完成引导，再切回 Linux 完成 App 222860 安装；后续更新和完整性检查使用 Linux SteamCMD 与 `validate`。
 
-## Instance startup configuration
+内容覆盖优先级为：
 
-Upload at least one ZIP plugin package in Content Repository before creating an instance. Every instance independently stores a selected package and the package whose deployment last committed successfully.
+```text
+插件包 < 共享 VPK < 实例私有覆盖层
+```
 
-The same configuration dialog is used for new and existing instances. It exposes the managed game, SourceTV and plugin ports, start map, game mode, tickrate and player limit. Additional SRCDS arguments are parsed as shell-style arguments and appended after the managed values; Panel-owned options such as `-port`, `-tickrate`, `+map` and `+tv_port` are rejected. The dialog previews the complete `srcds_run` command before submission.
+实例配置或插件包变更会进入串行后台任务。更新实例时可以分别选择重装游戏文件、重新部署当前插件包，或同时执行两项操作。
 
-Changing startup values or the selected package on an installed instance creates one serialized `reconfigure` Job. Package deployment and container rebuild preserve the instance's stopped/running intent, and the applied package ID advances only after deployment commits.
+## 常用运维
 
-From an instance card, **Update** opens a selective forced-reinstall dialog. It can reinstall the game files, fully redeploy the instance's currently selected plugin package, or do both in one serialized Job; both choices are selected by default. The operation does not check for newer package versions or switch the selected package.
+```sh
+cd /opt/l4d2-control-panel
 
-## Private files and console
+# 查看服务状态
+sudo docker compose --env-file .env ps
 
-Each instance has an independent **Private Files** Tab. File edits, uploads, renames and deletions are staged in the instance workspace; **Apply changes** commits the complete staged diff as one background Job. After a successful apply, snapshot pruning makes a best-effort attempt to retain the latest 20 snapshots by default. A prune failure is reported diagnostically without failing the committed apply, so retention can temporarily exceed 20. Restoring a snapshot also runs transactionally, and deleting a private override restores the current package/shared/Valve lower-layer file when one exists instead of leaving stale private content behind.
+# 跟踪核心服务日志
+sudo docker compose --env-file .env logs --tail=100 -f \
+  panel socket-proxy overlay-helper
 
-Uploads are chunked and resumable only when the instance, target path and complete file fingerprint match. The fingerprint includes the file name, size, last-modified time and digest. The browser resumes from the server-confirmed offset after interruption and refreshes the workspace only after completion; upload sessions do not expose game paths or command execution.
+# 健康检查
+curl --fail http://127.0.0.1:18081/api/health
 
-## Match and player operations
+# 手动执行已安装副本的更新
+sudo bash ./deploy.sh
+```
 
-The instance player dialog combines a live SRCDS match summary with human-player operations. It shows hostname, map, human capacity, version/security, operating system and private/public addresses, followed by UserID, Steam UniqueID, connected time, ping, loss and A2S score for each human player. BOTs remain hidden. Desktop uses an operations table while mobile folds each row into a readable detail card; kick and permanent-ban actions continue to use the mapped numeric UserID.
+部署后至少确认：
 
-The instance console follows the latest output while the viewport is at the bottom. Scrolling up pauses following without discarding incoming output; returning to the bottom resumes it. Reconnect replay follows the same rule, so user-selected history is not pulled away by live or replayed lines.
+```sh
+docker compose --env-file .env ps
+curl --fail http://127.0.0.1:${L4D2_PANEL_HTTP_PORT:-18081}/api/health
+docker compose exec panel test -S /run/l4d2-panel/proxy.sock
+docker compose exec panel test ! -e /var/run/docker.sock
+```
 
-## Persistent data
+## 持久数据
 
-The default root is `/srv/l4d2-panel`:
+默认数据根目录为 `/srv/l4d2-panel`：
 
 ```text
 panel/panel.db
@@ -147,70 +172,38 @@ instances/<id>/logs/sourcemod/
 shared-vpk/
 ```
 
-Rebuilding or deleting a game container preserves these directories unless the administrator explicitly confirms data deletion. Content precedence is `package < shared VPK < private overlay`.
+重建或删除游戏容器不会自动删除这些目录。只有在永久删除实例时明确确认删除数据，相关实例目录才会被移除。
 
-Each instance's **Game Logs** page reads the persistent `logs/game` and
-`logs/sourcemod` trees, including nested SourceMod directories, and supports
-previewing and downloading individual files. These paths are Panel-owned
-persistent data mounts: reinstalling game files, redeploying plugins, or
-rebuilding the game container does not remove them. Permanently deleting an
-instance with its data removes its logs with the rest of that instance.
+游戏日志默认保留 14 天，可在“系统设置 > 游戏日志”调整为 1 至 365 天；私有文件应用快照默认尽力保留最近 20 份。性能历史仅保存在内存中，不属于长期监控或审计数据。
 
-Game logs are retained for 14 days by default. The value can be changed from 1
-to 365 days under **System Settings > Game Logs**. Saving a new value queues a
-cleanup for every instance; increasing it does not restore files already
-deleted. **Clean up now** starts the same persistent `cleanup_game_logs` jobs
-without duplicating an active cleanup for an instance. Queue, deduplication and
-failure counts are shown in Settings, while per-instance scan/deletion
-statistics remain visible in the persistent task feed and task logs.
-
-After a new shared VPK is published, each running instance receives one deferred restart task. The task waits indefinitely while players are online and restarts the instance when it becomes empty. Three consecutive player-query failures are treated as an abnormal state and trigger the restart. Stopped or uninstalled instances are not started automatically; multiple VPK uploads merge into the same per-instance task.
-
-## Runtime and security checks
-
-Before exposing a new host, verify:
+## 本地开发
 
 ```sh
-docker compose --env-file .env ps
-curl --fail http://127.0.0.1:${L4D2_PANEL_HTTP_PORT:-18081}/api/health
-docker compose exec panel test -S /run/l4d2-panel/proxy.sock
-docker compose exec panel test ! -e /var/run/docker.sock
-docker compose exec socket-proxy sh -c 'test "$(stat -c %U:%G /run/l4d2-panel)" = root:10001'
-docker compose exec socket-proxy sh -c 'test "$(stat -c %a /run/l4d2-panel)" = 750'
-docker compose exec socket-proxy sh -c 'test "$(stat -c %U:%G /run/l4d2-panel/proxy.sock)" = root:10001'
-docker compose exec socket-proxy sh -c 'test "$(stat -c %a /run/l4d2-panel/proxy.sock)" = 660'
-test "$(docker inspect -f '{{json .HostConfig.CapAdd}}' "$(docker compose ps -q socket-proxy)")" = '["NET_RAW"]'
-docker compose exec socket-proxy sh -c '! grep -q ":5CC6" /proc/net/tcp /proc/net/tcp6'
-```
-
-Then create an instance from the UI and confirm:
-
-- the game container has `network_mode=host` and the three `io.l4d2-panel.*` labels;
-- game/private/shared paths are persistent mounts and shared VPK is read-only;
-- the container user is UID/GID 10001 and has no Docker socket or privileged mode;
-- `l4d2-supervisor attach`, `status --json` and `stop` work, while other operations are rejected;
-- A2S, players, console reconnect/replay, stop/start and container rebuild work without data loss.
-- overview RX/TX totals increase only when traffic crosses declared ports; rates freeze while stopped, restart resets the runtime `StartedAt` boundary, and metric gaps render as unavailable rather than zero;
-- the socket proxy has only `CAP_NET_RAW`, has no TCP listener on legacy port 23750, and removing the stack leaves no capture process or shared socket behind.
-
-## Development and verification
-
-```sh
+# Go 服务
 go test -count=1 ./...
 go vet ./...
+
+# React 前端
 cd web
 npm ci
 npm test -- --run
 npm run build
 npm run e2e
 cd ..
+
+# Compose 配置
 docker compose --env-file .env.example config --quiet
 ```
 
-Playwright starts an `e2e`-tagged Go fixture on `127.0.0.1:18082`. The fixture uses real HTTP, Secure cookies, SQLite, jobs, SSE, WebSocket, content and update routes while replacing Docker, SRCDS, A2S, Steam and GitHub boundaries. It is excluded from production builds. Local loopback is added to `NO_PROXY`, so the browser suite remains local when download proxies are configured.
+Playwright 会在 `127.0.0.1:18082` 启动带 `e2e` 构建标签的 Go fixture，通过真实 HTTP、SQLite、任务、SSE 和 WebSocket 覆盖主要管理流程，同时替换 Docker、SRCDS、A2S、Steam 与 GitHub 等外部边界。该 fixture 不会进入生产构建。
 
-The Linux fault-injection acceptance uses disposable, unlabelled containers and a temporary data root. It covers hard Panel interruption, VPK part/metadata divergence, package interruption before journal commit and bounded SRCDS crash restart. Verify the managed game container ID and Docker daemon start signature before and after, then remove every fixture artifact. Docker-daemon restart and ENOSPC injection require a dedicated disposable host; do not run them on a shared Docker host.
+Windows 上如因杀毒软件或文件索引临时锁定 Go 测试可执行文件，可为 `GOTMPDIR` 设置独立临时目录并使用 `go test -p 1` 串行执行；不要因此放宽产品代码约束。
 
-On Windows, antivirus/file-indexing can transiently lock Go's randomly named test executables under `%TEMP%`. If affected, set `GOTMPDIR` to a dedicated temporary directory and run packages serially with `go test -p 1`; do not weaken product code to accommodate the local test host.
+## 设计与实现文档
 
-See the overall [approved design](docs/aegis/specs/2026-07-14-l4d2-control-panel-design.md), [implementation plan](docs/aegis/plans/2026-07-14-l4d2-control-panel.md) and [evidence bundle](docs/aegis/work/2026-07-14-l4d2-control-panel/50-evidence.md). Private file management and console follow have a separate [approved design](docs/aegis/specs/2026-07-15-private-file-manager-console-follow-design.md), [implementation plan](docs/aegis/plans/2026-07-15-private-file-manager-console-follow.md) and [evidence bundle](docs/aegis/work/2026-07-15-private-file-manager-console-follow/50-evidence.md).
+- [项目文档索引](docs/aegis/INDEX.md)
+- [总体设计](docs/aegis/specs/2026-07-14-l4d2-control-panel-design.md)
+- [总体实施计划](docs/aegis/plans/2026-07-14-l4d2-control-panel.md)
+- [总体验证证据](docs/aegis/work/2026-07-14-l4d2-control-panel/50-evidence.md)
+
+具体功能的设计、计划与验证记录位于 `docs/aegis/`。
