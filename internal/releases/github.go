@@ -138,6 +138,9 @@ func (c Client) FetchLatest(ctx context.Context, repository, assetPattern, token
 	if err := packages.UpdateMetadata(item); err != nil {
 		return FetchResult{}, err
 	}
+	if err := packages.RemoveSourceVersionsExcept(repository, item.ID); err != nil {
+		return FetchResult{}, err
+	}
 	return FetchResult{Package: item, Updated: true}, nil
 }
 func (c Client) allowedAssetHost(asset *url.URL, base string) bool {

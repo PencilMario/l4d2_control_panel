@@ -83,6 +83,7 @@ export const normalizeInstance = (value: any) => ({
   max_players: value.max_players ?? value.MaxPlayers,
   extra_args: value.extra_args ?? value.ExtraArgs ?? "",
   package_id: value.package_id ?? value.SelectedPackageID ?? "",
+  package_source_repository: value.package_source_repository ?? value.PackageSourceRepository ?? "",
   applied_package_id:
     value.applied_package_id ?? value.PackageVersion ?? "",
   players: value.players ?? null,

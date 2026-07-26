@@ -170,11 +170,14 @@ func (d Dispatcher) selectedPackage(ctx context.Context, task domain.ScheduledTa
 	if err != nil {
 		return content.PackageVersion{}, err
 	}
-	if instance.SelectedPackageID == "" {
+	if instance.SelectedPackageID == "" && instance.PackageSourceRepository == "" {
 		return content.PackageVersion{}, errors.New("instance has no selected package")
 	}
 	if d.Packages == nil {
 		return content.PackageVersion{}, errors.New("package repository unavailable")
+	}
+	if instance.PackageSourceRepository != "" {
+		return d.Packages.LatestSourceVersion(instance.PackageSourceRepository)
 	}
 	return d.Packages.Get(instance.SelectedPackageID)
 }

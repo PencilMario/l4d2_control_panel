@@ -41,6 +41,40 @@ func (m *PackageManager) FindSourceVersion(repository, version, filename string)
 	return PackageVersion{}, false, nil
 }
 
+func (m *PackageManager) LatestSourceVersion(repository string) (PackageVersion, error) {
+	items, err := m.List()
+	if err != nil {
+		return PackageVersion{}, err
+	}
+	var latest PackageVersion
+	for _, item := range items {
+		if item.SourceRepository != repository || (latest.ID != "" && !item.CreatedAt.After(latest.CreatedAt)) {
+			continue
+		}
+		latest = item
+	}
+	if latest.ID == "" {
+		return PackageVersion{}, os.ErrNotExist
+	}
+	return latest, nil
+}
+func (m *PackageManager) RemoveSourceVersionsExcept(repository, keepID string) error {
+	items, err := m.List()
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		if item.SourceRepository == repository && item.ID != keepID {
+			if err := os.Remove(item.ArchivePath); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			if err := os.Remove(filepath.Join(m.directory, item.ID+".json")); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+	}
+	return nil
+}
 func NewPackageManager(root string) (*PackageManager, error) {
 	directory := filepath.Join(root, "packages", "releases")
 	if err := os.MkdirAll(directory, 0750); err != nil {

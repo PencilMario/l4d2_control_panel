@@ -45,3 +45,34 @@ func packageZip(t *testing.T, files map[string]string) []byte {
 	raw, _ := os.ReadFile(path)
 	return raw
 }
+
+func TestPackageSourceKeepsOnlyLatest(t *testing.T) {
+	manager, _ := NewPackageManager(t.TempDir())
+	raw := packageZip(t, map[string]string{"cfg/plugin.cfg": "x"})
+	first, err := manager.AddUpload("plugins.zip", "v1", bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.SourceRepository = "owner/repo"
+	if err := manager.UpdateMetadata(first); err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.AddUpload("plugins.zip", "v2", bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.SourceRepository = "owner/repo"
+	if err := manager.UpdateMetadata(second); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RemoveSourceVersionsExcept("owner/repo", second.ID); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := manager.LatestSourceVersion("owner/repo")
+	if err != nil || latest.ID != second.ID {
+		t.Fatalf("latest=%#v err=%v", latest, err)
+	}
+	if _, err := manager.Get(first.ID); !os.IsNotExist(err) {
+		t.Fatalf("old package still exists: %v", err)
+	}
+}

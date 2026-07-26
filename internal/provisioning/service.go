@@ -43,10 +43,22 @@ type Service struct {
 }
 
 func (s Service) Prepare(ctx context.Context, instance domain.Instance) error {
-	if instance.SelectedPackageID == "" {
+	if instance.SelectedPackageID == "" && instance.PackageSourceRepository == "" {
 		return errors.New("instance package is required")
 	}
-	item, err := s.Packages.Get(instance.SelectedPackageID)
+	var item content.PackageVersion
+	var err error
+	if instance.PackageSourceRepository != "" {
+		resolver, ok := s.Packages.(interface {
+			LatestSourceVersion(string) (content.PackageVersion, error)
+		})
+		if !ok {
+			return errors.New("source package lookup unavailable")
+		}
+		item, err = resolver.LatestSourceVersion(instance.PackageSourceRepository)
+	} else {
+		item, err = s.Packages.Get(instance.SelectedPackageID)
+	}
 	if err != nil {
 		return err
 	}

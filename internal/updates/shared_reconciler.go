@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 )
 
@@ -39,10 +40,22 @@ func (r SharedGameRebuilder) Switch(ctx context.Context, instance domain.Instanc
 	if releaseID == "" {
 		return errors.New("shared game release is required")
 	}
-	if instance.SelectedPackageID == "" {
+	if instance.SelectedPackageID == "" && instance.PackageSourceRepository == "" {
 		return errors.New("instance package is required")
 	}
-	item, err := r.Packages.Get(instance.SelectedPackageID)
+	var item content.PackageVersion
+	var err error
+	if instance.PackageSourceRepository != "" {
+		resolver, ok := r.Packages.(interface {
+			LatestSourceVersion(string) (content.PackageVersion, error)
+		})
+		if !ok {
+			return errors.New("source package lookup unavailable")
+		}
+		item, err = resolver.LatestSourceVersion(instance.PackageSourceRepository)
+	} else {
+		item, err = r.Packages.Get(instance.SelectedPackageID)
+	}
 	if err != nil {
 		return err
 	}

@@ -7,6 +7,7 @@ export type PackageVersion = {
   version: string;
   size: number;
   hot_compatible: boolean;
+  source_repository?: string;
 };
 
 export type InstanceConfigValues = {
@@ -20,12 +21,14 @@ export type InstanceConfigValues = {
   max_players: number;
   extra_args: string;
   package_id: string;
+  package_source_repository?: string;
 };
 
 export type ConfigurableInstance = InstanceConfigValues & {
   id: string;
   actual_state: string;
   applied_package_id: string;
+  package_source_repository?: string;
 };
 
 type Props = {
@@ -48,6 +51,7 @@ const createDefaults = (packages: PackageVersion[]): InstanceConfigValues => ({
   extra_args:
     "-sv_lan 0 -ip 0.0.0.0 +sv_clockcorrection_msecs 25 -timeout 10 +sv_setmax 32 +servercfgfile server.cfg",
   package_id: packages[0]?.id || "",
+  package_source_repository: "",
 });
 
 export function buildLaunchPreview(value: InstanceConfigValues) {
@@ -86,6 +90,7 @@ export function InstanceConfigModal({
   onClose,
   onSubmit,
 }: Props) {
+  const sourceRepositories = Array.from(new Set(packages.map((item) => item.source_repository).filter((value): value is string => Boolean(value))));
   const [values, setValues] = useState<InstanceConfigValues>(() =>
     instance
       ? {
@@ -99,6 +104,7 @@ export function InstanceConfigModal({
           max_players: instance.max_players,
           extra_args: instance.extra_args,
           package_id: instance.package_id,
+          package_source_repository: instance.package_source_repository || "",
         }
       : createDefaults(packages),
   );
@@ -179,24 +185,27 @@ export function InstanceConfigModal({
             <label>
               插件包
               <select
-                value={values.package_id}
-                onChange={(event) =>
-                  setValue("package_id", event.target.value)
-                }
+                value={values.package_source_repository ? `source:${values.package_source_repository}` : values.package_id}
+                onChange={(event) => {
+                  const selected = event.target.value;
+                  setValues((current) => selected.startsWith("source:")
+                    ? { ...current, package_id: "", package_source_repository: selected.slice(7) }
+                    : { ...current, package_id: selected, package_source_repository: "" });
+                }}
                 required
               >
-                {packages.length ? (
-                  <>
-                    <option value="" disabled>请选择插件包</option>
-                    {packages.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.filename} · {item.version}
-                      </option>
-                    ))}
-                  </>
-                ) : (
-                  <option value="">暂无插件包</option>
-                )}
+                {packages.length ? <option value="" disabled>请选择插件包</option> : null}
+                {sourceRepositories.map((repository) => (
+                  <option key={`source:${repository}`} value={`source:${repository}`}>
+                    GitHub · {repository}（始终最新）
+                  </option>
+                ))}
+                {packages.filter((item) => !item.source_repository).map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.filename} · {item.version}
+                  </option>
+                ))}
+                {!packages.length ? <option value="">暂无插件包</option> : null}
               </select>
             </label>
             <label>

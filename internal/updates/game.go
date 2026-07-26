@@ -78,14 +78,26 @@ func (c GameCoordinator) Reinstall(ctx context.Context, id string, options Reins
 		}
 	}
 	var transaction Deployment
+	var item content.PackageVersion
 	if options.Package {
-		if instance.SelectedPackageID == "" {
+		if instance.SelectedPackageID == "" && instance.PackageSourceRepository == "" {
 			return c.fault(ctx, id, errors.New("instance has no selected package"))
 		}
 		if c.Packages == nil || c.Deployer == nil {
 			return c.fault(ctx, id, errors.New("package reinstall unavailable"))
 		}
-		item, err := c.Packages.Get(instance.SelectedPackageID)
+		var item content.PackageVersion
+		if instance.PackageSourceRepository != "" {
+			resolver, ok := c.Packages.(interface {
+				LatestSourceVersion(string) (content.PackageVersion, error)
+			})
+			if !ok {
+				return c.fault(ctx, id, errors.New("source package lookup unavailable"))
+			}
+			item, err = resolver.LatestSourceVersion(instance.PackageSourceRepository)
+		} else {
+			item, err = c.Packages.Get(instance.SelectedPackageID)
+		}
 		if err != nil {
 			return c.fault(ctx, id, err)
 		}
@@ -133,7 +145,7 @@ func (c GameCoordinator) Reinstall(ctx context.Context, id string, options Reins
 		if err != nil {
 			return err
 		}
-		latest.PackageVersion = latest.SelectedPackageID
+		latest.PackageVersion = item.ID
 		return c.Instances.UpdateInstance(ctx, latest)
 	}
 	return nil

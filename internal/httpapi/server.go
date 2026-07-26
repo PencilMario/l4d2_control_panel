@@ -834,16 +834,17 @@ func unhealthyObservationState(current domain.InstanceState) domain.InstanceStat
 }
 
 type instanceInput struct {
-	Name         string `json:"name"`
-	GamePort     int    `json:"game_port"`
-	SourceTVPort int    `json:"sourcetv_port"`
-	PluginPorts  []int  `json:"plugin_ports"`
-	StartMap     string `json:"start_map"`
-	GameMode     string `json:"game_mode"`
-	Tickrate     int    `json:"tickrate"`
-	MaxPlayers   int    `json:"max_players"`
-	ExtraArgs    string `json:"extra_args"`
-	PackageID    string `json:"package_id"`
+	Name                    string `json:"name"`
+	GamePort                int    `json:"game_port"`
+	SourceTVPort            int    `json:"sourcetv_port"`
+	PluginPorts             []int  `json:"plugin_ports"`
+	StartMap                string `json:"start_map"`
+	GameMode                string `json:"game_mode"`
+	Tickrate                int    `json:"tickrate"`
+	MaxPlayers              int    `json:"max_players"`
+	ExtraArgs               string `json:"extra_args"`
+	PackageID               string `json:"package_id"`
+	PackageSourceRepository string `json:"package_source_repository"`
 }
 
 func (s *Server) validateInstanceInput(input *instanceInput) (content.PackageVersion, error) {
@@ -875,6 +876,7 @@ func (input instanceInput) apply(instance domain.Instance) domain.Instance {
 	instance.MaxPlayers = input.MaxPlayers
 	instance.ExtraArgs = input.ExtraArgs
 	instance.SelectedPackageID = input.PackageID
+	instance.PackageSourceRepository = input.PackageSourceRepository
 	return instance
 }
 
@@ -910,7 +912,7 @@ func (s *Server) updateInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	next := input.apply(instance)
 	runtimeChanged := runtimeConfigurationChanged(instance, next)
-	packageNeedsApply := instance.SelectedPackageID != input.PackageID || instance.PackageVersion != input.PackageID
+	packageNeedsApply := instance.SelectedPackageID != input.PackageID || instance.PackageSourceRepository != input.PackageSourceRepository || (input.PackageSourceRepository == "" && instance.PackageVersion != input.PackageID)
 	requiresJob := instance.ContainerID != "" && (runtimeChanged || packageNeedsApply)
 	if requiresJob && s.jobs == nil {
 		writeError(w, 503, "operations_unavailable", "job manager unavailable")

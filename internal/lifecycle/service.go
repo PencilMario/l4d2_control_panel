@@ -199,8 +199,8 @@ func (s *Service) Start(ctx context.Context, id string) error {
 				return err
 			}
 		}
-		needsProvision := s.provisioner != nil && (v.ActualState == domain.StateUninstalled || v.PackageVersion != v.SelectedPackageID)
-		if s.provisioner != nil && v.SelectedPackageID == "" {
+		needsProvision := s.provisioner != nil && (v.ActualState == domain.StateUninstalled || v.PackageSourceRepository != "" || v.PackageVersion != v.SelectedPackageID)
+		if s.provisioner != nil && v.SelectedPackageID == "" && v.PackageSourceRepository == "" {
 			return s.fault(ctx, v, errors.New("instance package is required"))
 		}
 		if needsProvision {

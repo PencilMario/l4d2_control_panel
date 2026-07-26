@@ -22,6 +22,7 @@ type Instance struct {
 	RuntimeImage                                      string
 	PackageVersion                                    string `json:"applied_package_id"`
 	SelectedPackageID                                 string `json:"package_id"`
+	PackageSourceRepository                           string `json:"package_source_repository"`
 	GamePort                                          int
 	SourceTVPort                                      int   `json:"sourcetv_port"`
 	PluginPorts                                       []int `json:"plugin_ports"`
