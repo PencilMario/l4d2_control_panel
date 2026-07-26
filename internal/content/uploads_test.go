@@ -60,6 +60,47 @@ func TestCleanVPKRemovesClientResourcesAndUpdatesMetadata(t *testing.T) {
 	}
 }
 
+func TestShouldRemoveVPKResourceMatchesServerCleanupPolicy(t *testing.T) {
+	tests := map[string]bool{
+		"materials/test.vtf": true,
+		"sound/test.mp3":     true,
+		"sound/test.wav":     true,
+		"maps/edit.vmf":      true,
+		"maps/edit.vmx":      true,
+		"resource/README":    true,
+		"maps/test.bsp":      false,
+		"cfg/server.cfg":     false,
+		"scripts/test.nut":   false,
+	}
+	for name, want := range tests {
+		if got := ShouldRemoveVPKResource(name); got != want {
+			t.Errorf("ShouldRemoveVPKResource(%q)=%v want=%v", name, got, want)
+		}
+	}
+}
+
+func TestUploadSessionCanRecoverAndCancel(t *testing.T) {
+	manager, _ := NewUploadManager(t.TempDir())
+	sum := sha256.Sum256([]byte("payload"))
+	session, err := manager.Begin("recover.vpk", 7, hex.EncodeToString(sum[:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Write(session.ID, 0, bytes.NewReader([]byte("pay"))); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := manager.Recover(session.ID)
+	if err != nil || recovered.Offset != 3 {
+		t.Fatalf("recovered=%+v err=%v", recovered, err)
+	}
+	if err := manager.Cancel(session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Recover(session.ID); err == nil {
+		t.Fatal("cancelled session still recoverable")
+	}
+}
+
 func TestChunkedUploadResumesVerifiesAndMovesAtomically(t *testing.T) {
 	root := t.TempDir()
 	data := []byte("large-vpk-content")

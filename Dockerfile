@@ -6,7 +6,7 @@ WORKDIR /src/web
 COPY web/package*.json ./
 RUN npm ci
 COPY web/ ./
-RUN npm run build
+RUN npm run build:web
 
 FROM ${GO_IMAGE} AS backend
 ARG GOPROXY=https://proxy.golang.org,direct

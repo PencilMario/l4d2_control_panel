@@ -7,11 +7,10 @@ import (
 	"errors"
 	"io"
 	"os"
-	"path"
 	"path/filepath"
-	"strings"
 
 	"github.com/BenLubar/vpk"
+	"github.com/not0721here/l4d2-control-panel/internal/vpkpolicy"
 )
 
 type VPKCleanupResult struct {
@@ -39,8 +38,7 @@ func (m *UploadManager) Clean(name string) (VPKCleanupResult, error) {
 	kept := make([]vpk.Entry, 0, len(pak.Paths()))
 	removed := 0
 	for _, rel := range pak.Paths() {
-		base, ext := path.Base(rel), strings.ToLower(path.Ext(rel))
-		if ext == "" || ext == ".vtf" || ext == ".mp3" || ext == ".wav" || ext == ".vmf" || ext == ".vmx" || base == "" {
+		if ShouldRemoveVPKResource(rel) {
 			removed++
 			continue
 		}
@@ -84,4 +82,8 @@ func (m *UploadManager) Clean(name string) (VPKCleanupResult, error) {
 		return VPKCleanupResult{}, err
 	}
 	return VPKCleanupResult{Name: name, Removed: removed, BeforeSize: info.Size(), AfterSize: after}, nil
+}
+
+func ShouldRemoveVPKResource(rel string) bool {
+	return vpkpolicy.ShouldRemove(rel)
 }

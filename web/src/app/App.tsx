@@ -29,7 +29,6 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { sha256 } from "@noble/hashes/sha2.js";
 import { api, normalizeInstance, type Job } from "../api/client";
 import { JobsPage } from "./JobsPage";
 import { JobLogsPage } from "./JobLogsPage";
@@ -42,6 +41,9 @@ import {
 } from "./InstanceConfigModal";
 import { PrivateFilesPage } from "./PrivateFilesPage";
 import { SchedulesPage } from "./SchedulesPage";
+import { VPKUploadDialog } from "./VPKUploadDialog";
+import { VPKUploadQueue } from "./VPKUploadQueue";
+import { cancelVPKUpload, enqueueVPKUploads, retryVPKUpload, startVPKUploadQueue, type VPKUploadTask } from "../vpk/uploadQueue";
 import { useConsoleFollow } from "./useConsoleFollow";
 import { appendConsoleOutput } from "./consoleBuffer";
 import {
@@ -1282,7 +1284,6 @@ function Terminal({
   );
 }
 
-const VPK_CHUNK_SIZE = 8 * 1024 * 1024;
 const DEFAULT_PLUGIN_REPOSITORY =
   "PencilMario/L4D2-Not0721Here-CoopSvPlugins";
 const DEFAULT_PLUGIN_ASSET_PATTERN =
@@ -1306,7 +1307,8 @@ function ContentPage({
   const [vpks, setVpks] = useState<any[]>([]);
   const [selected, setSelected] = useState(instances[0]?.id || "");
   const [contentError, setContentError] = useState("");
-  const [vpkUploadStatus, setVPKUploadStatus] = useState("");
+  const [pendingVPKFiles, setPendingVPKFiles] = useState<File[]>([]);
+  const [vpkUploadTasks, setVPKUploadTasks] = useState<VPKUploadTask[]>([]);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [sources, setSources] = useState<GitHubSource[]>([]);
   const [sourceEditor, setSourceEditor] = useState<GitHubSource | null>(null);
@@ -1319,52 +1321,7 @@ function ContentPage({
       setContentError(errorMessage(reason)),
     );
   }, []);
-  const uploadVPK = async (file: File) => {
-    const hash = sha256.create();
-    const uploadStarted = performance.now();
-    for (let offset = 0; offset < file.size; offset += VPK_CHUNK_SIZE) {
-      const end = Math.min(offset + VPK_CHUNK_SIZE, file.size);
-      const chunk = file.slice(offset, end);
-      hash.update(new Uint8Array(await chunk.arrayBuffer()));
-      setVPKUploadStatus(
-        `正在计算 VPK 校验 · ${Math.round((end / file.size) * 100)}%`,
-      );
-    }
-    const digest = hash.digest();
-    const sha = [...digest]
-      .map((x) => x.toString(16).padStart(2, "0"))
-      .join("");
-    const session = await api<any>("/api/content/vpk/uploads", {
-      method: "POST",
-      body: JSON.stringify({ name: file.name, size: file.size, sha256: sha }),
-    });
-    for (let offset = 0; offset < file.size; offset += VPK_CHUNK_SIZE) {
-      const end = Math.min(offset + VPK_CHUNK_SIZE, file.size);
-      const chunk = file.slice(offset, end);
-      await api(
-        `/api/content/vpk/uploads/${session.id ?? session.ID}?offset=${offset}`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/octet-stream" },
-          body: chunk,
-        },
-      );
-      const elapsed = Math.max((performance.now() - uploadStarted) / 1000, 0.001);
-      const speed = end / elapsed;
-      const speedText = speed >= 1024 * 1024
-        ? `${(speed / (1024 * 1024)).toFixed(1)} MiB/s`
-        : `${(speed / 1024).toFixed(1)} KiB/s`;
-      setVPKUploadStatus(
-        `正在上传 VPK · ${Math.round((end / file.size) * 100)}% · ${formatBytes(end)} / ${formatBytes(file.size)} · ${speedText}`,
-      );
-    }
-    await api(`/api/content/vpk/uploads/${session.id ?? session.ID}/complete`, {
-      method: "POST",
-      body: "{}",
-    });
-    await loadVPK();
-    setVPKUploadStatus("VPK 上传完成 · 100%");
-  };
+  useEffect(() => { let cleanup: (() => void) | undefined; void startVPKUploadQueue(setVPKUploadTasks, () => { void loadVPK(); }).then((stop) => { cleanup = stop; }); return () => cleanup?.(); }, []);
   const uploadPackage = async (file: File) => {
     await api(
       `/api/packages/uploads?filename=${encodeURIComponent(file.name)}&version=${encodeURIComponent(file.name)}`,
@@ -1422,11 +1379,7 @@ function ContentPage({
           {contentError}
         </div>
       )}
-      {vpkUploadStatus && (
-        <div className="operation-status" role="status">
-          {vpkUploadStatus}
-        </div>
-      )}
+      <VPKUploadQueue tasks={vpkUploadTasks} onRetry={(task) => void retryVPKUpload(task)} onCancel={(task) => void cancelVPKUpload(task)} />
       <label className="content-instance-selector">
         更新目标实例
         <select value={selected} onChange={(event) => setSelected(event.target.value)}>
@@ -1475,9 +1428,8 @@ function ContentPage({
           <FileButton
             label="上传 VPK"
             accept=".vpk"
-            disabled={contentActions.pending.has("upload:vpk")}
-            busy={contentActions.pending.has("upload:vpk")}
-            onFile={(file) => runContentAction("upload:vpk", () => uploadVPK(file))}
+            multiple
+            onFiles={(files) => setPendingVPKFiles(files)}
           />
         }
       >
@@ -1516,6 +1468,7 @@ function ContentPage({
         ))}
         {vpks.length === 0 ? <div className="empty">暂无共享 VPK</div> : null}
       </Panel>
+      {pendingVPKFiles.length ? <VPKUploadDialog files={pendingVPKFiles} onCancel={() => setPendingVPKFiles([])} onConfirm={(items) => { setPendingVPKFiles([]); void enqueueVPKUploads(items).catch((reason) => setContentError(errorMessage(reason))); }} /> : null}
       <Panel
         title="插件包"
         action={
@@ -2070,12 +2023,16 @@ function FileButton({
   label,
   accept,
   onFile,
+  onFiles,
+  multiple = false,
   disabled = false,
   busy = false,
 }: {
   label: string;
   accept: string;
-  onFile: (f: File) => void;
+  onFile?: (f: File) => void;
+  onFiles?: (files: File[]) => void;
+  multiple?: boolean;
   disabled?: boolean;
   busy?: boolean;
 }) {
@@ -2086,8 +2043,9 @@ function FileButton({
       <input
         type="file"
         accept={accept}
+        multiple={multiple}
         disabled={disabled}
-        onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])}
+        onChange={(e) => { const files = Array.from(e.target.files || []); if (files.length) { onFiles?.(files); onFile?.(files[0]); } e.target.value = ""; }}
       />
     </label>
   );

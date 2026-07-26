@@ -145,6 +145,20 @@ func (m *UploadManager) Complete(id string) (SharedVPK, bool, error) {
 	_ = os.Remove(m.meta(id))
 	return item, false, nil
 }
+func (m *UploadManager) Recover(id string) (UploadSession, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.loadRecovered(id)
+}
+func (m *UploadManager) Cancel(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, err := m.loadRecovered(id); err != nil {
+		return err
+	}
+	m.cleanup(id)
+	return nil
+}
 func (m *UploadManager) meta(id string) string { return filepath.Join(m.temp, id+".json") }
 func (m *UploadManager) part(id string) string { return filepath.Join(m.temp, id+".part") }
 func (m *UploadManager) save(session UploadSession) error {

@@ -1790,7 +1790,7 @@ describe("App", () => {
     expect(jobReads).toBe(1);
   });
 
-  it("hashes and uploads VPK files in sequential 8 MiB chunks", async () => {
+  it("confirms the selected VPK list and uploads in sequential 8 MiB chunks", async () => {
     const chunkSize = 8 * 1024 * 1024;
     const patchCalls: Array<{ offset: number; size: number }> = [];
     vi.stubGlobal(
@@ -1805,7 +1805,7 @@ describe("App", () => {
         }
         if (init?.method === "PATCH") {
           patchCalls.push({
-            offset: Number(new URL(path, "http://panel.test").searchParams.get("offset")),
+            offset: Number((init.headers as Record<string, string>)["Upload-Offset"]),
             size: (init.body as Blob).size,
           });
           return new Response("{}", {
@@ -1821,32 +1821,23 @@ describe("App", () => {
     );
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
-    const wholeRead = vi.fn(() => Promise.reject(new Error("whole-file read")));
-    const fakeFile = {
-      name: "maps.vpk",
-      size: chunkSize + 3,
-      arrayBuffer: wholeRead,
-      slice: vi.fn((start: number, end: number) => {
-        const size = end - start;
-        return {
-          size,
-          arrayBuffer: async () => new Uint8Array(size).buffer,
-        } as Blob;
-      }),
-    } as unknown as File;
+    const fakeFile = new File([new Uint8Array(chunkSize + 3)], "maps.vpk");
     fireEvent.change(screen.getByLabelText("上传 VPK"), {
       target: { files: [fakeFile] },
     });
+    const dialog = await screen.findByRole("dialog", { name: "已选择 1 个 VPK" });
+    expect(within(dialog).getByText("maps.vpk")).toBeVisible();
+    await userEvent.selectOptions(within(dialog).getByLabelText("maps.vpk 处理方式"), "direct");
+    await userEvent.click(within(dialog).getByRole("button", { name: "加入上传队列" }));
     await waitFor(() => expect(patchCalls).toHaveLength(2));
     expect(patchCalls).toEqual([
       { offset: 0, size: chunkSize },
       { offset: chunkSize, size: 3 },
     ]);
-    expect(wholeRead).not.toHaveBeenCalled();
-    expect(screen.getByRole("status")).toHaveTextContent("VPK 上传完成");
+    expect(await screen.findByText("直接上传 · 完成")).toBeVisible();
   });
 
-  it("shows upload byte totals and speed", async () => {
+  it("defaults every selected VPK to upload-time cleanup", async () => {
     const calls: string[] = [];
     let finishComplete!: () => void;
     const complete = new Promise<void>((resolve) => { finishComplete = resolve; });
@@ -1859,12 +1850,13 @@ describe("App", () => {
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
     const file = new File([new Uint8Array(2048)], "small.vpk");
-    fireEvent.change(screen.getByLabelText("上传 VPK"), { target: { files: [file] } });
-    await waitFor(() => expect(calls.some((x) => x.includes("/complete"))).toBe(true));
-    const status = screen.getByRole("status").textContent || "";
-    expect(status).toMatch(/0\.0 MB \/ 0\.0 MB/);
-    expect(status).toMatch(/(KiB|MiB)\/s/);
-    expect(calls.some((x) => x.includes("offset=0"))).toBe(true);
+    const second = new File([new Uint8Array(16)], "second.vpk");
+    fireEvent.change(screen.getByLabelText("上传 VPK"), { target: { files: [file, second] } });
+    const dialog = await screen.findByRole("dialog", { name: "已选择 2 个 VPK" });
+    expect(within(dialog).getByText("small.vpk")).toBeVisible();
+    expect(within(dialog).getByText("second.vpk")).toBeVisible();
+    expect(within(dialog).getByLabelText("small.vpk 处理方式")).toHaveValue("clean");
+    expect(within(dialog).getByLabelText("second.vpk 处理方式")).toHaveValue("clean");
     finishComplete();
   });
 });

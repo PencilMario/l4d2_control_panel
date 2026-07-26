@@ -229,7 +229,9 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Get("/api/content/vpk", s.listVPK)
 		r.Get("/api/content/vpk/{name}/download", s.downloadVPK)
 		r.Post("/api/content/vpk/uploads", s.beginVPK)
+		r.Get("/api/content/vpk/uploads/{id}", s.recoverVPKUpload)
 		r.Patch("/api/content/vpk/uploads/{id}", s.writeVPK)
+		r.Delete("/api/content/vpk/uploads/{id}", s.cancelVPKUpload)
 		r.Post("/api/content/vpk/uploads/{id}/complete", s.completeVPK)
 		r.Post("/api/content/vpk/{name}/rename", s.renameVPK)
 		r.Post("/api/content/vpk/{name}/clean", s.cleanVPK)
@@ -1417,7 +1419,11 @@ func (s *Server) beginVPK(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 201, session)
 }
 func (s *Server) writeVPK(w http.ResponseWriter, r *http.Request) {
-	offset, err := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64)
+	rawOffset := r.Header.Get("Upload-Offset")
+	if rawOffset == "" {
+		rawOffset = r.URL.Query().Get("offset")
+	}
+	offset, err := strconv.ParseInt(rawOffset, 10, 64)
 	if err != nil {
 		writeError(w, 422, "invalid_offset", "numeric offset required")
 		return
@@ -1427,7 +1433,23 @@ func (s *Server) writeVPK(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 409, "upload_error", err.Error())
 		return
 	}
+	w.Header().Set("Upload-Offset", strconv.FormatInt(offset+written, 10))
 	writeJSON(w, 200, map[string]int64{"written": written, "next_offset": offset + written})
+}
+func (s *Server) recoverVPKUpload(w http.ResponseWriter, r *http.Request) {
+	session, err := s.uploads.Recover(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, 404, "upload_not_found", "upload session not found")
+		return
+	}
+	writeJSON(w, 200, session)
+}
+func (s *Server) cancelVPKUpload(w http.ResponseWriter, r *http.Request) {
+	if err := s.uploads.Cancel(chi.URLParam(r, "id")); err != nil {
+		writeError(w, 404, "upload_not_found", "upload session not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) completeVPK(w http.ResponseWriter, r *http.Request) {
 	item, duplicate, err := s.uploads.Complete(chi.URLParam(r, "id"))

@@ -115,6 +115,8 @@ panel.example.com {
 2. 上传至少一个 ZIP 插件包。
 3. 初始化或更新共享游戏本体。
 4. 创建游戏实例，选择插件包并设置端口、地图、模式、Tickrate 与玩家上限。
+
+共享 VPK 支持一次选择多个文件。确认弹窗会列出文件名、大小和处理方式，默认在浏览器本地通过 Go WebAssembly 清理无扩展名、`.vtf`、`.mp3`、`.wav`、`.vmf`、`.vmx` 资源后再上传，也可逐项改为直接上传。待上传文件和分片进度保存在浏览器 IndexedDB 中，刷新页面后会自动从服务端确认 offset 并继续。
 5. 启动实例，确认 A2S、玩家、性能、控制台和日志均正常。
 
 当前 L4D2 Steam 内容在空 Linux 目录直接安装时可能返回 `Missing configuration`。Panel 的首次安装流程会先使用 Windows 平台内容完成引导，再切回 Linux 完成 App 222860 安装；后续更新和完整性检查使用 Linux SteamCMD 与 `validate`。

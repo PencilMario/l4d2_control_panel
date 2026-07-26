@@ -1930,6 +1930,33 @@ func TestCompleteVPKReportsRegistrationWarningWithoutRollingBack(t *testing.T) {
 	}
 }
 
+func TestVPKUploadSessionCanBeRecoveredAndCancelled(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	uploads, _ := content.NewUploadManager(t.TempDir())
+	s = New(db, s.auth, WithContent(uploads, nil, nil, nil, nil))
+	cookie := loginCookie(t, s)
+	digest := sha256.Sum256([]byte("payload"))
+	session, _ := uploads.Begin("recover.vpk", 7, hex.EncodeToString(digest[:]))
+	_, _ = uploads.Write(session.ID, 0, bytes.NewReader([]byte("pay")))
+
+	recoverRequest := httptest.NewRequest(http.MethodGet, "/api/content/vpk/uploads/"+session.ID, nil)
+	recoverRequest.AddCookie(cookie)
+	recoverResponse := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recoverResponse, recoverRequest)
+	if recoverResponse.Code != http.StatusOK || !strings.Contains(recoverResponse.Body.String(), `"offset":3`) {
+		t.Fatalf("recover status=%d body=%s", recoverResponse.Code, recoverResponse.Body.String())
+	}
+
+	cancelRequest := httptest.NewRequest(http.MethodDelete, "/api/content/vpk/uploads/"+session.ID, nil)
+	cancelRequest.AddCookie(cookie)
+	cancelResponse := httptest.NewRecorder()
+	s.Handler().ServeHTTP(cancelResponse, cancelRequest)
+	if cancelResponse.Code != http.StatusNoContent {
+		t.Fatalf("cancel status=%d body=%s", cancelResponse.Code, cancelResponse.Body.String())
+	}
+}
+
 func TestCleanVPKRequiresConfirmation(t *testing.T) {
 	s, db := testServer(t)
 	defer db.Close()
