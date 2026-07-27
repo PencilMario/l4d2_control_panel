@@ -669,17 +669,45 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
   const selectedInstance = instances.find(
     (instance) => instance.id === selectedInstanceID,
   );
+  const pageTitle =
+    page === "overview"
+      ? "服务器作战室"
+      : page === "private"
+        ? "私有文件"
+        : page === "content"
+          ? "内容仓库"
+          : page === "jobs"
+            ? "后台任务"
+            : page === "joblogs"
+              ? "任务日志"
+              : page === "gamelogs"
+                ? "游戏日志分类预览"
+                : page === "schedules"
+                  ? "计划任务"
+                  : "系统设置";
   return (
-    <div className="shell">
-      <aside>
-        <div className="brand">
-          <span className="hazard">L4D</span>
-          <div>
-            <b>CONTROL</b>
-            <small>NODE / LOCAL-01</small>
-          </div>
+    <div className="app-shell">
+      <header className="topbar">
+        <div className="product-mark">
+          <span><ShieldCheck aria-hidden="true" /></span>
+          <b>L4D2 控制面板</b>
+          <small>v2.4.1-release</small>
         </div>
-        <nav aria-label="主导航">
+        <div className="topbar-actions">
+          <span className={`node-pill ${health.status}`}>
+            <i />控制节点：<b>{health.status === "online" ? "在线" : health.status === "error" ? "异常" : "检查中"}</b>
+          </span>
+          <button type="button" className="topbar-task" aria-label="打开后台任务" onClick={() => { setLogJob(null); setPage("jobs"); }}>
+            <ListTodo aria-hidden="true" />后台任务
+          </button>
+          <span className="operator-name"><i />管理员</span>
+          <ShieldCheck className="session-shield" aria-label="安全会话" />
+        </div>
+      </header>
+      <div className="app-body">
+      <aside className="sidebar">
+        <span className="nav-caption">管理入口</span>
+        <nav className="sidebar-nav" aria-label="主导航">
           <Nav
             active={page === "overview"}
             onClick={() => setPage("overview")}
@@ -714,7 +742,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
             onClick={() => { setLogJob(null); setPage("jobs"); }}
             icon={<ListTodo />}
           >
-            任务
+            后台任务
           </Nav>
           <Nav
             active={page === "schedules"}
@@ -732,51 +760,30 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
           </Nav>
         </nav>
         <div className="aside-foot">
-          <div className={`node ${health.status}`}>
-            <i></i>
-            <span>
-              {health.status === "online"
-                ? "控制节点在线"
-                : health.status === "error"
-                  ? "控制节点异常"
-                  : "控制节点检查中"}
-              <small>{health.message}</small>
+          <div className={`node-card ${health.status}`}>
+            <span className="node-state-text">
+              {health.status === "online" ? "控制节点在线" : health.status === "error" ? "控制节点异常" : "控制节点检查中"}
             </span>
+            <div>
+              <Server aria-hidden="true" />
+              <b>控制节点状态</b>
+              <em>{health.status === "online" ? "在线" : health.status === "error" ? "异常" : "检查中"}</em>
+            </div>
+            <dl>
+              <div><dt>连接状态</dt><dd>{health.message || "正常"}</dd></div>
+              <div><dt>活动后台任务</dt><dd>{job && !["succeeded", "failed", "interrupted"].includes(job.Status) ? "1 项" : "0 项"}</dd></div>
+            </dl>
           </div>
         </div>
       </aside>
-      <main>
-        <header>
-          <div>
-            <p className="eyebrow">OPERATIONS / {page.toUpperCase()}</p>
-            <h1>
-              {page === "overview"
-                ? "服务器作战室"
-                : page === "private"
-                  ? "实例私有文件"
-                : page === "content"
-                  ? "内容仓库"
-                  : page === "jobs"
-                    ? "持久任务流水"
-                    : page === "joblogs"
-                      ? "任务实时日志"
-                    : page === "gamelogs"
-                      ? "游戏日志"
-                    : page === "schedules"
-                      ? "自动维护计划"
-                      : "系统与凭据"}
-            </h1>
-            <p>管理游戏进程、内容部署与计划维护。</p>
+      <main className={`page-main page-${page}`}>
+        <div className="page-content">
+        {["overview", "content", "jobs", "settings"].includes(page) ? (
+          <div className={page === "overview" ? "page-heading overview-heading" : "page-heading"}>
+            <h1>{pageTitle}</h1>
+            {page !== "overview" ? <p>管理游戏进程、内容部署与计划维护</p> : null}
           </div>
-          <div className="operator">
-            <span className="pulse"></span>
-            <div>
-              <b>管理员</b>
-              <small>安全会话</small>
-            </div>
-            <ShieldCheck />
-          </div>
-        </header>
+        ) : null}
         {error && (
           <div className="error-banner">
             {error}
@@ -827,7 +834,9 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
         )}{" "}
         {page === "settings" && <SettingsPage />}{" "}
         {job && <JobStrip job={job} />}
+        </div>
       </main>
+      </div>
       {pending && (
         <Confirm
           instance={pending}
@@ -964,6 +973,9 @@ function Overview({
   const totalPlayers = instances.some((instance) => instance.players === null)
     ? "--"
     : String(instances.reduce((total, instance) => total + (instance.players ?? 0), 0));
+  const pendingItems = instances.filter(
+    (instance) => Boolean(instance.package_id) && instance.package_id !== instance.applied_package_id,
+  ).length;
   const saveConfig = async (
     values: InstanceConfigValues,
     instance?: Instance,
@@ -984,7 +996,7 @@ function Overview({
   };
   return (
     <>
-      <section className="metrics">
+      <section className="metrics overview-summary">
         <Metric
           icon={<Activity />}
           label="运行实例"
@@ -999,9 +1011,9 @@ function Overview({
         />
         <Metric
           icon={<Database />}
-          label="持久实例"
+          label="游戏实例"
           value={String(instances.length)}
-          note="SQLite WAL"
+          note="独立隔离进程"
         />
         <Metric
           icon={<RefreshCw />}
@@ -1009,19 +1021,22 @@ function Overview({
           value={sharedGameVersionLabel(sharedGame)}
           note="共享安装"
         />
+        <Metric
+          icon={<CircleStop />}
+          label="待处理事项"
+          value={String(pendingItems)}
+          note={pendingItems ? "插件包更新待应用" : "当前无需处理"}
+        />
       </section>
       <section className="work">
         <div className="section-head">
-          <div>
-            <p className="eyebrow">INSTANCE GRID</p>
-            <h2>游戏实例</h2>
-          </div>
+          <h2>所有游戏实例 ({instances.length})</h2>
           <button className="create" onClick={() => setCreating(true)}>
             <Plus />
             创建实例
           </button>
         </div>
-        <div className="grid">
+        <div className="grid instance-list">
           {instances.map((x) => {
             const selectedPackage = packagesByID.get(x.package_id);
             const packagePending =
@@ -1035,7 +1050,7 @@ function Overview({
             const starting = pendingActions.has(`${x.id}:start`);
             const stopping = pendingActions.has(`${x.id}:stop`);
             return (
-              <article className={`card ${state}`} key={x.id}>
+              <article className={`card instance-panel ${state}`} key={x.id}>
                 <div className="card-top">
                   <span className="status">
                     <i></i>
@@ -1313,6 +1328,7 @@ function ContentPage({
   const [sources, setSources] = useState<GitHubSource[]>([]);
   const [sourceEditor, setSourceEditor] = useState<GitHubSource | null>(null);
   const [gamePolicy, setGamePolicy] = useState("wait");
+  const [contentTab, setContentTab] = useState<"game" | "vpk" | "packages" | "github">("game");
   const contentActions = useAsyncLocks();
   const loadVPK = () => api<any[]>("/api/content/vpk").then(setVpks);
   const loadSources = () => api<GitHubSource[]>("/api/github-sources").then((items) => setSources(Array.isArray(items) ? items : []));
@@ -1379,15 +1395,26 @@ function ContentPage({
           {contentError}
         </div>
       )}
-      <VPKUploadQueue tasks={vpkUploadTasks} onRetry={(task) => void retryVPKUpload(task)} onCancel={(task) => void cancelVPKUpload(task)} />
-      <label className="content-instance-selector">
-        更新目标实例
-        <select value={selected} onChange={(event) => setSelected(event.target.value)}>
-          {instances.map((instance) => (
-            <option key={instance.id} value={instance.id}>{instance.name}</option>
-          ))}
-        </select>
-      </label>
+      <div className="content-tabs" role="tablist" aria-label="内容仓库分类">
+        {[
+          ["game", "共享游戏本体"],
+          ["vpk", "共享 VPK"],
+          ["packages", "插件包"],
+          ["github", "GitHub 发布源"],
+        ].map(([value, label]) => (
+          <button
+            aria-selected={contentTab === value}
+            className={contentTab === value ? "active" : ""}
+            key={value}
+            role="tab"
+            type="button"
+            onClick={() => setContentTab(value as typeof contentTab)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className="content-tab-panel" role="tabpanel" hidden={contentTab !== "game"}>
       <Panel
         title="共享游戏本体"
         action={
@@ -1422,6 +1449,9 @@ function ContentPage({
         </label>
         <p>该操作不绑定实例；任一活动服务器有玩家或查询失败时，等待/跳过策略会阻止整个更新。</p>
       </Panel>
+      </div>
+      <div className="content-tab-panel" role="tabpanel" hidden={contentTab !== "vpk"}>
+      <VPKUploadQueue tasks={vpkUploadTasks} onRetry={(task) => void retryVPKUpload(task)} onCancel={(task) => void cancelVPKUpload(task)} />
       <Panel
         title="共享 VPK"
         action={
@@ -1469,16 +1499,29 @@ function ContentPage({
         {vpks.length === 0 ? <div className="empty">暂无共享 VPK</div> : null}
       </Panel>
       {pendingVPKFiles.length ? <VPKUploadDialog files={pendingVPKFiles} onCancel={() => setPendingVPKFiles([])} onConfirm={(items) => { setPendingVPKFiles([]); void enqueueVPKUploads(items).catch((reason) => setContentError(errorMessage(reason))); }} /> : null}
+      </div>
+      <div className="content-tab-panel" role="tabpanel" hidden={contentTab !== "packages" && contentTab !== "github"}>
+      {contentTab === "packages" ? (
+        <label className="content-instance-selector">
+          更新目标实例
+          <select value={selected} onChange={(event) => setSelected(event.target.value)}>
+            {instances.map((instance) => (
+              <option key={instance.id} value={instance.id}>{instance.name}</option>
+            ))}
+          </select>
+        </label>
+      ) : null}
       <Panel
-        title="插件包"
+        title={contentTab === "github" ? "GitHub 发布源" : "插件包"}
         action={
-          <div className="inline-actions">
+          contentTab === "github" ? (
             <button onClick={() => setSourceEditor({ id: "", name: "", repository: "", asset_pattern: "" })}>添加 GitHub 源</button>
+          ) : (
             <FileButton label="上传 ZIP" accept=".zip" disabled={contentActions.pending.has("upload:package")} busy={contentActions.pending.has("upload:package")} onFile={(file) => runContentAction("upload:package", () => uploadPackage(file))} />
-          </div>
+          )
         }
       >
-        {sourceEditor ? (
+        {contentTab === "github" && sourceEditor ? (
           <form className="release-source" onSubmit={(event) => {
             event.preventDefault();
             runContentAction(`source:save:${sourceEditor.id || "new"}`, async () => {
@@ -1496,7 +1539,7 @@ function ContentPage({
             <div className="inline-actions"><button className="create" disabled={contentActions.pending.has(`source:save:${sourceEditor.id || "new"}`)} aria-busy={contentActions.pending.has(`source:save:${sourceEditor.id || "new"}`)}>{contentActions.pending.has(`source:save:${sourceEditor.id || "new"}`) ? <><RefreshCw />保存中…</> : "保存源"}</button><button type="button" onClick={() => setSourceEditor(null)}>取消</button></div>
           </form>
         ) : null}
-        <div className="source-grid">
+        {contentTab === "github" ? <div className="source-grid">
           {sources.map((source) => (
             <article className="source-card" key={source.id}>
               <div><b>{source.name}</b><small>{source.repository}</small><code>{source.asset_pattern}</code></div>
@@ -1507,8 +1550,8 @@ function ContentPage({
               </div>
             </article>
           ))}
-        </div>
-        {packages.map((x) => (
+        </div> : null}
+        {contentTab === "packages" ? packages.map((x) => (
           <div className="data-row" key={x.id}>
             <div>
               <b>
@@ -1558,9 +1601,11 @@ function ContentPage({
               </button>
             </div>
           </div>
-        ))}
-        {!packages.length && <div className="empty">暂无插件包</div>}
+        )) : null}
+        {contentTab === "packages" && !packages.length ? <div className="empty">暂无插件包</div> : null}
+        {contentTab === "github" && !sources.length ? <div className="empty">暂无 GitHub 发布源</div> : null}
       </Panel>
+      </div>
       {confirmation && (
         <ConfirmationDialog
           title={confirmation.title}

@@ -5,11 +5,27 @@ import { describe, expect, it } from "vitest";
 
 const css = readFileSync(resolve(process.cwd(), "src/styles/app.css"), "utf8");
 
-describe("shared interaction motion", () => {
-  it("defines layered hover, busy and reduced-motion states", () => {
-    expect(css).toContain("--motion-fast:");
-    expect(css).toMatch(/\.card:hover/);
-    expect(css).toMatch(/\[aria-busy=["']true["']\]/);
+describe("approved control-panel shell", () => {
+  it("defines the reference palette and fixed desktop geometry", () => {
+    for (const token of ["--canvas:", "--surface:", "--surface-raised:", "--accent:", "--success:", "--warning:", "--danger:"]) {
+      expect(css).toContain(token);
+    }
+
+    const topbar = css.match(/\.topbar\s*\{([^}]*)\}/)?.[1] ?? "";
+    const sidebar = css.match(/\.sidebar\s*\{([^}]*)\}/)?.[1] ?? "";
+    const content = css.match(/\.page-content\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(topbar).toContain("height: 46px");
+    expect(sidebar).toContain("width: 200px");
+    expect(content).toMatch(/max-width:\s*1000px/);
+  });
+
+  it("uses low-radius controls, an explicit active navigation state and a large console overlay", () => {
+    const controls = css.match(/button,\s*input,\s*select,\s*textarea\s*\{([^}]*)\}/)?.[1] ?? "";
+    const terminal = css.match(/\.terminal-modal\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(controls).toMatch(/border-radius:\s*[0-7]px/);
+    expect(css).toMatch(/\.sidebar-nav\s+button\.active\s*\{/);
+    expect(terminal).toContain("position: fixed");
+    expect(terminal).toMatch(/width:\s*min\(1024px/);
     expect(css).toContain("@media (prefers-reduced-motion: reduce)");
   });
 });

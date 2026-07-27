@@ -243,7 +243,7 @@ export function GameLogsPage({
 
   return <section className="private-files-page game-logs-page" aria-labelledby="game-logs-title">
     <div className="private-page-head">
-      <div><p className="eyebrow">INSTANCE / GAME LOGS</p><h2 id="game-logs-title">游戏日志</h2></div>
+      <div><p className="eyebrow">INSTANCE / GAME LOGS</p><h1 id="game-logs-title">游戏日志分类预览</h1></div>
       <label>目标实例<select value={instanceID} disabled={!instances.length} onChange={(event) => setInstanceID(event.target.value)}>
         {!instances.length ? <option value="">暂无实例</option> : null}
         {instances.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}

@@ -29,6 +29,13 @@ const LEVEL_LABELS: Record<JobLogLevel, string> = {
   warn: "警告",
   error: "错误",
 };
+const JOB_STATUS_LABELS: Record<string, string> = {
+  pending: "排队中",
+  running: "执行中",
+  succeeded: "已成功",
+  failed: "失败",
+  interrupted: "已中断",
+};
 
 type Props = {
   job: Job;
@@ -129,10 +136,10 @@ export function JobLogsPage({ job, onBack }: Props) {
           <ArrowLeft aria-hidden="true" />
         </button>
         <div>
-          <p className="eyebrow">TASK OUTPUT / {job.ID.slice(0, 8)}</p>
-          <h2>{job.Type || "unknown"}</h2>
+          <h2>任务日志: {job.Type || "unknown"}</h2>
+          <span className="task-log-id">{job.ID.slice(0, 8)}</span>
         </div>
-        <span className={`job-state ${job.Status}`}>{job.Status}</span>
+        <span className={`job-state ${job.Status}`}>{JOB_STATUS_LABELS[job.Status] || job.Status}</span>
       </div>
 
       <div className="task-log-toolbar">

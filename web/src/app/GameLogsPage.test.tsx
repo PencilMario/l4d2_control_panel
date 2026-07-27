@@ -17,7 +17,7 @@ describe('GameLogsPage', () => {
 
     render(<GameLogsPage instances={instances} api={api} />);
 
-    expect(screen.getByRole('heading', { name: '游戏日志', level: 2 })).toBeVisible();
+    expect(screen.getByRole('heading', { name: '游戏日志分类预览', level: 1 })).toBeVisible();
     expect(screen.getByRole('combobox', { name: '目标实例' })).toHaveValue('i1');
     expect(screen.getByRole('toolbar', { name: '游戏日志工具栏' })).toHaveClass('private-toolbar');
     expect(screen.getByRole('complementary', { name: '游戏日志目录' })).toHaveClass('private-tree-pane');

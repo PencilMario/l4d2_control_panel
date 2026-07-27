@@ -55,6 +55,14 @@ describe("JobLogsPage", () => {
     );
   });
 
+  it("uses the reference title and localized task status", () => {
+    render(<JobLogsPage job={{ ...job, Status: "failed" }} onBack={vi.fn()} />);
+
+    expect(screen.getByRole("heading", { name: "任务日志: start" })).toBeVisible();
+    expect(screen.getByText("job-1")).toBeVisible();
+    expect(screen.getByText("失败", { exact: true })).toBeVisible();
+  });
+
   it("loads history, filters it, and appends live records", async () => {
     render(<JobLogsPage job={job} onBack={vi.fn()} />);
     expect(await screen.findByText("Downloading update")).toBeVisible();

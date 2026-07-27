@@ -1,5 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const e2ePort = process.env.L4D2_E2E_PORT ?? "18082";
+const e2eBaseURL = `http://127.0.0.1:${e2ePort}`;
 const existingNoProxy = process.env.NO_PROXY ?? process.env.no_proxy ?? "";
 const noProxy = ["127.0.0.1", "localhost", existingNoProxy]
   .filter(Boolean)
@@ -15,13 +17,17 @@ export default defineConfig({
   workers: 1,
   reporter: "list",
   use: {
-    baseURL: "http://127.0.0.1:18082",
+    baseURL: e2eBaseURL,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
   webServer: {
     command: "npm run e2e:server",
-    url: "http://127.0.0.1:18082/api/health",
+    env: {
+      ...process.env,
+      L4D2_E2E_LISTEN: `127.0.0.1:${e2ePort}`,
+    },
+    url: `${e2eBaseURL}/api/health`,
     timeout: 180_000,
     reuseExistingServer: false,
     stdout: "pipe",
@@ -30,7 +36,10 @@ export default defineConfig({
   projects: [
     {
       name: "desktop",
-      use: { ...devices["Desktop Chrome"] },
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 1463, height: 800 },
+      },
     },
     {
       name: "mobile",

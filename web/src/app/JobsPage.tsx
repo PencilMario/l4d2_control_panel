@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ChevronDown, Clock3, ExternalLink, RotateCw } from "lucide-react";
+import { ChevronDown, ExternalLink, RotateCw, Search } from "lucide-react";
 import { api, type Job, type JobEvent } from "../api/client";
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "interrupted"]);
@@ -27,6 +27,8 @@ export function JobsPage({ onOpenLogs }: { onOpenLogs?: (job: Job) => void }) {
   const [details, setDetails] = useState<Record<string, Job>>({});
   const [detailErrors, setDetailErrors] = useState<Record<string, string>>({});
   const [loadingID, setLoadingID] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [query, setQuery] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -98,23 +100,67 @@ export function JobsPage({ onOpenLogs }: { onOpenLogs?: (job: Job) => void }) {
       void loadDetails(item);
     }
   };
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredItems = items.filter((item) => {
+    if (statusFilter !== "all" && item.Status !== statusFilter) return false;
+    if (!normalizedQuery) return true;
+    return [
+      item.ID,
+      item.Type,
+      item.InstanceID,
+      item.Stage,
+      item.Message,
+      item.Error,
+    ]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(normalizedQuery));
+  });
 
   return (
     <section className="job-feed">
-      <div className="section-head">
-        <div>
-          <p className="eyebrow">DURABLE OPERATIONS</p>
-          <h2>最近任务</h2>
+      <div className="job-filters">
+        <div className="job-status-filters" role="group" aria-label="任务状态筛选">
+          <span>状态筛选</span>
+          {[
+            ["all", "全部"],
+            ["running", "执行中"],
+            ["pending", "排队中"],
+            ["succeeded", "已成功"],
+            ["failed", "已失败"],
+          ].map(([value, label]) => (
+            <button
+              className={statusFilter === value ? "active" : ""}
+              key={value}
+              type="button"
+              onClick={() => setStatusFilter(value)}
+            >
+              {label}
+            </button>
+          ))}
         </div>
-        <span className="feed-live">SSE / LIVE</span>
+        <label className="job-search">
+          <Search aria-hidden="true" />
+          <input
+            aria-label="搜索任务"
+            type="search"
+            placeholder="搜索任务类型或编号..."
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </label>
       </div>
       {jobsError ? (
         <div className="error" role="alert">
           {jobsError}
         </div>
       ) : null}
-      <div className="job-table" role="list">
-        {items.map((item) => {
+      <div className="job-table" role="table" aria-label="后台任务">
+        <div className="job-table-head" role="row">
+          {["任务编号", "任务类型", "目标对象", "阶段 / 进度", "状态", "创建时间", "操作"].map((column) => (
+            <span key={column} role="columnheader">{column}</span>
+          ))}
+        </div>
+        {filteredItems.map((item) => {
           const type = item.Type || "unknown";
           const expanded = expandedID === item.ID;
           const detail = details[item.ID];
@@ -123,7 +169,7 @@ export function JobsPage({ onOpenLogs }: { onOpenLogs?: (job: Job) => void }) {
             <article
               className={`job-entry ${expanded ? "expanded" : ""}`}
               key={item.ID}
-              role="listitem"
+              role="rowgroup"
             >
               <button
                 className="job-row job-row-toggle"
@@ -134,33 +180,24 @@ export function JobsPage({ onOpenLogs }: { onOpenLogs?: (job: Job) => void }) {
                 onClick={() => toggle(item)}
               >
                 <span className="job-code">
-                  <span>{type}</span>
-                  <small>{item.ID.slice(0, 8)}</small>
+                  <span>{item.ID.slice(0, 8)}</span>
                 </span>
+                <span className="job-type">{type}</span>
+                <span className="job-target">{item.InstanceID ? item.InstanceID.slice(0, 8) : "全局共享"}</span>
                 <span className="job-stage">
                   <b>{item.Stage || "queued"}</b>
                   <small>{item.Error || item.Message || "等待后台执行"}</small>
-                </span>
-                <span className="job-time">
-                  <small>
-                    <Clock3 aria-hidden="true" />
-                    {formatTimestamp(item.CreatedAt)}
-                  </small>
-                  <b>{durationSummary(item)}</b>
-                </span>
-                <span
-                  className="job-progress"
-                  aria-label={`进度 ${item.Percent || 0}%`}
-                >
-                  <i
-                    style={{ width: `${Math.max(0, item.Percent || 0)}%` }}
-                  />
+                  <small>{durationSummary(item)}</small>
                 </span>
                 <span className={`job-state ${item.Status}`}>
                   {STATUS_LABELS[item.Status] || item.Status}
                   <small>{item.Status}</small>
                 </span>
-                <ChevronDown className="job-chevron" aria-hidden="true" />
+                <span className="job-time">{formatTimestamp(item.CreatedAt)}</span>
+                <span className="job-operation">
+                  任务日志
+                  <ChevronDown className="job-chevron" aria-hidden="true" />
+                </span>
               </button>
               {expanded ? (
                 <div
@@ -203,7 +240,7 @@ export function JobsPage({ onOpenLogs }: { onOpenLogs?: (job: Job) => void }) {
             </article>
           );
         })}
-        {items.length === 0 ? <div className="empty">尚无后台任务</div> : null}
+        {filteredItems.length === 0 ? <div className="empty">尚无匹配的后台任务</div> : null}
       </div>
     </section>
   );

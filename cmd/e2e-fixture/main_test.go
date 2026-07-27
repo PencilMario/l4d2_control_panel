@@ -119,6 +119,29 @@ func TestPrivateLowerDiagnosticRejectsInstanceTraversal(t *testing.T) {
 	}
 }
 
+func TestSPAHandlerServesTopLevelBuildAssetsAndFallsBackToIndex(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("<main>app</main>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "wasm_exec.js"), []byte("globalThis.Go = class {};"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	handler := spaHandler(root)
+
+	asset := httptest.NewRecorder()
+	handler.ServeHTTP(asset, httptest.NewRequest(http.MethodGet, "/wasm_exec.js", nil))
+	if asset.Code != http.StatusOK || asset.Body.String() != "globalThis.Go = class {};" {
+		t.Fatalf("asset status=%d body=%q", asset.Code, asset.Body.String())
+	}
+
+	route := httptest.NewRecorder()
+	handler.ServeHTTP(route, httptest.NewRequest(http.MethodGet, "/settings", nil))
+	if route.Code != http.StatusOK || route.Body.String() != "<main>app</main>" {
+		t.Fatalf("route status=%d body=%q", route.Code, route.Body.String())
+	}
+}
+
 func TestFixturePerformanceEndpointsExposeDeterministicHTTPContract(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {

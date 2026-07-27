@@ -140,6 +140,7 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   });
 
   await page.getByRole("button", { name: "内容仓库" }).click();
+  await page.getByRole("tab", { name: "插件包" }).click();
   for (const name of [packageAName, packageBName]) {
     await page.locator('input[accept=".zip"]').setInputFiles({
       name,
@@ -546,6 +547,11 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await expect(page.getByRole("heading", { name: "服务器作战室" })).toBeVisible();
   card = instanceCard(instanceName);
   await expect(card).toContainText("运行中");
+  if (!mobile) {
+    await page.screenshot({
+      path: testInfo.outputPath("visual-overview.png"),
+    });
+  }
 
   const seededGameLogs = await page.evaluate(async (id) => {
     const response = await fetch(
@@ -567,6 +573,11 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await expect(logViewer.locator(".log-token-error")).toContainText("ERROR");
   await expect(logViewer.locator(".log-token-timestamp")).toContainText("2026-07-18 12:00:01");
   await expect(logViewer.locator(".log-token-plugin", { hasText: "plugin:fixture.smx" })).toHaveText("plugin:fixture.smx");
+  if (!mobile) {
+    await page.screenshot({
+      path: testInfo.outputPath("visual-game-logs.png"),
+    });
+  }
   const logDownload = page.waitForEvent("download");
   await page.getByRole("button", { name: "Download" }).click();
   expect((await logDownload).suggestedFilename()).toBe("current-error.log");
@@ -617,7 +628,7 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await page.getByRole("button", { name: "保存游戏日志设置" }).click();
   await expect(page.getByRole("status")).toContainText("游戏日志设置已保存");
   await expect(gameLogRetention).toHaveValue("30");
-  await page.getByRole("button", { name: "任务", exact: true }).click();
+  await page.getByRole("button", { name: "后台任务", exact: true }).click();
   const cleanupJob = page.getByRole("button", {
     name: `查看 cleanup_game_logs 任务日志，任务 ID ${cleanupJobID}`,
   });
@@ -741,6 +752,11 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await expect(tree.getByRole("treeitem", { name: "binary.bin" })).toBeVisible();
   await tree.getByLabel("编辑 seeded.cfg").click();
   await expect(page.getByLabel("文件内容")).toHaveValue("private override\n");
+  if (!mobile) {
+    await page.screenshot({
+      path: testInfo.outputPath("visual-private-files.png"),
+    });
+  }
   const restorePrivateApply = await captureJob(page, "/private/apply", () =>
     page.getByRole("button", { name: "应用更改" }).click(),
   );
@@ -837,6 +853,11 @@ test("real HTTP administration journey survives refresh and streams recovery sta
     const position = await consolePosition(page);
     return Math.abs(position.top - position.bottom);
   }).toBeLessThanOrEqual(2);
+  if (!mobile) {
+    await page.screenshot({
+      path: testInfo.outputPath("visual-console.png"),
+    });
+  }
   expect.soft((await consolePosition(page)).scrollWidth).toBeLessThanOrEqual((await consolePosition(page)).clientWidth);
 
   await consoleOutput.evaluate((output) => {
@@ -906,15 +927,24 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await page.getByRole("button", { name: "关闭玩家列表" }).click();
 
   await page.getByRole("button", { name: "内容仓库" }).click();
+  if (!mobile) {
+    await page.screenshot({
+      path: testInfo.outputPath("visual-content-repository.png"),
+    });
+  }
+  await page.getByRole("tab", { name: "共享 VPK" }).click();
   const vpk = Buffer.alloc(9 * 1024 * 1024, mobile ? 0x4d : 0x44);
   await page.locator('input[accept=".vpk"]').setInputFiles({
     name: `fixture-${suffix.toLowerCase()}.vpk`,
     mimeType: "application/octet-stream",
     buffer: vpk,
   });
-  await expect(page.getByRole("status")).toContainText("VPK 上传完成");
+  await page.getByRole("button", { name: "全部直接上传" }).click();
+  await page.getByRole("button", { name: "加入上传队列" }).click();
+  await expect(page.getByRole("region", { name: "VPK 上传队列" })).toContainText("直接上传 · 完成");
   expect(vpkChunks).toBe(2);
 
+  await page.getByRole("tab", { name: "插件包" }).click();
   const packageRow = page
     .locator(".data-row")
     .filter({ hasText: packageBName });
@@ -952,7 +982,7 @@ test("real HTTP administration journey survives refresh and streams recovery sta
     };
   });
   expect(helpLayout.left).toBeGreaterThanOrEqual(0);
-  expect(helpLayout.right).toBeLessThanOrEqual(mobile ? 390 : 1280);
+  expect(helpLayout.right).toBeLessThanOrEqual(page.viewportSize()!.width);
   expect(helpLayout.scrollWidth).toBeLessThanOrEqual(helpLayout.clientWidth + 1);
   expect(helpLayout.controlsFit).toBe(true);
   await helpDialog.getByRole("button", { name: "关闭任务说明" }).click();
@@ -987,9 +1017,8 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await deleteDialog.getByRole("button", { name: "确认删除计划" }).click();
   await expect(page.getByText("暂无计划任务")).toBeVisible();
 
-  await page.getByRole("button", { name: "任务", exact: true }).click();
-  await expect(page.getByText("SSE / LIVE")).toBeVisible();
-  await expect(page.getByText("interrupted", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "后台任务", exact: true }).click();
+  await expect(page.getByRole("group", { name: "任务状态筛选" })).toBeVisible();
   await expect(
     page.locator(".job-row").filter({ hasText: "fixture_success" }),
   ).toContainText("succeeded");
@@ -1009,6 +1038,11 @@ test("real HTTP administration journey survives refresh and streams recovery sta
     page.locator(".job-row").filter({ hasText: reconfigureJob.ID.slice(0, 8) }),
   ).toContainText("succeeded");
   await expect(page.locator(".job-row").first()).toBeVisible();
+  if (!mobile) {
+    await page.screenshot({
+      path: testInfo.outputPath("visual-jobs.png"),
+    });
+  }
 
   const failedJob = page.getByRole("button", {
     name: "查看 fixture_failure 任务日志，任务 ID fixture-failure",
@@ -1057,6 +1091,12 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   });
   expect(liveLogLayout.outputHeight).toBe(360);
   expect(liveLogLayout.wrapBottomGap).toBeLessThanOrEqual(1);
+  if (!mobile) {
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({
+      path: testInfo.outputPath("visual-task-logs.png"),
+    });
+  }
   await page.screenshot({
     path: testInfo.outputPath("task-live-logs.png"),
     fullPage: true,
@@ -1070,19 +1110,23 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await expect.soft(latestJob).not.toContainText("后台任务持久化执行中");
 
   if (mobile) {
+    await page.evaluate(() => window.scrollTo(0, 0));
     const layout = await page.evaluate(() => {
       const main = document.querySelector("main")!.getBoundingClientRect();
       const navigation = document.querySelector("aside")!.getBoundingClientRect();
-      const mainElement = document.querySelector("main")!;
+      const topbar = document.querySelector(".topbar")!.getBoundingClientRect();
       return {
-        mainBottom: main.bottom,
+        topbarBottom: topbar.bottom,
         navigationTop: navigation.top,
-        mainClientHeight: mainElement.clientHeight,
-        mainScrollHeight: mainElement.scrollHeight,
+        navigationBottom: navigation.bottom,
+        mainTop: main.top,
+        documentHeight: document.documentElement.scrollHeight,
+        viewportHeight: window.innerHeight,
       };
     });
-    expect.soft(layout.mainBottom).toBeLessThanOrEqual(layout.navigationTop + 1);
-    expect.soft(layout.mainScrollHeight).toBeGreaterThan(layout.mainClientHeight);
+    expect.soft(layout.navigationTop).toBeGreaterThanOrEqual(layout.topbarBottom - 1);
+    expect.soft(layout.mainTop).toBeGreaterThanOrEqual(layout.navigationBottom - 1);
+    expect.soft(layout.documentHeight).toBeGreaterThan(layout.viewportHeight);
     const navigationFits = await page.locator("nav button").evaluateAll((buttons) =>
       buttons.every(
         (button) =>

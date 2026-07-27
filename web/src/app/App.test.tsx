@@ -82,6 +82,19 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe("App", () => {
+  it("renders the approved operations shell and overview landmarks", () => {
+    render(<App initialInstances={[instance]} />);
+
+    expect(document.querySelector(".topbar")).toBeInTheDocument();
+    expect(document.querySelector(".sidebar")).toBeInTheDocument();
+    expect(document.querySelector(".page-content")).toBeInTheDocument();
+    expect(document.querySelector(".overview-summary")).toBeInTheDocument();
+    expect(document.querySelector(".instance-panel")).toBeInTheDocument();
+    expect(screen.getByText("L4D2 控制面板")).toBeVisible();
+    expect(screen.getByText("控制节点状态")).toBeVisible();
+    expect(screen.getByText("管理员")).toBeVisible();
+  });
+
   it("uses the game version without exposing the internal release ID", () => {
     expect(sharedGameVersionLabel({ version: "2.2.4.3", active_release_id: "release-uuid" })).toBe("2.2.4.3");
     expect(sharedGameVersionLabel({ active_release_id: "release-uuid" })).toBe("版本未知");
@@ -100,6 +113,13 @@ describe("App", () => {
     expect(await screen.findByText("保存位置")).toBeVisible();
     expect(await screen.findByText("2.2.4.3")).toBeVisible();
     expect(screen.getByText("/data/game/current")).toBeVisible();
+    expect(screen.getByRole("tablist", { name: "内容仓库分类" })).toBeVisible();
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "共享游戏本体",
+      "共享 VPK",
+      "插件包",
+      "GitHub 发布源",
+    ]);
     expect(screen.getByRole("button", { name: "更新共享游戏本体" })).toHaveClass("shared-game-update");
   });
 
@@ -921,6 +941,7 @@ describe("App", () => {
     );
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
+    await userEvent.click(screen.getByRole("tab", { name: "GitHub 发布源" }));
     await userEvent.click(await screen.findByRole("button", { name: "添加 GitHub 源" }));
     await userEvent.type(screen.getByLabelText("源名称"), "社区源");
     await userEvent.type(screen.getByLabelText("GitHub 仓库"), "owner/repo");
@@ -1011,6 +1032,7 @@ describe("App", () => {
     );
     render(<App initialInstances={[]} />);
     await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
+    await userEvent.click(screen.getByRole("tab", { name: "插件包" }));
     expect(
       await screen.findByRole("button", { name: "热更新" }),
     ).toBeDisabled();
@@ -1079,7 +1101,7 @@ describe("App", () => {
       fetchMock,
     );
     render(<App initialInstances={[instance]} />);
-    await userEvent.click(screen.getByRole("button", { name: "任务" }));
+    await userEvent.click(screen.getByRole("button", { name: "后台任务" }));
     expect(await screen.findByText("game_update")).toBeInTheDocument();
     expect(screen.getByText("download interrupted")).toBeInTheDocument();
     await userEvent.click(
@@ -1122,6 +1144,7 @@ describe("App", () => {
     );
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
+    await userEvent.click(screen.getByRole("tab", { name: "共享 VPK" }));
     const download = await screen.findByRole("link", { name: "下载 maps.vpk" });
     expect(download).toHaveAttribute(
       "href",
@@ -1348,7 +1371,7 @@ describe("App", () => {
 
     render(<App initialInstances={[instance, second]} />);
     await userEvent.click(screen.getByRole("button", { name: "游戏日志" }));
-    expect(screen.getByRole("heading", { name: "游戏日志", level: 1 })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "游戏日志分类预览", level: 1 })).toBeVisible();
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         "/api/instances/1/game-logs/tree",
@@ -1357,7 +1380,7 @@ describe("App", () => {
     );
 
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "目标实例" }), "2");
-    expect(screen.getByRole("heading", { name: "游戏日志", level: 1 })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "游戏日志分类预览", level: 1 })).toBeVisible();
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         "/api/instances/2/game-logs/tree",
@@ -1583,6 +1606,7 @@ describe("App", () => {
     );
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
+    await userEvent.click(screen.getByRole("tab", { name: "插件包" }));
     await userEvent.click(
       await screen.findByRole("button", { name: "完整更新" }),
     );
@@ -1631,6 +1655,7 @@ describe("App", () => {
     );
     render(<App initialInstances={[instance]} initialPackages={[packageVersion]} />);
     await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
+    await userEvent.click(screen.getByRole("tab", { name: "插件包" }));
     await userEvent.click(await screen.findByRole("button", { name: "完整更新" }));
     const confirm = screen.getByRole("button", { name: "确认完整更新" });
 
@@ -1657,6 +1682,7 @@ describe("App", () => {
     }));
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
+    await userEvent.click(screen.getByRole("tab", { name: "GitHub 发布源" }));
     await userEvent.click(await screen.findByRole("button", { name: "检查更新 默认源" }));
     expect(calls).toContainEqual([
       "/api/github-sources/default/check",
@@ -1821,6 +1847,7 @@ describe("App", () => {
     );
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
+    await userEvent.click(screen.getByRole("tab", { name: "共享 VPK" }));
     const fakeFile = new File([new Uint8Array(chunkSize + 3)], "maps.vpk");
     fireEvent.change(screen.getByLabelText("上传 VPK"), {
       target: { files: [fakeFile] },
@@ -1849,6 +1876,7 @@ describe("App", () => {
     }));
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
+    await userEvent.click(screen.getByRole("tab", { name: "共享 VPK" }));
     const file = new File([new Uint8Array(2048)], "small.vpk");
     const second = new File([new Uint8Array(16)], "second.vpk");
     fireEvent.change(screen.getByLabelText("上传 VPK"), { target: { files: [file, second] } });

@@ -301,7 +301,7 @@ export function InstanceConfigModal({
           <section className="command-section">
             <div>
               <TerminalSquare />
-              <b>SRCDS / ARGV PREVIEW</b>
+              <b>启动指令预览</b>
             </div>
             <pre aria-label="启动指令预览">{buildLaunchPreview(values)}</pre>
           </section>

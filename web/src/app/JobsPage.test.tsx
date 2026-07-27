@@ -31,6 +31,18 @@ describe("JobsPage", () => {
     vi.unstubAllGlobals();
   });
 
+  it("renders the reference task filters and table columns", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json([])));
+
+    render(<JobsPage />);
+
+    expect(await screen.findByRole("group", { name: "任务状态筛选" })).toBeVisible();
+    expect(screen.getByRole("searchbox", { name: "搜索任务" })).toBeVisible();
+    for (const column of ["任务编号", "任务类型", "目标对象", "阶段 / 进度", "状态", "创建时间", "操作"]) {
+      expect(screen.getByRole("columnheader", { name: column })).toBeVisible();
+    }
+  });
+
   it("refreshes an expanded running job when its summary timestamp changes", async () => {
     let detailCalls = 0;
     const summary = {

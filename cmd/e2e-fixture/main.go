@@ -544,11 +544,17 @@ func webRoot() string {
 }
 
 func spaHandler(root string) http.Handler {
-	assets := http.FileServer(http.Dir(root))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/assets/") {
-			assets.ServeHTTP(w, r)
-			return
+		requested := filepath.Clean(strings.TrimPrefix(r.URL.Path, "/"))
+		if requested != "." {
+			candidate := filepath.Join(root, requested)
+			relative, err := filepath.Rel(root, candidate)
+			if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
+					http.ServeFile(w, r, candidate)
+					return
+				}
+			}
 		}
 		index := filepath.Join(root, "index.html")
 		if _, err := os.Stat(index); err != nil {
