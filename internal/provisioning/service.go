@@ -22,6 +22,7 @@ type Deployer interface {
 
 type InstanceRepository interface {
 	Instance(context.Context, string) (domain.Instance, error)
+	Instances(context.Context) ([]domain.Instance, error)
 	UpdateInstance(context.Context, domain.Instance) error
 }
 
@@ -40,6 +41,29 @@ type Service struct {
 	Instances   InstanceRepository
 	SharedState SharedStateSource
 	Overlay     SharedOverlay
+}
+
+func (s Service) RecoverOverlays(ctx context.Context) error {
+	if s.SharedState == nil || s.Overlay == nil || s.Instances == nil {
+		return errors.New("shared game services are unavailable")
+	}
+	state, err := s.SharedState.SharedGameState(ctx)
+	if err != nil {
+		return fmt.Errorf("shared game state is unavailable: %w", err)
+	}
+	if state.MigrationState != "ready" || state.ActiveReleaseID == "" {
+		return errors.New("shared game is not ready")
+	}
+	instances, err := s.Instances.Instances(ctx)
+	if err != nil {
+		return fmt.Errorf("list instances for overlay recovery: %w", err)
+	}
+	for _, instance := range instances {
+		if err := s.Overlay.Ensure(ctx, instance.ID, state.ActiveReleaseID); err != nil {
+			return fmt.Errorf("recover instance overlay %s: %w", instance.ID, err)
+		}
+	}
+	return nil
 }
 
 func (s Service) Prepare(ctx context.Context, instance domain.Instance) error {

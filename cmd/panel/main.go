@@ -166,7 +166,9 @@ func main() {
 	sharedGate := maintenance.NewGate()
 	gameLogManager := gamelogs.NewManager(cfg.DataRoot, gamelogs.Options{})
 	life := lifecycle.New(db, engine, portChecker, cfg.DataRoot, lifecycle.WithHealth(healthChecker), lifecycle.WithSpace(disk.Checker{}, startMinimumFreeBytes), lifecycle.WithProvisioner(instanceProvisioner), lifecycle.WithMaintenanceGate(sharedGate), lifecycle.WithLogPreparer(gameLogManager))
-	if unknown, reconcileErr := life.Reconcile(context.Background()); reconcileErr != nil {
+	if recoverErr := instanceProvisioner.RecoverOverlays(context.Background()); recoverErr != nil {
+		log.Printf("container reconciliation deferred: recover overlays: %v", recoverErr)
+	} else if unknown, reconcileErr := life.Reconcile(context.Background()); reconcileErr != nil {
 		log.Printf("container reconciliation deferred: %v", reconcileErr)
 	} else if len(unknown) > 0 {
 		log.Printf("found %d unclaimed managed containers", len(unknown))

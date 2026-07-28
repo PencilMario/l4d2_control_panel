@@ -12,7 +12,8 @@ import (
 )
 
 type fakeRepo struct {
-	instance domain.Instance
+	instance  domain.Instance
+	instances []domain.Instance
 }
 
 func (r *fakeRepo) Instance(context.Context, string) (domain.Instance, error) {
@@ -22,6 +23,13 @@ func (r *fakeRepo) Instance(context.Context, string) (domain.Instance, error) {
 func (r *fakeRepo) UpdateInstance(_ context.Context, value domain.Instance) error {
 	r.instance = value
 	return nil
+}
+
+func (r *fakeRepo) Instances(context.Context) ([]domain.Instance, error) {
+	if r.instances != nil {
+		return r.instances, nil
+	}
+	return []domain.Instance{r.instance}, nil
 }
 
 type fakePackages struct {
@@ -44,11 +52,56 @@ func (r sharedStateRepo) SharedGameState(context.Context) (domain.SharedGameStat
 	return r.state, nil
 }
 
-type fakeOverlay struct{ events *[]string }
+type fakeOverlay struct {
+	events *[]string
+	failID string
+}
 
 func (o fakeOverlay) Ensure(_ context.Context, id, release string) error {
 	*o.events = append(*o.events, "ensure:"+id+":"+release)
+	if id == o.failID {
+		return errors.New("mount failed")
+	}
 	return nil
+}
+
+func TestRecoverOverlaysEnsuresEveryInstanceUsesActiveRelease(t *testing.T) {
+	events := []string{}
+	repo := &fakeRepo{instances: []domain.Instance{{ID: "one"}, {ID: "two"}}}
+	service := Service{
+		Instances:   repo,
+		SharedState: sharedStateRepo{state: domain.SharedGameState{ActiveReleaseID: "release-1", MigrationState: "ready"}},
+		Overlay:     fakeOverlay{events: &events},
+	}
+	if err := service.RecoverOverlays(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(events, ","); got != "ensure:one:release-1,ensure:two:release-1" {
+		t.Fatalf("events=%v", events)
+	}
+}
+
+func TestRecoverOverlaysRejectsNonReadySharedGame(t *testing.T) {
+	events := []string{}
+	service := Service{Instances: &fakeRepo{instances: []domain.Instance{{ID: "one"}}}, SharedState: sharedStateRepo{}, Overlay: fakeOverlay{events: &events}}
+	if err := service.RecoverOverlays(context.Background()); err == nil || !strings.Contains(err.Error(), "shared game is not ready") {
+		t.Fatalf("err=%v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("events=%v", events)
+	}
+}
+
+func TestRecoverOverlaysReportsFailingInstance(t *testing.T) {
+	events := []string{}
+	repo := &fakeRepo{instances: []domain.Instance{{ID: "one"}, {ID: "two"}, {ID: "three"}}}
+	service := Service{Instances: repo, SharedState: sharedStateRepo{state: domain.SharedGameState{ActiveReleaseID: "release-1", MigrationState: "ready"}}, Overlay: fakeOverlay{events: &events, failID: "two"}}
+	if err := service.RecoverOverlays(context.Background()); err == nil || !strings.Contains(err.Error(), "two") {
+		t.Fatalf("err=%v", err)
+	}
+	if got := strings.Join(events, ","); got != "ensure:one:release-1,ensure:two:release-1" {
+		t.Fatalf("events=%v", events)
+	}
 }
 
 func (f fakeDeployer) Apply(context.Context, string, string, string, updates.Mode) error {
