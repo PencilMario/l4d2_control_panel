@@ -597,7 +597,6 @@ describe("App", () => {
             filename: "coop-a.zip",
             version: "v1",
             size: 1024,
-            hot_compatible: true,
           },
         ]}
       />,
@@ -698,7 +697,6 @@ describe("App", () => {
             filename: "coop-a.zip",
             version: "v1",
             size: 1024,
-            hot_compatible: true,
           },
         ]}
       />,
@@ -837,7 +835,6 @@ describe("App", () => {
             filename: "coop-a.zip",
             version: "v1",
             size: 1024,
-            hot_compatible: true,
           },
         ]}
       />,
@@ -1068,10 +1065,9 @@ describe("App", () => {
     render(<App initialInstances={[]} />);
     await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
     await userEvent.click(screen.getByRole("tab", { name: "插件包" }));
-    expect(
-      await screen.findByRole("button", { name: "热更新" }),
-    ).toBeDisabled();
-    expect(screen.getByRole("button", { name: "完整更新" })).toBeDisabled();
+    expect(await screen.findByText("plugins.zip · v1")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "热更新" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "完整更新" })).not.toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByText("plugins.zip · v1")).toBeInTheDocument(),
     );
@@ -1633,7 +1629,17 @@ describe("App", () => {
 		expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("confirms full package updates before submitting them", async () => {
+  it("allows GitHub source instances to run a full plugin update", async () => {
+    const fetchMock = vi.fn(async () => new Response('{"ID":"job-source","Status":"pending"}', { status: 202, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App initialInstances={[{ ...instance, package_id: "", source_id: "source-a", applied_package_id: "release-a" }]} />);
+    await userEvent.click(screen.getByRole("button", { name: "更新" }));
+    expect(screen.getByRole("dialog")).toHaveTextContent("GitHub 源：source-a");
+    await userEvent.click(screen.getByRole("button", { name: "确认重新安装" }));
+    expect(fetchMock).toHaveBeenCalledWith("/api/instances/1/game-update", expect.objectContaining({ method: "POST", body: JSON.stringify({ confirm: true, reinstall_game: false, reinstall_package: true }) }));
+  });
+
+  it("does not expose package-row deployment actions", async () => {
     const calls: Array<[RequestInfo | URL, RequestInit | undefined]> = [];
     vi.stubGlobal(
       "fetch",
@@ -1652,21 +1658,10 @@ describe("App", () => {
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
     await userEvent.click(screen.getByRole("tab", { name: "插件包" }));
-    await userEvent.click(
-      await screen.findByRole("button", { name: "完整更新" }),
-    );
+    expect(await screen.findByText("plugins.zip · v1")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "热更新" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "完整更新" })).not.toBeInTheDocument();
     expect(calls.some(([, init]) => init?.method === "POST")).toBe(false);
-    await userEvent.click(
-      screen.getByRole("button", { name: "确认完整更新" }),
-    );
-    expect(
-      calls.some(
-        ([path, init]) =>
-          String(path) === "/api/instances/1/updates" &&
-          init?.method === "POST" &&
-          String(init.body).includes('"confirm":true'),
-      ),
-    ).toBe(true);
   });
 
   it("uploads a plugin package dropped onto the package upload zone", async () => {
@@ -1684,7 +1679,7 @@ describe("App", () => {
       String(path).includes("/api/packages/uploads?filename=plugins.zip") && init?.method === "POST" && init.body === file
     )).toBe(true));
   });
-  it("keeps confirmation actions busy until task creation completes", async () => {
+  it("keeps package rows read-only", async () => {
     const request = deferred<Response>();
     let updatePosts = 0;
     const packageVersion = {
@@ -1717,17 +1712,9 @@ describe("App", () => {
     render(<App initialInstances={[instance]} initialPackages={[packageVersion]} />);
     await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
     await userEvent.click(screen.getByRole("tab", { name: "插件包" }));
-    await userEvent.click(await screen.findByRole("button", { name: "完整更新" }));
-    const confirm = screen.getByRole("button", { name: "确认完整更新" });
-
-    act(() => {
-      confirm.click();
-      confirm.click();
-    });
-
-    expect(updatePosts).toBe(1);
-    expect(confirm).toBeDisabled();
-    expect(confirm).toHaveAttribute("aria-busy", "true");
+    expect(await screen.findByText("coop-a.zip · v1")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "完整更新" })).not.toBeInTheDocument();
+    expect(updatePosts).toBe(0);
   });
 
   it("checks the configured GitHub Release without applying it", async () => {
@@ -1744,7 +1731,7 @@ describe("App", () => {
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
     await userEvent.click(screen.getByRole("tab", { name: "GitHub 发布源" }));
-    await userEvent.click(await screen.findByRole("button", { name: "检查更新 默认源" }));
+    await userEvent.click(await screen.findByRole("button", { name: "同步 默认源" }));
     expect(calls).toContainEqual([
       "/api/github-sources/default/check",
       expect.objectContaining({
@@ -1765,11 +1752,11 @@ describe("App", () => {
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "计划任务" }));
     await userEvent.click(screen.getByRole("button", { name: "新建计划任务" }));
-    await userEvent.selectOptions(screen.getByLabelText("任务"), "release_hot");
+    await userEvent.selectOptions(screen.getByLabelText("任务"), "release_full");
     expect(screen.queryByLabelText("GitHub 源")).not.toBeInTheDocument();
     expect(screen.getByText(/使用目标实例当前配置的插件包/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "新建任务" }));
-    expect(submitted.type).toBe("release_hot");
+    expect(submitted.type).toBe("release_full");
     expect(JSON.parse(submitted.payload)).toEqual({});
   });
 

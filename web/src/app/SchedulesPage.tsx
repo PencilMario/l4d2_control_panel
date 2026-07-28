@@ -13,10 +13,8 @@ import type { PackageVersion } from "./InstanceConfigModal";
 
 type ScheduleTaskType =
   | "game_update"
-  | "package_hot"
   | "package_full"
   | "release_check"
-  | "release_hot"
   | "release_full"
   | "backup"
   | "cleanup";
@@ -61,10 +59,8 @@ type TaskTypeDefinition = {
 
 const TASK_TYPE_ORDER: ScheduleTaskType[] = [
   "game_update",
-  "package_hot",
   "package_full",
   "release_check",
-  "release_hot",
   "release_full",
   "backup",
   "cleanup",
@@ -83,18 +79,6 @@ const TASK_TYPES: Record<ScheduleTaskType, TaskTypeDefinition> = {
     parameters: "不需要额外任务参数。",
     caution:
       "耗时取决于 Steam 下载和实例数量。查询失败不会被当作空服；发布或重挂载失败会回滚到上一共享版本。",
-  },
-  package_hot: {
-    label: "插件热更新",
-    needsInstance: true,
-    usesPlayerPolicy: true,
-    target: "一个游戏实例及其当前配置的插件包。",
-    steps:
-      "先应用在线玩家策略，再读取实例当前配置的插件包；仅部署热更新允许的配置、脚本和插件内容，重新应用私有覆盖，最后记录该包为已应用版本。",
-    interruption: "不主动停止或重启实例。",
-    parameters: "不需要额外参数；使用实例当前配置的插件包。",
-    caution:
-      "不适合需要替换游戏二进制或必须重启才能生效的内容。不兼容时任务失败，不会自动降级为完整更新。",
   },
   package_full: {
     label: "插件完整更新",
@@ -119,18 +103,6 @@ const TASK_TYPES: Record<ScheduleTaskType, TaskTypeDefinition> = {
     interruption: "不停止、不更新任何游戏实例，也不自动应用下载的包。",
     parameters: "需要选择一个仍然存在的 GitHub 源。",
     caution: "不检查在线玩家；没有新版本时正常结束。",
-  },
-  release_hot: {
-    label: "GitHub Release 热更新",
-    needsInstance: true,
-    usesPlayerPolicy: true,
-    target: "一个游戏实例及其当前插件包对应的 GitHub Release 源。",
-    steps:
-      "读取实例当前插件包对应的仓库和文件名，检查并下载最新匹配 Release；只有发现新版本时才应用在线玩家策略，然后以热更新方式部署新包并记录已应用版本。",
-    interruption: "不主动停止或重启实例。",
-    parameters: "不需要额外参数；来源取自实例当前配置的插件包。",
-    caution:
-      "Release 下载发生在玩家检查之前。没有新版本时不部署；新包不兼容热更新时任务失败，不会自动改为完整更新。",
   },
   release_full: {
     label: "GitHub Release 完整更新",
@@ -357,10 +329,10 @@ function payloadSummary(
   sources: GitHubSource[],
 ) {
   const payload = parsePayload(task) as Record<string, unknown>;
-  if (task.type === "package_hot" || task.type === "package_full") {
+  if (task.type === "package_full") {
     return "使用实例当前配置的插件包";
   }
-  if (task.type === "release_hot" || task.type === "release_full") {
+  if (task.type === "release_full") {
     return "使用实例当前插件包的 GitHub 源";
   }
   if (task.type === "release_check") {
@@ -404,9 +376,9 @@ export function SchedulesPage({
   const [runningID, setRunningID] = useState("");
 
   const definition = TASK_TYPES[taskType];
-  const releaseTask = taskType === "release_hot" || taskType === "release_full";
+  const releaseTask = taskType === "release_full";
   const releaseCheckTask = taskType === "release_check";
-  const packageTask = taskType === "package_hot" || taskType === "package_full";
+  const packageTask = taskType === "package_full";
 
   const load = useCallback(async () => {
     const [taskItems, sourceItems] = await Promise.all([
@@ -485,7 +457,7 @@ export function SchedulesPage({
             cron,
             timezone: editing.timezone,
             online_policy: TASK_TYPES[editing.type].usesPlayerPolicy ? policy : "force",
-            payload: (editing.type === "package_hot" || editing.type === "package_full" || editing.type === "release_hot" || editing.type === "release_full") ? "{}" : editing.payload,
+            payload: (editing.type === "package_full" || editing.type === "release_full") ? "{}" : editing.payload,
             enabled,
           }
         : {

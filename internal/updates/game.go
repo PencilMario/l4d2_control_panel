@@ -21,6 +21,9 @@ type PrivateApplier interface {
 type PackageSource interface {
 	Get(string) (content.PackageVersion, error)
 }
+type SourceSynchronizer interface {
+	SyncLatest(context.Context, string) (content.PackageVersion, error)
+}
 type ReinstallOptions struct {
 	Game    bool
 	Package bool
@@ -32,6 +35,7 @@ type GameCoordinator struct {
 	Updater   GameUpdater
 	Private   PrivateApplier
 	Packages  PackageSource
+	Sources   SourceSynchronizer
 	Deployer  Deployer
 }
 
@@ -46,6 +50,26 @@ func (c GameCoordinator) Reinstall(ctx context.Context, id string, options Reins
 	instance, err := c.Instances.Instance(ctx, id)
 	if err != nil {
 		return err
+	}
+	var item content.PackageVersion
+	if options.Package {
+		switch {
+		case instance.PackageSourceID != "":
+			if c.Sources == nil {
+				return c.fault(ctx, id, errors.New("source package sync unavailable"))
+			}
+			item, err = c.Sources.SyncLatest(ctx, instance.PackageSourceID)
+		case instance.SelectedPackageID != "":
+			if c.Packages == nil {
+				return c.fault(ctx, id, errors.New("package reinstall unavailable"))
+			}
+			item, err = c.Packages.Get(instance.SelectedPackageID)
+		default:
+			return c.fault(ctx, id, errors.New("instance has no selected package"))
+		}
+		if err != nil {
+			return c.fault(ctx, id, err)
+		}
 	}
 	maintenance := false
 	if options.Game {
@@ -78,27 +102,9 @@ func (c GameCoordinator) Reinstall(ctx context.Context, id string, options Reins
 		}
 	}
 	var transaction Deployment
-	var item content.PackageVersion
 	if options.Package {
-		if instance.SelectedPackageID == "" && instance.PackageSourceRepository == "" {
-			return c.fault(ctx, id, errors.New("instance has no selected package"))
-		}
-		if c.Packages == nil || c.Deployer == nil {
+		if c.Deployer == nil {
 			return c.fault(ctx, id, errors.New("package reinstall unavailable"))
-		}
-		if instance.PackageSourceRepository != "" {
-			resolver, ok := c.Packages.(interface {
-				LatestSourceVersion(string) (content.PackageVersion, error)
-			})
-			if !ok {
-				return c.fault(ctx, id, errors.New("source package lookup unavailable"))
-			}
-			item, err = resolver.LatestSourceVersion(instance.PackageSourceRepository)
-		} else {
-			item, err = c.Packages.Get(instance.SelectedPackageID)
-		}
-		if err != nil {
-			return c.fault(ctx, id, err)
 		}
 		transaction, err = c.Deployer.Begin(ctx, id, item.ArchivePath, item.Version, Full)
 		if err != nil {

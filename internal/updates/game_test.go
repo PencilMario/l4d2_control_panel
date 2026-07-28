@@ -59,6 +59,16 @@ type gamePackages struct {
 	err  error
 }
 
+type gameSources struct {
+	item   content.PackageVersion
+	events *[]string
+}
+
+func (s gameSources) SyncLatest(context.Context, string) (content.PackageVersion, error) {
+	*s.events = append(*s.events, "sync")
+	return s.item, nil
+}
+
 func (p gamePackages) Get(string) (content.PackageVersion, error) { return p.item, p.err }
 
 type gameDeployment struct {
@@ -103,6 +113,21 @@ func TestGameReinstallPackageOnlyForcesFullDeployment(t *testing.T) {
 	}
 	if repo.instance.PackageVersion != "pkg" {
 		t.Fatalf("applied package=%q", repo.instance.PackageVersion)
+	}
+}
+
+func TestGameReinstallGitHubSourceSynchronizesBeforeStoppingAndPreservesSelection(t *testing.T) {
+	events := []string{}
+	repo := &gameRepo{instance: domain.Instance{ID: "abc", PackageSourceID: "source-a", PackageVersion: "old", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}}
+	coordinator := GameCoordinator{Instances: repo, Lifecycle: orderedLife{&events}, Private: privateApplier{&events}, Sources: gameSources{item: content.PackageVersion{ID: "new", ArchivePath: "new.zip", Version: "v2"}, events: &events}, Deployer: gameDeployer{events: &events}}
+	if err := coordinator.Reinstall(context.Background(), "abc", ReinstallOptions{Package: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(events, ","); got != "sync,stop,deploy:full,start,commit" {
+		t.Fatalf("events=%s", got)
+	}
+	if repo.instance.PackageSourceID != "source-a" || repo.instance.SelectedPackageID != "" || repo.instance.PackageVersion != "new" {
+		t.Fatalf("instance=%#v", repo.instance)
 	}
 }
 

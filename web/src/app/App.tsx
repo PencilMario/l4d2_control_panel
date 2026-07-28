@@ -59,6 +59,7 @@ import {
   type ConfigurableInstance,
   type InstanceConfigValues,
   type PackageVersion,
+  type GitHubSource,
 } from "./InstanceConfigModal";
 import { PrivateFilesPage } from "./PrivateFilesPage";
 import { SchedulesPage } from "./SchedulesPage";
@@ -179,12 +180,6 @@ type PlayerSnapshot = {
   match?: PlayerMatch;
   players: OnlinePlayer[];
 };
-type GitHubSource = {
-  id: string;
-  name: string;
-  repository: string;
-  asset_pattern: string;
-};
 type SharedGameState = {
   active_release_id?: string;
   version?: string;
@@ -302,6 +297,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
   const [packages, setPackages] = useState<PackageVersion[]>(
     initialPackages || [],
   );
+  const [packageSources, setPackageSources] = useState<GitHubSource[]>([]);
   const [sharedGame, setSharedGame] = useState<SharedGameState>({});
   const [performanceHistory, setPerformanceHistory] = useState<
     Record<string, PerformanceHistoryPoint[]>
@@ -489,6 +485,10 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
     const next = await api<PackageVersion[]>("/api/packages");
     if (mountedRef.current) setPackages(next);
   };
+  const loadPackageSources = async () => {
+    const next = await api<GitHubSource[]>("/api/github-sources");
+    if (mountedRef.current) setPackageSources(Array.isArray(next) ? next : []);
+  };
   const loadSharedGame = async () => {
     try {
       const next = await api<SharedGameState>("/api/game");
@@ -532,6 +532,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
         void Promise.allSettled([
           loadInstances(),
           loadPackages(),
+          loadPackageSources(),
           loadSharedGame(),
           loadHealth(),
         ]);
@@ -681,6 +682,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
           void Promise.allSettled([
             loadInstances(),
             loadPackages(),
+            loadPackageSources(),
             loadSharedGame(),
             loadHealth(),
           ]);
@@ -819,6 +821,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
           <Overview
             instances={instances}
             packages={packages}
+            packageSources={packageSources}
             sharedGame={sharedGame}
             running={running}
             performanceHistory={performanceHistory}
@@ -957,6 +960,7 @@ function Nav({
 function Overview({
   instances,
   packages,
+  packageSources,
   sharedGame,
   running,
   performanceHistory,
@@ -972,6 +976,7 @@ function Overview({
 }: {
   instances: Instance[];
   packages: PackageVersion[];
+  packageSources: GitHubSource[];
   sharedGame: SharedGameState;
   running: number;
   performanceHistory: Record<string, PerformanceHistoryPoint[]>;
@@ -1188,6 +1193,7 @@ function Overview({
         <InstanceConfigModal
           mode="create"
           packages={packages}
+          sources={packageSources}
           onClose={() => setCreating(false)}
           onSubmit={(values) => saveConfig(values)}
         />
@@ -1198,6 +1204,7 @@ function Overview({
           mode="edit"
           instance={editing}
           packages={packages}
+          sources={packageSources}
           onClose={() => setEditing(null)}
           onSubmit={(values) => saveConfig(values, editing)}
         />
@@ -1630,7 +1637,7 @@ function ContentPage({
             <article className="source-card" key={source.id}>
               <div><b>{source.name}</b><small>{source.repository}</small><code>{source.asset_pattern}</code></div>
               <div className="inline-actions">
-                <button disabled={contentActions.pending.has(`source:check:${source.id}`)} aria-busy={contentActions.pending.has(`source:check:${source.id}`)} aria-label={`检查更新 ${source.name}`} onClick={() => runContentAction(`source:check:${source.id}`, () => queue(`/api/github-sources/${source.id}/check`, {}))}>检查更新</button>
+                <button disabled={contentActions.pending.has(`source:check:${source.id}`)} aria-busy={contentActions.pending.has(`source:check:${source.id}`)} aria-label={`同步 ${source.name}`} onClick={() => runContentAction(`source:check:${source.id}`, () => queue(`/api/github-sources/${source.id}/check`, {}))}>同步</button>
                 <button onClick={() => setSourceEditor(source)}><Edit3 />编辑</button>
                 <button className="danger" disabled={contentActions.pending.has(`source:delete:${source.id}`)} aria-busy={contentActions.pending.has(`source:delete:${source.id}`)} onClick={() => { if (window.confirm(`删除源 ${source.name}？已下载插件包会保留。`)) runContentAction(`source:delete:${source.id}`, async () => { await api(`/api/github-sources/${source.id}`, { method: "DELETE" }); await loadSources(); }); }}>删除</button>
               </div>
@@ -1645,46 +1652,8 @@ function ContentPage({
               </b>
               <small>
                 {formatBytes(x.size)} ·{" "}
-                {x.hot_compatible ? "支持热更新" : "需要完整更新"}
+                {x.source_repository ? "GitHub Release 版本" : "常规插件包"}
               </small>
-            </div>
-            <div className="inline-actions">
-              {x.hot_compatible && (
-                <button
-                  disabled={!selected}
-                  onClick={() =>
-                    runContentAction(`update:${selected}:${x.id}:hot`, () =>
-                      queue(`/api/instances/${selected}/updates`, {
-                        package_id: x.id,
-                        mode: "hot",
-                      }),
-                    )
-                  }
-                >
-                  热更新
-                </button>
-              )}
-              <button
-                disabled={!selected}
-                onClick={() =>
-                  setConfirmation({
-                    title: `完整更新 ${x.filename}？`,
-                    description:
-                      "完整更新会停止服务器并替换插件包；失败时后台任务会保留诊断记录。",
-                    confirmLabel: "确认完整更新",
-                    confirm: () =>
-                      runContentAction(`update:${selected}:${x.id}:full`, () =>
-                        queue(`/api/instances/${selected}/updates`, {
-                          package_id: x.id,
-                          mode: "full",
-                          confirm: true,
-                        }),
-                      ),
-                  })
-                }
-              >
-                完整更新
-              </button>
             </div>
           </div>
         )) : null}
@@ -2321,7 +2290,8 @@ function ReinstallDialog({
   close: () => void;
 	onConfirm: () => Promise<void>;
 }) {
-	const hasPackage = Boolean(instance.package_id);
+	const hasPackage = Boolean(instance.package_id || instance.source_id);
+	const packageLabel = instance.source_id ? `GitHub 源：${instance.source_id}` : `常规包：${instance.package_id}`;
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
   const submit = async () => {
@@ -2349,7 +2319,7 @@ function ReinstallDialog({
         <p className="eyebrow">FORCED REINSTALL</p>
 		<h2 id="reinstall-title">重新安装实例插件包</h2>
 		<p>{instance.name} 将完整部署当前选中的插件包并重新应用私有文件。共享游戏本体不会在此操作中更新。</p>
-		<p>{hasPackage ? `当前插件包：${instance.package_id}` : "该实例尚未选择插件包。"}</p>
+		<p>{hasPackage ? packageLabel : "该实例尚未选择插件包。"}</p>
         <div>
           <button disabled={submitting} onClick={close}>取消</button>
           <button

@@ -13,7 +13,6 @@ const packageA: PackageVersion = {
   filename: "coop-a.zip",
   version: "v1",
   size: 1024,
-  hot_compatible: true,
 };
 
 const packageB: PackageVersion = {
@@ -21,7 +20,6 @@ const packageB: PackageVersion = {
   filename: "coop-b.zip",
   version: "v2",
   size: 2048,
-  hot_compatible: false,
 };
 
 const instance: ConfigurableInstance = {
@@ -141,6 +139,14 @@ describe("InstanceConfigModal", () => {
         }),
       ),
     );
+  });
+
+  it("submits a stable GitHub source id instead of a release package", async () => {
+    const submit = vi.fn(async () => undefined);
+    render(<InstanceConfigModal mode="edit" instance={instance} packages={[packageA]} sources={[{ id: "source-a", name: "上游插件", repository: "owner/repo", asset_pattern: "^plugins.zip$" }]} onClose={vi.fn()} onSubmit={submit} />);
+    await userEvent.selectOptions(screen.getByLabelText("插件包"), "source:source-a");
+    await userEvent.click(screen.getByRole("button", { name: "保存并应用" }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith(expect.objectContaining({ package_id: "", source_id: "source-a" })));
   });
 
   it("shows an explicit empty selection for an instance without a package", () => {
