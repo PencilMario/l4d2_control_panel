@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Download, File, Folder, Menu, RefreshCw, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronDown, ChevronRight, Download, FileText, Folder, Menu, RefreshCw, Search, X } from 'lucide-react';
 import { api as defaultApi, apiBlob as defaultBlobApi } from '../api/client';
-import { HighlightedLog } from './logHighlight';
+import { tokenizeLog } from './logHighlight';
 
 export { DISPLAY_PREVIEW_LIMIT, truncateForDisplay } from './logHighlight';
 
@@ -69,6 +69,7 @@ export function GameLogsPage({
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [rotated, setRotated] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const treeAbort = useRef<AbortController | null>(null);
   const previewAbort = useRef<AbortController | null>(null);
   const drawerRef = useRef<HTMLDivElement>(null);
@@ -210,13 +211,20 @@ export function GameLogsPage({
     }
   };
 
+  const filteredLines = useMemo(() => {
+    if (!preview) return [];
+    const lines = preview.text.split('\n');
+    const query = searchQuery.trim().toLocaleLowerCase();
+    return query ? lines.filter((line) => line.toLocaleLowerCase().includes(query)) : lines;
+  }, [preview, searchQuery]);
+
   const renderNode = (node: Node, kind: LogKind, depth = 1): React.ReactNode => {
     const key = `${kind}/${node.path}`;
     if (node.directory) {
       const expanded = Boolean(open[key]);
       return <div key={key} role="none">
-        <div className="private-tree-row" role="none">
-          <button className="private-tree-select" role="treeitem" aria-label={`Toggle ${key}`} aria-level={depth} aria-expanded={expanded} onClick={() => setOpen((value) => ({ ...value, [key]: !value[key] }))}>
+        <div className="game-log-tree-row" role="none">
+          <button className="game-log-tree-select" role="treeitem" aria-label={`Toggle ${key}`} aria-level={depth} aria-expanded={expanded} onClick={() => setOpen((value) => ({ ...value, [key]: !value[key] }))}>
             {expanded ? <ChevronDown /> : <ChevronRight />}<Folder /><span>{node.name}</span>
           </button>
         </div>
@@ -225,61 +233,62 @@ export function GameLogsPage({
     }
     const entry = entries.find((item) => item.kind === kind && item.path === node.path)!;
     return <div key={key} role="none">
-      <div className={`private-tree-row ${selected?.kind === kind && selected.path === node.path ? 'selected' : ''}`} role="none">
-        <button className="private-tree-select" role="treeitem" aria-label={node.path} aria-level={depth} aria-selected={selected?.kind === kind && selected.path === node.path} onClick={() => select(entry)}>
-          <span className="tree-spacer" /><File /><span>{node.name}</span>
+      <div className={`game-log-tree-row ${selected?.kind === kind && selected.path === node.path ? 'selected' : ''}`} role="none">
+        <button className="game-log-tree-select" role="treeitem" aria-label={node.path} aria-level={depth} aria-selected={selected?.kind === kind && selected.path === node.path} onClick={() => select(entry)}>
+          <span className="tree-spacer" /><FileText /><span>{node.name}</span>
         </button>
       </div>
     </div>;
   };
 
-  const tree = <div className="private-tree game-log-tree" role="tree" aria-label="游戏日志树">
+  const tree = <div className="game-log-tree" role="tree" aria-label="游戏日志树">
     {LOG_GROUPS.map(({ kind, label }) => <section className="game-log-tree-group" key={kind} aria-label={label}>
       <h3>{label}</h3>
       {build(entries, kind).children.map((node) => renderNode(node, kind))}
-      {!loading && !error && !entries.some((entry) => entry.kind === kind) ? <div className="private-tree-empty">暂无日志</div> : null}
+      {!loading && !error && !entries.some((entry) => entry.kind === kind) ? <div className="game-log-tree-empty">暂无日志</div> : null}
     </section>)}
   </div>;
 
-  return <section className="private-files-page game-logs-page" aria-labelledby="game-logs-title">
-    <div className="private-page-head">
-      <div><p className="eyebrow">INSTANCE / GAME LOGS</p><h1 id="game-logs-title">游戏日志分类预览</h1></div>
-      <label>目标实例<select value={instanceID} disabled={!instances.length} onChange={(event) => setInstanceID(event.target.value)}>
+  return <section className="game-logs-page" aria-labelledby="game-logs-title">
+    <div className="game-log-page-head">
+      <div><h1 id="game-logs-title">游戏日志分类预览</h1><p>分类浏览、在线诊断与下载游戏引擎控制台日志与 SourceMod 插件日志</p></div>
+      <label>目标游戏实例:<select aria-label="目标实例" value={instanceID} disabled={!instances.length} onChange={(event) => setInstanceID(event.target.value)}>
         {!instances.length ? <option value="">暂无实例</option> : null}
         {instances.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
       </select></label>
     </div>
 
-    <div className="private-toolbar" role="toolbar" aria-label="游戏日志工具栏">
-      <button title="刷新" onClick={() => void loadTree(true)} disabled={!instanceID || loading}><RefreshCw />刷新</button>
-      <button title="下载" aria-label="Download" onClick={() => void download()} disabled={!selected}><Download />下载</button>
-      <button ref={drawerTriggerRef} className="private-tree-trigger" aria-controls="game-logs-drawer" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}><Menu />打开文件树</button>
+    <div className="game-log-toolbar" role="toolbar" aria-label="游戏日志工具栏">
+      <div className="game-log-toolbar-start">
+        <button ref={drawerTriggerRef} className="game-log-tree-trigger" aria-controls="game-logs-drawer" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}><Menu />选择日志文件</button>
+        <label className="game-log-search"><Search /><input type="search" aria-label="搜索日志关键字" placeholder="搜索日志关键字..." value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} /></label>
+        <button className="game-log-refresh" title="刷新" aria-label="刷新" onClick={() => void loadTree(true)} disabled={!instanceID || loading}><RefreshCw /></button>
+      </div>
+      <button className="game-log-download" aria-label="Download" onClick={() => void download()} disabled={!selected}><Download /><span>下载完整日志</span></button>
     </div>
 
     {loading ? <div className="operation-status" role="status">正在读取游戏日志…</div> : null}
     {error ? <div className="error" role="alert">{error}<button onClick={() => void loadTree(false, null)}>重试</button></div> : null}
 
-    <div className="private-files-layout">
-      <aside className="private-tree-pane" aria-label="游戏日志目录">{tree}</aside>
-      <div className="private-workspace game-log-workspace" aria-label="日志查看区">
+    <div className="game-log-layout">
+      <aside className="game-log-tree-pane" aria-label="游戏日志目录">{tree}</aside>
+      <div className="game-log-viewer" aria-label="日志查看区">
         {!instanceID ? <div className="empty">暂无可查看实例</div> : null}
         {instanceID && !loading && !error && entries.length === 0 ? <div className="empty">该实例暂无游戏日志</div> : null}
         {!selected && entries.length > 0 ? <div className="empty">选择日志文件</div> : null}
         {selected ? <>
-          <div className="private-file-preview game-log-file-head">
-            <File /><div><b>{selected.path}</b><small>{formatBytes(selected.size)} · {new Date(selected.modified_at).toLocaleString('zh-CN')}</small></div>
-          </div>
+          <div className="game-log-file-head"><b>{selected.path}</b><span>共 {filteredLines.length} 行</span></div>
           {downloadError ? <p className="error" role="alert">{downloadError}</p> : null}
           {previewLoading ? <p className="operation-status" role="status">正在读取日志…</p> : null}
           {rotated ? <p className="operation-status" role="status">日志已轮转或删除，请刷新目录</p> : null}
           {previewError && !previewLoading && !rotated ? <p className="error" role="alert">{previewError}</p> : null}
-          {preview ? <div className="game-log-preview"><HighlightedLog text={preview.text} />{preview.truncated ? <p className="game-log-truncated">仅显示文件末尾 {PREVIEW_LIMIT} 字节</p> : null}</div> : null}
+          {preview ? <div className="game-log-body">{filteredLines.length ? filteredLines.map((line, index) => <div className="game-log-line" key={`${index}-${line}`}><span>{index + 1}</span><code>{tokenizeLog(line).map((token, tokenIndex) => <span className={token.className} key={tokenIndex}>{token.text}</span>)}</code></div>) : <p className="game-log-empty">未找到可显示的日志数据</p>}{preview.truncated ? <p className="game-log-truncated">仅显示文件末尾 {PREVIEW_LIMIT} 字节</p> : null}</div> : null}
         </> : null}
       </div>
     </div>
 
-    <div id="game-logs-drawer" ref={drawerRef} className={`private-tree-drawer ${drawerOpen ? 'open' : ''}`} role="dialog" aria-modal="true" aria-label="游戏日志目录" aria-hidden={!drawerOpen}>
-      <div className="private-drawer-head"><b>游戏日志目录</b><button aria-label="关闭文件树" onClick={closeDrawer}><X /></button></div>
+    <div id="game-logs-drawer" ref={drawerRef} className={`game-log-tree-drawer ${drawerOpen ? 'open' : ''}`} role="dialog" aria-modal="true" aria-label="游戏日志目录" aria-hidden={!drawerOpen}>
+      <div className="game-log-drawer-head"><b>游戏日志目录</b><button aria-label="关闭文件树" onClick={closeDrawer}><X /></button></div>
       {drawerOpen ? tree : null}
     </div>
   </section>;

@@ -7,7 +7,7 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react";
-import { BookOpen, Pencil, RefreshCw, Trash2, X } from "lucide-react";
+import { BookOpen, Calendar, CheckCircle2, Pencil, Play, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { api } from "../api/client";
 import type { PackageVersion } from "./InstanceConfigModal";
 
@@ -230,6 +230,9 @@ function DialogFrame({
   close,
   closeButtonLabel,
   className = "",
+  titleIcon,
+  subtitle,
+  footer,
   children,
 }: {
   title: string;
@@ -237,6 +240,9 @@ function DialogFrame({
   close: () => void;
   closeButtonLabel?: string;
   className?: string;
+  titleIcon?: ReactNode;
+  subtitle?: string;
+  footer?: ReactNode;
   children: ReactNode;
 }) {
   const dialog = useRef<HTMLDivElement | null>(null);
@@ -278,9 +284,11 @@ function DialogFrame({
         aria-label={label}
       >
         <div className="schedule-dialog-head">
+          {titleIcon ? <span className="schedule-dialog-mark">{titleIcon}</span> : null}
           <div>
             <p className="eyebrow">SCHEDULE CONTROL</p>
             <h2 id={titleID}>{title}</h2>
+            {subtitle ? <p className="schedule-dialog-subtitle">{subtitle}</p> : null}
           </div>
           <button
             autoFocus
@@ -293,6 +301,7 @@ function DialogFrame({
           </button>
         </div>
         {children}
+        {footer ? <div className="schedule-dialog-footer">{footer}</div> : null}
       </div>
     </div>
   );
@@ -306,16 +315,21 @@ function TaskHelpDialog({ close }: { close: () => void }) {
       closeButtonLabel="关闭任务说明"
       className="schedule-help-dialog"
       close={close}
+      titleIcon={<BookOpen />}
+      subtitle="自动化运维计划的八种核心任务类型及其中断影响与执行规则"
+      footer={<button className="schedule-help-confirm" onClick={close}>我知道了</button>}
     >
       <p className="schedule-help-intro">
         下列说明按实际执行器顺序描述。删除计划只阻止以后触发，不会取消已经排队或正在执行的任务。
       </p>
       <div className="schedule-help-list">
-        {TASK_TYPE_ORDER.map((type) => {
+        {TASK_TYPE_ORDER.map((type, index) => {
           const item = TASK_TYPES[type];
           return (
             <section key={type} className="schedule-help-item">
               <div className="schedule-help-title">
+                <CheckCircle2 />
+                <span>{index + 1}.</span>
                 <h3>{item.label}</h3>
                 <code>{type}</code>
               </div>
@@ -386,6 +400,8 @@ export function SchedulesPage({
   const [editing, setEditing] = useState<ScheduledTask | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ScheduledTask | null>(null);
   const [showHelp, setShowHelp] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [runningID, setRunningID] = useState("");
 
   const definition = TASK_TYPES[taskType];
   const releaseTask = taskType === "release_hot" || taskType === "release_full";
@@ -423,6 +439,13 @@ export function SchedulesPage({
     setRetentionDays(30);
   };
 
+  const openCreate = () => {
+    resetCreate();
+    setScheduleError("");
+    setScheduleStatus("");
+    setEditorOpen(true);
+  };
+
   const beginEdit = (task: ScheduledTask) => {
     setEditing(task);
     setTaskType(task.type);
@@ -432,6 +455,7 @@ export function SchedulesPage({
 	setInstanceID(task.type === "game_update" ? "" : task.instance_id);
     setScheduleError("");
     setScheduleStatus("");
+    setEditorOpen(true);
   };
 
   const createPayload = () => {
@@ -480,7 +504,8 @@ export function SchedulesPage({
       });
       const wasEditing = Boolean(editing);
       await load();
-      if (wasEditing) resetCreate();
+      resetCreate();
+      setEditorOpen(false);
       setScheduleStatus(wasEditing ? "计划已更新" : "计划已保存");
     } catch (reason) {
       setScheduleStatus("");
@@ -510,29 +535,88 @@ export function SchedulesPage({
     }
   };
 
+  const toggleTask = async (task: ScheduledTask) => {
+    setScheduleError("");
+    try {
+      await api("/api/schedules", {
+        method: "POST",
+        body: JSON.stringify({ ...task, enabled: !task.enabled }),
+      });
+      await load();
+      setScheduleStatus(task.enabled ? "计划已停用" : "计划已启用");
+    } catch (reason) {
+      setScheduleError(errorMessage(reason));
+    }
+  };
+
+  const runTask = async (task: ScheduledTask) => {
+    if (runningID) return;
+    setRunningID(task.id);
+    setScheduleError("");
+    try {
+      await api(`/api/schedules/${task.id}/run`, { method: "POST" });
+      setScheduleStatus(`${TASK_TYPES[task.type].label}已加入后台任务`);
+    } catch (reason) {
+      setScheduleError(errorMessage(reason));
+    } finally {
+      setRunningID("");
+    }
+  };
+
   const instanceName = (id: string) =>
     instances.find((item) => item.id === id)?.name || `实例引用已失效 · ${id || "未设置"}`;
 
   return (
-    <div className="schedule-page">
-      <div className="section-head schedule-page-head">
+    <div className="schedule-page schedule-reference-page">
+      <div className="schedule-reference-head">
         <div>
-          <p className="eyebrow">AUTOMATION</p>
-          <h2>计划任务</h2>
+          <h2>自动维护计划任务</h2>
+          <p>配置按 Cron 表达式定期自动触发的游戏升级、插件同步、私有文件备份与日志清理</p>
         </div>
-        <button className="schedule-help-command" onClick={() => setShowHelp(true)}>
-          <BookOpen />
-          任务说明
-        </button>
+        <div className="schedule-reference-head-actions">
+          <button className="schedule-help-command" onClick={() => setShowHelp(true)}><BookOpen /><span>任务类型说明</span></button>
+          <button className="schedule-new-command" onClick={openCreate}><Plus /><span>新建计划任务</span></button>
+        </div>
       </div>
-      <div className="schedule-layout">
+      {scheduleError ? <div className="error" role="alert">{scheduleError}</div> : null}
+      {scheduleStatus ? <div className="operation-status" role="status">{scheduleStatus}</div> : null}
+      <section className="schedule-card-grid" aria-label="执行计划">
+        {tasks.map((task) => {
+          const item = TASK_TYPES[task.type];
+          return (
+            <article className="schedule-card" key={task.id}>
+              <div className="schedule-card-main">
+                <div className="schedule-card-title">
+                  <h3><Calendar />{item.label}</h3>
+                  <button className={`schedule-toggle ${task.enabled ? "enabled" : "disabled"}`} onClick={() => void toggleTask(task)}>{task.enabled ? "已启用" : "已停用"}</button>
+                </div>
+                <div className="schedule-card-details">
+                  <p>目标对象: <strong>{item.needsInstance ? instanceName(task.instance_id) : "全局目标"}</strong></p>
+                  <p>Cron 表达式: <code>{task.cron}</code> <span>({task.timezone})</span></p>
+                  <p>在线玩家策略: <span>{item.usesPlayerPolicy ? POLICY_LABELS[task.online_policy] : "不检查玩家"}</span></p>
+                  <p className="schedule-card-payload">任务参数: <span>{payloadSummary(task, packages, sources)}</span></p>
+                </div>
+              </div>
+              <footer className="schedule-card-footer">
+                <span>下次触发: {task.enabled ? formatTime(task.next_run, "未安排") : "已停用"}</span>
+                <div>
+                  <button className="schedule-run" disabled={Boolean(runningID)} aria-busy={runningID === task.id} onClick={() => void runTask(task)}>{runningID === task.id ? <RefreshCw /> : <Play />}<span>{runningID === task.id ? "执行中…" : "立即执行"}</span></button>
+                  <button className="schedule-edit" aria-label={`编辑 ${item.label}`} title="编辑计划" onClick={() => beginEdit(task)}><Pencil /></button>
+                  <button className="schedule-delete" aria-label={`删除 ${item.label}`} title="删除计划" onClick={() => setDeleteTarget(task)}><Trash2 /></button>
+                </div>
+              </footer>
+            </article>
+          );
+        })}
+        {!tasks.length ? <div className="empty schedule-card-empty">暂无计划任务</div> : null}
+      </section>
+      {editorOpen ? <div className="schedule-editor-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditorOpen(false); }}>
         <form
-          className="control-form schedule-form"
+          className="schedule-editor-dialog"
           aria-label={editing ? "编辑计划" : "新建计划"}
           onSubmit={submit}
         >
-          <p className="eyebrow">{editing ? "EDIT SCHEDULE" : "NEW SCHEDULE"}</p>
-          <h2>{editing ? `编辑${TASK_TYPES[editing.type].label}` : "添加维护窗口"}</h2>
+          <div className="schedule-editor-head"><h2>{editing ? `编辑${TASK_TYPES[editing.type].label}` : "新建自动化计划任务"}</h2><button type="button" aria-label="关闭计划编辑器" onClick={() => setEditorOpen(false)}><X /></button></div>
           <label>
             任务
             <select
@@ -641,74 +725,19 @@ export function SchedulesPage({
             />
             <span>启用计划</span>
           </label>
-          {scheduleError ? <div className="error" role="alert">{scheduleError}</div> : null}
-          {scheduleStatus ? <div className="operation-status" role="status">{scheduleStatus}</div> : null}
           <div className="schedule-form-actions">
-            {editing ? (
-              <button type="button" onClick={resetCreate}>取消编辑</button>
-            ) : null}
+            <button type="button" onClick={() => setEditorOpen(false)}>取消</button>
             <button
-              className="create"
+              className="command-primary"
               disabled={submitting || !canSubmit}
               aria-busy={submitting}
             >
               {submitting ? <RefreshCw /> : null}
-              {submitting ? "保存中…" : editing ? "保存修改" : "保存计划"}
+              {submitting ? "保存中…" : editing ? "保存修改" : "新建任务"}
             </button>
           </div>
         </form>
-        <section className="data-panel schedule-list" aria-label="执行计划">
-          <div className="panel-title">
-            <h2>执行计划</h2>
-            <small>{tasks.length} 项</small>
-          </div>
-          {tasks.map((task) => {
-            const item = TASK_TYPES[task.type];
-            return (
-              <article className="schedule-row" key={task.id}>
-                <div className="schedule-row-main">
-                  <div className="schedule-row-title">
-                    <b>{item.label}</b>
-                    <span className={task.enabled ? "enabled" : "disabled"}>
-                      {task.enabled ? "启用" : "停用"}
-                    </span>
-                  </div>
-                  <strong>{item.needsInstance ? instanceName(task.instance_id) : "全局"}</strong>
-                  <small>{payloadSummary(task, packages, sources)}</small>
-                </div>
-                <div className="schedule-row-meta">
-                  <code>{task.cron}</code>
-                  <span>{task.timezone}</span>
-                  <span>{item.usesPlayerPolicy ? POLICY_LABELS[task.online_policy] : "不检查玩家"}</span>
-                </div>
-                <div className="schedule-row-times">
-                  <span><small>上次执行</small><b>{formatTime(task.last_run, "尚未执行")}</b></span>
-                  <span><small>下次执行</small><b>{task.enabled ? formatTime(task.next_run, "未安排") : "已停用"}</b></span>
-                </div>
-                <div className="schedule-row-actions">
-                  <button
-                    className="icon-btn"
-                    aria-label={`编辑 ${item.label}`}
-                    title="编辑计划"
-                    onClick={() => beginEdit(task)}
-                  >
-                    <Pencil />
-                  </button>
-                  <button
-                    className="icon-btn danger"
-                    aria-label={`删除 ${item.label}`}
-                    title="删除计划"
-                    onClick={() => setDeleteTarget(task)}
-                  >
-                    <Trash2 />
-                  </button>
-                </div>
-              </article>
-            );
-          })}
-          {!tasks.length ? <div className="empty">暂无计划任务</div> : null}
-        </section>
-      </div>
+      </div> : null}
       {showHelp ? <TaskHelpDialog close={() => setShowHelp(false)} /> : null}
       {deleteTarget ? (
         <DialogFrame

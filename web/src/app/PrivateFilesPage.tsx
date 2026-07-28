@@ -281,22 +281,6 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
     }
   }, []);
 
-  const selectEntry = useCallback(
-    (entry: PrivateEntry) => {
-      setSelectedPath(entry.path);
-      setEditing(false);
-      setEditor("");
-      if (entry.kind === "directory") {
-        setExpanded((current) => {
-          const next = new Set(current);
-          next.has(entry.path) ? next.delete(entry.path) : next.add(entry.path);
-          return next;
-        });
-      }
-    },
-    [],
-  );
-
   const editFile = async (path: string) => {
     const response = await fetch(`/api/instances/${instanceID}/private/file/${encodeRelativePath(path)}`, { credentials: "same-origin" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -310,6 +294,21 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
     setEditor(text);
     setEditing(true);
     setDrawerOpen(false);
+  };
+
+  const selectEntry = (entry: PrivateEntry) => {
+    setSelectedPath(entry.path);
+    setEditing(false);
+    setEditor("");
+    if (entry.kind === "directory") {
+      setExpanded((current) => {
+        const next = new Set(current);
+        next.has(entry.path) ? next.delete(entry.path) : next.add(entry.path);
+        return next;
+      });
+      return;
+    }
+    if (isTextFile(entry.path)) void run(() => editFile(entry.path));
   };
 
   const showFileHistory = async (path: string) => {
@@ -339,7 +338,14 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
   };
 
   const makeFile = async () => {
-    const path = window.prompt("新文件相对路径", "cfg/new.cfg");
+    const selectedEntry = entries.find((entry) => entry.path === selectedPath);
+    const directory = selectedEntry?.kind === "directory"
+      ? selectedEntry.path
+      : parentPath(selectedPath);
+    const path = window.prompt(
+      "新文件相对路径",
+      directory ? `${directory}/new.cfg` : "new.cfg",
+    );
     if (!path) return;
     await api(`/api/instances/${instanceID}/private/${encodeRelativePath(path)}`, {
       method: "PUT",
@@ -537,11 +543,7 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
       children={children}
       expanded={expanded}
       selectedPath={selectedPath}
-      disabled={busy}
       onSelect={selectEntry}
-      onEdit={(path) => void run(() => editFile(path))}
-      onMove={(path) => void run(() => moveEntry(path))}
-      onDelete={(entry) => void run(() => deleteEntry(entry))}
     />
   );
 
@@ -549,50 +551,41 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
     <section className="private-files-page" aria-labelledby="private-files-title">
       <div className="private-page-head">
         <div>
-          <p className="eyebrow">INSTANCE / PRIVATE WORKSPACE</p>
-          <h2 id="private-files-title">私有文件</h2>
+          <h2 id="private-files-title">私有文件工作区</h2>
+          <p>管理与改动单台游戏实例独占的 cfg 与 addons 覆盖文件</p>
         </div>
         <label>
-          目标实例
-          <select value={instanceID} onChange={(event) => setInstanceID(event.target.value)}>
+          <span>目标游戏实例:</span>
+          <select aria-label="目标实例" value={instanceID} onChange={(event) => setInstanceID(event.target.value)}>
             {instances.map((item) => (
-              <option key={item.id} value={item.id}>{item.name}</option>
+              <option key={item.id} value={item.id}>{item.name}{item.game_port ? ` (${item.game_port})` : ""}</option>
             ))}
           </select>
         </label>
       </div>
 
       <div className="private-toolbar" role="toolbar" aria-label="私有文件工具栏">
-        <label className="private-icon-button" title="上传文件">
-          <Upload aria-hidden="true" />
-          <span>上传文件</span>
-          <input aria-label="上传文件" type="file" onChange={uploadFile} disabled={!instanceID || busy} />
-        </label>
-        <label className="private-icon-button" title="导入 ZIP">
-          <FileArchive aria-hidden="true" />
-          <span>导入 ZIP</span>
-          <input
-            aria-label="导入 ZIP"
-            type="file"
-            accept=".zip,application/zip"
-            onChange={importZIP}
-            disabled={!instanceID || busy}
-          />
-        </label>
-        <button title="导出 ZIP" onClick={() => void exportZIP()} disabled={!instanceID || busy}>
-          <Download />导出 ZIP
-        </button>
-        <button title="新建文件" onClick={() => void run(makeFile)} disabled={!instanceID || busy}><FilePlus2 />新建文件</button>
-        <button title="新建目录" onClick={() => void run(makeDirectory)} disabled={!instanceID || busy}><FolderPlus />新建目录</button>
-        <button title="刷新" onClick={() => void reload()} disabled={!instanceID || loading}><RefreshCw />刷新</button>
-        <button ref={snapshotsTriggerRef} title="历史快照" onClick={() => setSnapshotsOpen(true)} disabled={!instanceID || busy}><History />历史快照</button>
-        <button
-          ref={drawerTriggerRef}
-          className="private-tree-trigger"
-          aria-controls="private-tree-drawer"
-          aria-expanded={drawerOpen}
-          onClick={() => setDrawerOpen(true)}
-        ><Menu />打开文件树</button>
+        <div className="private-toolbar-primary">
+          <button ref={drawerTriggerRef} className="private-tree-trigger" aria-label="打开文件树" aria-controls="private-tree-drawer" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}><Menu />打开文件目录</button>
+          <button title="新建文件" onClick={() => void run(makeFile)} disabled={!instanceID || busy}><FilePlus2 />新建文件</button>
+          <button title="新建目录" onClick={() => void run(makeDirectory)} disabled={!instanceID || busy}><FolderPlus />新建目录</button>
+          <label className="private-icon-button" title="上传文件"><Upload aria-hidden="true" /><span>上传文件</span><input aria-label="上传文件" type="file" onChange={uploadFile} disabled={!instanceID || busy} /></label>
+          <label className="private-icon-button" title="导入 ZIP"><FileArchive aria-hidden="true" /><span>导入 ZIP</span><input aria-label="导入 ZIP" type="file" accept=".zip,application/zip" onChange={importZIP} disabled={!instanceID || busy} /></label>
+          <button title="导出 ZIP" onClick={() => void exportZIP()} disabled={!instanceID || busy}><Download />导出 ZIP</button>
+        </div>
+        <div className="private-toolbar-secondary">
+          {selected ? (
+            <div className="private-context-actions" aria-label={`所选路径操作 ${basename(selected.path)}`}>
+              {selected.kind === "file" ? <a title="下载" aria-label={`下载 ${basename(selected.path)}`} href={`/api/instances/${instanceID}/private/file/${encodeRelativePath(selected.path)}`} download><Download />下载</a> : null}
+              {selected.kind === "file" && isTextFile(selected.path) ? <button title="编辑" aria-label={`编辑 ${basename(selected.path)}`} onClick={() => void run(() => editFile(selected.path))}><Edit3 />编辑</button> : null}
+              {selected.kind === "file" ? <button ref={historyTriggerRef} title="历史" aria-label={`历史 ${basename(selected.path)}`} disabled={busy} onClick={() => void run(() => showFileHistory(selected.path))}><History />历史</button> : null}
+              <button title="移动" aria-label={`移动 ${basename(selected.path)}`} disabled={busy} onClick={() => void run(() => moveEntry(selected.path))}><Move />移动</button>
+              <button title="删除" aria-label={`删除 ${basename(selected.path)}`} disabled={busy} className="private-context-danger" onClick={() => void run(() => deleteEntry(selected))}><Trash2 />删除</button>
+            </div>
+          ) : null}
+          <button title="刷新" aria-label="刷新" onClick={() => void reload()} disabled={!instanceID || loading}><RefreshCw /></button>
+          <button ref={snapshotsTriggerRef} title="历史快照" aria-label="历史快照" onClick={() => setSnapshotsOpen(true)} disabled={!instanceID || busy}><History />历史快照 ({snapshots.length})</button>
+        </div>
       </div>
 
       {loading ? <div className="operation-status" role="status">正在读取私有文件…</div> : null}
@@ -610,13 +603,6 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
             <div className="private-file-preview">
               <File />
               <div><b>{selected.path}</b><small>{formatBytes(selected.size)} · {(selected.hash || "无校验值").slice(0, 12)}</small></div>
-              <div className="private-file-actions">
-                <a title="下载" aria-label={`下载 ${basename(selected.path)}`} href={`/api/instances/${instanceID}/private/file/${encodeRelativePath(selected.path)}`} download><Download /></a>
-                {isTextFile(selected.path) ? <button title="编辑" aria-label={`编辑 ${basename(selected.path)}`} onClick={() => void run(() => editFile(selected.path))}><Edit3 /></button> : null}
-                <button ref={historyTriggerRef} title="历史" aria-label={`历史 ${basename(selected.path)}`} disabled={busy} onClick={() => void run(() => showFileHistory(selected.path))}><History /></button>
-                <button title="移动" aria-label={`移动 ${basename(selected.path)}`} disabled={busy} onClick={() => void run(() => moveEntry(selected.path))}><Move /></button>
-                <button title="删除" aria-label={`删除 ${basename(selected.path)}`} disabled={busy} className="danger" onClick={() => void run(() => deleteEntry(selected))}><Trash2 /></button>
-              </div>
             </div>
           ) : null}
           {editing ? (
@@ -624,7 +610,7 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
               <div className="private-editor-head"><b>{selectedPath}</b><span>UTF-8</span></div>
               <label htmlFor="private-editor-content">文件内容</label>
               <textarea id="private-editor-content" value={editor} onChange={(event) => setEditor(event.target.value)} spellCheck={false} />
-              <button className="create" disabled={busy} onClick={() => void run(saveText)}><Save />保存到暂存区</button>
+              <button className="command-primary" disabled={busy} onClick={() => void run(saveText)}><Save />保存到暂存区</button>
             </div>
           ) : null}
           {!selected && entries.length > 0 ? <div className="empty">选择目录或文件</div> : null}
@@ -683,7 +669,7 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
             : "工作区与已应用版本一致"}
         </button>
         <div className="private-change-counts"><span>新增 {diff.summary.added}</span><span>修改 {diff.summary.modified}</span><span>删除 {diff.summary.deleted}</span></div>
-        <button className="create" disabled={!hasChanges || !instanceID || busy} aria-busy={busy} onClick={() => void run(async () => {
+        <button className="command-primary" disabled={!hasChanges || !instanceID || busy} aria-busy={busy} onClick={() => void run(async () => {
           if (queueAndWait) {
             const terminal = await queueAndWait(`/api/instances/${instanceID}/private/apply`, {});
             if (terminal.Status !== "succeeded") throw new Error(terminal.Error || "应用任务失败");
@@ -703,20 +689,12 @@ function PrivateTree({
   children,
   expanded,
   selectedPath,
-  disabled,
   onSelect,
-  onEdit,
-  onMove,
-  onDelete,
 }: {
   children: Map<string, PrivateEntry[]>;
   expanded: Set<string>;
   selectedPath: string;
-  disabled: boolean;
   onSelect: (entry: PrivateEntry) => void;
-  onEdit: (path: string) => void;
-  onMove: (path: string) => void;
-  onDelete: (entry: PrivateEntry) => void;
 }) {
   const renderLevel = (parent: string, level: number) =>
     (children.get(parent) || []).map((entry) => {
@@ -731,11 +709,6 @@ function PrivateTree({
               {directory ? <Folder /> : <File />}
               <span>{name}</span>
             </button>
-            <span className="private-tree-actions">
-              {!directory && isTextFile(entry.path) ? <button disabled={disabled} title="编辑" aria-label={`编辑 ${name}`} onClick={() => onEdit(entry.path)}><Edit3 /></button> : null}
-              <button disabled={disabled} title="移动" aria-label={`移动 ${name}`} onClick={() => onMove(entry.path)}><Move /></button>
-              <button disabled={disabled} title="删除" aria-label={`删除 ${name}`} onClick={() => onDelete(entry)}><Trash2 /></button>
-            </span>
           </div>
           {directory && open ? <div role="group">{renderLevel(entry.path, level + 1)}{(children.get(entry.path) || []).length === 0 ? <div className="private-tree-empty">空目录</div> : null}</div> : null}
         </div>

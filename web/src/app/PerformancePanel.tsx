@@ -45,6 +45,12 @@ export type PerformanceHistoryPoint = {
 
 type Mode = "CPU" | "内存" | "网络" | "磁盘";
 const MODES: Mode[] = ["CPU", "内存", "网络", "磁盘"];
+const MODE_LABELS: Record<Mode, string> = {
+  CPU: "处理器占用 (%)",
+  内存: "内存占用 (%)",
+  网络: "网络吞吐 (MB/s)",
+  磁盘: "磁盘吞吐 (MB/s)",
+};
 export const LINE_CONNECTS_NULLS = false;
 const SNAPSHOT_KEYS: ReadonlyArray<keyof PerformanceSnapshot> = [
   "image_size_bytes",
@@ -211,10 +217,6 @@ function ChartTooltip({ active, payload, label, mode }: TooltipContentProps<any,
   );
 }
 
-function Metric({ label, value, note }: { label: string; value: string; note?: string }) {
-  return <span className="performance-metric" title={note}><small>{label}</small><b>{value}</b>{note ? <em>{note}</em> : null}</span>;
-}
-
 export type PerformancePanelProps = { snapshot: PerformanceSnapshot; history: PerformanceHistoryPoint[]; initialMode?: Mode; loading?: boolean };
 
 export function performancePanelPropsEqual(
@@ -237,23 +239,12 @@ export const PerformancePanel = memo(function PerformancePanel({ snapshot, histo
   const series = useMemo(() => seriesFor(mode), [mode]);
   return (
     <section className="performance-panel">
-      <div className="performance-current">
-        <Metric label="总占用" value={formatBytes((snapshot.image_size_bytes ?? 0) + (snapshot.game_size_bytes ?? 0) + (snapshot.private_size_bytes ?? 0) + (snapshot.backups_size_bytes ?? 0) + (snapshot.console_size_bytes ?? 0))} note={`游戏 ${formatBytes(snapshot.game_size_bytes)} · 私有 ${formatBytes(snapshot.private_size_bytes)} · 备份 ${formatBytes(snapshot.backups_size_bytes)} · 日志 ${formatBytes(snapshot.console_size_bytes)} · 镜像 ${formatBytes(snapshot.image_size_bytes)}`} />
-        <Metric label="CPU" value={formatPercent(snapshot.cpu_percent)} />
-        <Metric label="内存" value={`${formatBytes(snapshot.memory_bytes)} / ${formatBytes(snapshot.memory_limit_bytes)} (${formatPercent(snapshot.memory_percent)})`} />
-        <Metric label="下载" value={formatBytesPerSecond(snapshot.network_rx_bytes_per_sec)} note={`累计 ${formatBytes(snapshot.network_rx_bytes)}`} />
-        <Metric label="上传" value={formatBytesPerSecond(snapshot.network_tx_bytes_per_sec)} note={`累计 ${formatBytes(snapshot.network_tx_bytes)}`} />
-        <Metric label="磁盘读" value={formatBytesPerSecond(snapshot.block_read_bytes_per_sec)} note={`累计 ${formatBytes(snapshot.block_read_bytes)}`} />
-        <Metric label="磁盘写" value={formatBytesPerSecond(snapshot.block_write_bytes_per_sec)} note={`累计 ${formatBytes(snapshot.block_write_bytes)}`} />
-        <Metric label="PID" value={snapshot.pids === null ? "--" : String(snapshot.pids)} />
-        <Metric label="运行时间" value={formatDuration(snapshot.uptime_seconds)} />
-        <Metric label="A2S 延迟" value={formatLatency(snapshot.a2s_latency_ms)} />
-      </div>
       <div className="performance-chart-head">
         <div className="performance-modes" role="group" aria-label="性能图表指标">
-          {MODES.map((item) => <button key={item} type="button" aria-pressed={mode === item} onClick={() => setMode(item)}>{item}</button>)}
+          <span>曲线维度:</span>
+          {MODES.map((item) => <button key={item} type="button" aria-label={item} aria-pressed={mode === item} onClick={() => setMode(item)}>{MODE_LABELS[item]}</button>)}
         </div>
-        <div className="performance-legend">{series.map((item) => <span key={item.key}><i style={{ background: item.color }} />{item.label}</span>)}</div>
+        <div className="performance-chart-meta"><div className="performance-legend">{series.map((item) => <span key={item.key}><i style={{ background: item.color }} />{item.label}</span>)}</div><span>采样间隔: 5 秒</span></div>
       </div>
       <div className="performance-chart" data-testid="performance-chart" data-point-count={data.length} data-series-count={series.length}>
         {loading ? <div className="performance-chart-state">正在加载历史数据…</div> : data.length === 0 ? <div className="performance-chart-state">暂无历史数据</div> : (

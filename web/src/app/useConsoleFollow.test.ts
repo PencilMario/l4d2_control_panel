@@ -104,6 +104,7 @@ describe("useConsoleFollow", () => {
 
     geometry.scrollHeight = 360;
     rerender({ version: 1 });
+    expect(geometry.scrollTop).toBe(360);
     act(() => raf.flush());
     expect(geometry.scrollTop).toBe(360);
 
@@ -115,19 +116,21 @@ describe("useConsoleFollow", () => {
     expect(geometry.scrollTop).toBe(100);
   });
 
-  it("resumes following at the bottom and uses a four-pixel tolerance", () => {
+  it("resumes following within the design's forty-pixel bottom tolerance", () => {
     const raf = installRaf();
     const geometry = { scrollHeight: 300, clientHeight: 100, scrollTop: 195 };
     const { result } = renderHook(() => useConsoleFollow(0));
     const element = attach(result.current.outputRef, geometry);
     act(() => raf.flush());
-    geometry.scrollTop = 195;
+    geometry.scrollTop = 159;
 
     act(() => result.current.onScroll({ currentTarget: element } as never));
     expect(result.current.isFollowing()).toBe(false);
-    geometry.scrollTop = 196;
+    expect(result.current.following).toBe(false);
+    geometry.scrollTop = 160;
     act(() => result.current.onScroll({ currentTarget: element } as never));
     expect(result.current.isFollowing()).toBe(true);
+    expect(result.current.following).toBe(true);
     geometry.scrollTop = 200;
     act(() => result.current.onScroll({ currentTarget: element } as never));
     expect(result.current.isFollowing()).toBe(true);

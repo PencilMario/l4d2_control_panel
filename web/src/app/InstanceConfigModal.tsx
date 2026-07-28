@@ -316,7 +316,7 @@ export function InstanceConfigModal({
             取消
           </button>
           <button
-            className="create"
+            className="command-primary"
             disabled={submitting || !packages.length}
             aria-busy={submitting}
           >

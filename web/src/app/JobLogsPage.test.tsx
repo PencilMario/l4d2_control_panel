@@ -60,7 +60,11 @@ describe("JobLogsPage", () => {
 
     expect(screen.getByRole("heading", { name: "任务日志: start" })).toBeVisible();
     expect(screen.getByText("job-1")).toBeVisible();
-    expect(screen.getByText("失败", { exact: true })).toBeVisible();
+    expect(screen.getByText("底层运维过程的详细事件流与诊断数据输出")).toBeVisible();
+    expect(screen.getByRole("button", { name: "返回任务列表" })).toHaveTextContent("返回任务列表");
+    expect(screen.getByRole("button", { name: "复制日志" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "下载完整日志" })).toBeVisible();
+    expect(screen.getByRole("group", { name: "日志级别筛选" })).toBeVisible();
   });
 
   it("loads history, filters it, and appends live records", async () => {
@@ -85,7 +89,7 @@ describe("JobLogsPage", () => {
     await screen.findByText("Downloading update");
     fireEvent.click(screen.getByRole("button", { name: "返回任务列表" }));
     expect(onBack).toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "复制当前日志" }));
+    fireEvent.click(screen.getByRole("button", { name: "复制日志" }));
     await waitFor(() => expect(writeText).toHaveBeenCalled());
     fireEvent.click(screen.getByRole("button", { name: "下载完整日志" }));
     await waitFor(() => expect(click).toHaveBeenCalled());

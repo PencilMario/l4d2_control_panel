@@ -654,3 +654,200 @@
 - 高风险操作具备影响说明和二次确认。
 - 界面没有装饰性英文眉题，没有无必要的中英混排。
 - 全部文案遵循统一术语和状态词规范。
+
+## 十三、前后端 API、数据模型与命名契约
+
+本章用于约束设计稿与后续 React 实现。事实来源为当前 `web/src` 前端、`internal/httpapi` 路由和领域模型；它不要求设计工具生成后端代码，但要求所有页面、组件和状态都能映射到明确的数据来源。
+
+### 13.1 契约边界与兼容原则
+
+- 当前后端以 `/api` 为根路径，认证使用同源 Cookie；所有请求必须携带 `credentials: "same-origin"`，不得在浏览器存储管理员密码、Steam 密码或 GitHub 访问令牌。
+- 本章标记为“现有”的接口可直接用于新版前端；标记为“建议补充”的接口是为了满足本说明中的新增展示或消除多请求拼装，不得在设计稿中假装它们已经存在。
+- 新版前端内部模型统一使用 `snake_case`。当前实例、后台任务等旧响应仍可能包含 Go 导出的 `PascalCase` 字段；迁移期间只允许在 API 适配层兼容，页面组件不得同时读取 `id` 和 `ID`、`status` 和 `Status`。
+- 后端完成字段迁移前，不得移除现有 `normalizeInstance`、`normalizeScheduledTask` 或后台任务适配逻辑。推荐先增加稳定的 API DTO，再逐步废弃旧字段。
+- `null` 表示“本次观测不可用或未知”，空数组表示“查询成功但没有项目”，请求失败必须进入错误状态，不能转换为空数组。缺省字段不能自动解释为零。
+- 时间统一为 RFC 3339 字符串，前端按浏览器时区展示；计划任务另带 IANA `timezone`。未发生的时间使用 `null`，新契约不得继续使用 Go 零时间 `0001-01-01T00:00:00Z`。
+- 字节数使用整数并以 `_bytes` 结尾；速率使用每秒字节数并以 `_bytes_per_sec` 结尾；百分比使用 `0` 至 `100` 的数值并以 `_percent` 结尾；持续时间优先使用整数秒并以 `_seconds` 结尾。
+
+### 13.2 通用响应、错误和后台任务
+
+成功响应直接返回资源对象或数组；创建后台任务的写操作返回 HTTP `202` 和 `Job`。无响应体的成功操作返回 `204`。
+
+```ts
+type ApiError = {
+  error: {
+    code: string;       // 稳定、可判断的 snake_case 机器码
+    message: string;    // 可展示的诊断摘要，不作为分支条件
+    field?: string;     // 表单字段名，例如 game_port
+    details?: unknown;  // 冲突项、允许范围等结构化信息
+  };
+};
+
+type JobStatus = "queued" | "running" | "succeeded" | "failed";
+
+type Job = {
+  id: string;
+  instance_id: string | null;
+  type: string;
+  status: JobStatus;
+  stage: string;
+  percent: number;             // 0..100
+  message: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  events?: JobEvent[];
+};
+```
+
+当前后台任务响应实际仍使用 `ID`、`InstanceID`、`Type`、`Status`、`Stage`、`Percent`、`Message`、`Error`、`CreatedAt` 等字段。新版 API 适配层必须先规范为上面的模型。任务列表通过 `GET /api/jobs` 获取，详情通过 `GET /api/jobs/{job_id}` 获取，实时列表通过 `GET /api/jobs/events` 的 SSE 更新。
+
+任务日志模型保持现有 `snake_case`：`seq`、`timestamp`、`source`、`level`、`message`；`level` 取 `output | info | warn | error`。历史接口为 `GET /api/jobs/{job_id}/logs?limit=1000`，实时接口为 `GET /api/jobs/{job_id}/logs/stream?after_seq={seq}`，下载接口为 `GET /api/jobs/{job_id}/logs/download`。`truncated: true` 表示更早日志已不可用，不能显示成普通的“已加载全部”。
+
+### 13.3 核心领域模型
+
+```ts
+type InstanceState =
+  | "uninstalled" | "installing" | "stopped" | "starting"
+  | "running" | "updating" | "rolling_back" | "faulted" | "orphaned";
+
+type GameInstance = {
+  id: string;
+  name: string;
+  desired_state: InstanceState;
+  actual_state: InstanceState;
+  game_port: number;
+  sourcetv_port: number;        // 0 表示未启用
+  plugin_ports: number[];
+  start_map: string;
+  game_mode: "coop" | "realism" | "versus" | "survival" | "scavenge" | string;
+  tickrate: number;
+  max_players: number;
+  extra_args: string;
+  package_id: string;
+  package_source_repository: string;
+  applied_package_id: string;
+};
+
+type InstanceOverview = {
+  actual_state: InstanceState;
+  container_running: boolean;
+  container_running_known: boolean;
+  sampled_at: string | null;
+  run_id: string | null;
+  map: string;
+  players: number | null;
+  max_players: number | null;
+  cpu_percent: number | null;
+  memory_bytes: number | null;
+  memory_limit_bytes: number | null;
+  memory_percent: number | null;
+  network_rx_bytes_per_sec: number | null;
+  network_tx_bytes_per_sec: number | null;
+  network_rx_bytes: number | null;
+  network_tx_bytes: number | null;
+  block_read_bytes_per_sec: number | null;
+  block_write_bytes_per_sec: number | null;
+  block_read_bytes: number | null;
+  block_write_bytes: number | null;
+  pids: number | null;
+  uptime_seconds: number | null;
+  a2s_latency_ms: number | null;
+  image_size_bytes: number | null;
+  game_size_bytes: number | null;
+  private_size_bytes: number | null;
+  backups_size_bytes: number | null;
+  console_size_bytes: number | null;
+  issues: string[];
+};
+```
+
+- `desired_state` 是管理员意图，`actual_state` 是当前生命周期事实；按钮、状态徽标和异常判断不得互换两者。
+- `observed_state` 是当前前端的过渡字段，不进入新契约；统一使用观测响应中的 `actual_state`。
+- “待应用插件包”由 `package_id !== applied_package_id`，或配置了 `package_source_repository` 且最新包尚未应用来判断。后者仅靠实例对象无法可靠得出，建议由后端返回 `package_update_state: "current" | "pending" | "unknown"` 和 `pending_package_id`。
+- 总占用空间由五个可用的 `*_size_bytes` 相加；只要任一项未知，就应标注“部分数据”，不得把未知项当作零。
+- 性能历史点使用 `at`、`run_id`、`cpu_percent`、`memory_percent`、`network_rx_bytes_per_sec`、`network_tx_bytes_per_sec`、`block_read_bytes_per_sec`、`block_write_bytes_per_sec`。切换 `run_id` 时曲线必须断开。
+
+### 13.4 页面与接口映射
+
+| 页面或能力 | 现有接口 | 契约说明 |
+| --- | --- | --- |
+| 认证与会话 | `POST /api/auth/login`、`POST /api/auth/logout`、`GET /api/session` | 登录请求 `{ password }`。当前会话只证明已认证；若顶部必须显示管理员标识，建议会话返回 `{ authenticated, principal: { display_name } }`。单密码部署可固定显示“管理员”，但不得伪造用户名。 |
+| 控制节点健康 | `GET /api/health` | 成功表示控制节点在线；网络错误与非 2xx 表示异常。建议补充 `status`、`version`、`started_at` 和各依赖检查，支持有依据的异常详情。 |
+| 游戏实例列表 | `GET /api/instances` | 先适配为 `GameInstance[]`；列表本身不含完整实时观测。 |
+| 总览观测 | `GET /api/instances/{instance_id}/overview` | 当前前端逐实例并发轮询；设计不得假设单一总览接口已存在。实例较多时建议补充 `GET /api/overview`，一次返回控制节点摘要、共享游戏状态、任务摘要和实例观测。 |
+| 性能历史 | `GET /api/instances/{instance_id}/performance-history` | 返回最近约一小时的历史点数组。加载中、无历史与加载失败必须分开。 |
+| 创建与配置 | `POST /api/instances`、`PUT /api/instances/{instance_id}` | 请求字段为实例配置字段。当前模型没有可编辑 `data_directory`；设计应删除该输入，或先新增后端字段及路径校验契约，不能只在前端展示。 |
+| 生命周期操作 | `POST /api/instances/{instance_id}/actions` | 请求 `{ action: "start" | "stop" | "restart", confirm }`，返回 `202 Job`。停止和重启必须 `confirm: true`。 |
+| 重新安装 | `POST /api/instances/{instance_id}/game-update`、`POST /api/instances/{instance_id}/updates` | 游戏本体是共享资源；全局更新优先使用 `/api/game/update`。插件包更新请求 `{ package_id, mode: "hot" | "full", confirm }`。是否保留私有文件目前没有独立参数，设计不得提供无效开关。 |
+| 永久删除 | `DELETE /api/instances/{instance_id}` | 当前请求体支持 `{ confirm, delete_data }`，但不校验输入的实例名称。若保留“输入完整名称确认”，建议新增 `confirmation_name` 并由后端校验，不能只做前端校验。 |
+| 游戏控制台 | `GET /api/instances/{instance_id}/console` WebSocket | 服务端发送二进制原始控制台字节，客户端发送文本或二进制命令；前端最多保留一千行。连接关闭后由前端显示断开并显式重连。 |
+| 在线玩家 | `GET /api/instances/{instance_id}/players` | 返回 `map`、`max_players`、`match`、`players`；玩家字段为 `user_id`、`name`、`unique_id`、`connected`、`ping`、`loss`、`score`。查询失败不能显示为空服。 |
+| 玩家处置 | `POST /api/instances/{instance_id}/players/{user_id}/actions` | 请求 `{ action: "kick" | "ban", minutes, confirm }`，返回 `202 Job`。永久封禁使用 `minutes: 0`，界面名称固定为“永久封禁”。 |
+| 共享游戏本体 | `GET /api/game`、`POST /api/game/update`、`POST /api/game/migrate` | 状态字段包括 `active_release_id`、`previous_release_id`、`migration_state`、`operation_id`、`operation_stage`、`updated_at`、`version`、`path`。更新请求包含 `{ confirm, online_policy }`。 |
+| 共享 VPK | `/api/content/vpk` 及其上传、下载、重命名、清理、删除子路由 | 文件模型为 `{ name, hash, size }`。断点上传会话为 `{ id, name, hash, size, offset }`；分块写入使用 `Upload-Offset`。清理结果为 `{ name, removed, before_size, after_size }`。上传速度、平均速度和预计剩余时间由客户端根据字节进度与时间计算。 |
+| 插件包 | `GET /api/packages`、`POST /api/packages/uploads`、`POST /api/instances/{id}/updates` | 插件包字段为 `id`、`filename`、`version`、`source_repository`、`sha256`、`size`、`hot_compatible`、`created_at`。当前没有删除插件包接口；若设计保留删除，建议新增 `DELETE /api/packages/{package_id}`，并在被实例引用时返回 `409 package_in_use` 与引用实例列表。 |
+| GitHub 发布源 | `/api/github-sources`、`/api/github-sources/{id}`、`/api/github-sources/{id}/check` | 模型为 `id`、`name`、`repository`、`asset_pattern`、`created_at`、`updated_at`；检查返回后台任务。检查中、下载中等过程状态来自任务，而不是源对象。 |
+| 私有文件 | `/api/instances/{id}/private/*` | 树节点为 `path`、`kind`、`hash`、`size`、`updated_at`；差异为 `changes` 与 `{ added, modified, deleted }` 摘要；快照为 `id`、`applied_at`、`summary`。文本编辑上限当前为 1 MiB 且仅接受 UTF-8。应用更改返回 `202 Job`。 |
+| 游戏日志 | `/api/instances/{id}/game-logs/tree|preview|download` | `kind` 仅取 `game | sourcemod`；文件字段为 `path`、`size`、`modified_at`；预览字段为 `text`、`truncated`、`size`、`modified_at`。路径始终作为查询参数编码，不拼接未转义路径。 |
+| 计划任务 | `GET/POST /api/schedules`、`DELETE /api/schedules/{id}`、`POST /api/schedules/{id}/run` | 当前保存采用同一个 `POST` 完成新建和编辑。模型和枚举见 13.5。启用或停用也通过保存完整对象完成，目前没有独立 `PATCH`。 |
+| 系统设置 | `/api/settings/steam`、`/api/settings/github-token`、`/api/settings/jobs`、`/api/settings/game-logs` | 凭据查询只返回是否已配置，绝不回传密文。任务保留字段当前为 `successful_job_limit`，虽然含义是“已结束任务”，建议迁移为 `completed_job_limit`；迁移前在适配层转换。游戏日志字段为 `retention_days`。 |
+
+### 13.5 枚举与显示名称
+
+| 机器值 | 中文显示名称 |
+| --- | --- |
+| `queued` / `running` / `succeeded` / `failed` | 已排队 / 执行中 / 已成功 / 已失败 |
+| `uninstalled` / `installing` / `stopped` / `starting` / `running` | 未安装 / 安装中 / 已停止 / 启动中 / 运行中 |
+| `updating` / `rolling_back` / `faulted` / `orphaned` | 更新中 / 回滚中 / 故障 / 已失联 |
+| `skip` / `wait` / `force` | 有玩家时跳过 / 等待玩家离开 / 强制执行 |
+| `game_update` | 游戏更新 |
+| `package_hot` / `package_full` | 插件热更新 / 插件完整更新 |
+| `release_check` / `release_hot` / `release_full` | 仅同步 GitHub 发布源 / GitHub 发布版本热更新 / GitHub 发布版本完整更新 |
+| `backup` / `cleanup` | 私有文件备份 / 过期文件清理 |
+| `game` / `sourcemod` | 游戏日志 / 插件日志 |
+
+计划任务模型固定为：
+
+```ts
+type ScheduledTask = {
+  id: string;
+  instance_id: string;  // 全局任务为空字符串；新契约建议改为 null
+  type: "game_update" | "package_hot" | "package_full" | "release_check"
+      | "release_hot" | "release_full" | "backup" | "cleanup";
+  cron: string;         // 五段 Cron：分、时、日、月、周
+  timezone: string;     // IANA 时区，例如 Asia/Hong_Kong
+  online_policy: "skip" | "wait" | "force";
+  payload: string;      // 当前为 JSON 字符串，见下方迁移建议
+  enabled: boolean;
+  last_run: string | null;
+  next_run: string | null;
+};
+```
+
+当前 `payload` 是 JSON 字符串：`release_check` 使用发布源标识，`cleanup` 使用保留天数，其他任务通常为 `{}`。建议补充结构化 `parameters` 对象并按 `type` 校验，避免 UI 手工序列化字符串；迁移期间 API 适配层负责 `payload` 与 `parameters` 互转。
+
+### 13.6 建议补充接口的最低契约
+
+以下补充项直接对应现有 brief 中无法由当前接口可靠实现的界面，不属于纯视觉优化：
+
+1. `GET /api/overview`：返回 `node`、`shared_game`、`job_summary` 和带 `overview` 的实例数组，减少总览 N+1 请求；摘要必须提供采集时间，部分实例失败时返回每实例 `issues`，而不是让整个请求伪装成功。
+2. `GET /api/session` 扩展：返回 `{ authenticated: true, principal: { display_name: "管理员" } }`；若产品仍为单密码模式，不增加用户名登录字段。
+3. `DELETE /api/packages/{package_id}`：支持插件包删除及 `package_in_use` 冲突详情。
+4. `DELETE /api/instances/{instance_id}` 请求增加 `confirmation_name`，由后端与当前实例名称做完全匹配校验。
+5. 实例 DTO 增加 `package_update_state` 与 `pending_package_id`，确保“当前使用版本”和“待应用版本”来自服务端事实。
+6. 若创建表单确实需要“数据目录”，先定义 `data_directory` 的允许根目录、规范化方式、重复路径与越界错误；否则从设计稿删除该字段。当前实例创建 API 没有这项能力。
+7. 若重新安装需要“保留私有文件”开关，先为对应操作定义 `preserve_private_files`，并明确备份、失败回滚和默认值。当前接口没有该参数，不得设计成可点击但无效的控件。
+
+### 13.7 命名与组件实现约束
+
+- URL 路径使用复数资源名和 kebab-case；路径参数统一写作 `{instance_id}`、`{job_id}`、`{package_id}`，文档中不再混用 `{id}` 的含义。
+- JSON、TypeScript 数据字段和查询参数使用 `snake_case`；React 组件使用 `PascalCase`；函数与局部变量使用 `camelCase`；布尔字段使用 `is_`、`has_`、`can_` 或明确的状态名，避免 `flag`、`state1` 等名称。
+- 领域对象使用 `GameInstance`、`InstanceOverview`、`PackageVersion`、`GitHubSource`、`SharedVPK`、`PrivateEntry`、`Job`、`ScheduledTask`。页面组件不得使用含义宽泛的 `Item`、`Data`、`Info` 作为跨模块模型名。
+- `source_repository` 表示插件包的来源仓库，`package_source_repository` 表示实例“跟随该仓库最新版本”的配置，两者不可互换。
+- `package_id` 表示期望使用的插件包，`applied_package_id` 表示已实际应用的插件包；界面“当前”和“待应用”必须按此语义展示。
+- `map` 仅用于观测到的当前地图，`start_map` 仅用于启动配置；`max_players` 在实例配置中是配置容量，在观测或玩家快照中是实际查询容量，组件属性需要以父模型区分来源。
+- 面向用户的接口错误优先依据 `error.code` 映射中文文案；未知错误显示后端 `message` 并提供重试或任务日志入口。不得通过匹配英文错误文本决定交互。
+- 写操作按钮以请求是否已提交和关联 `job.id` 为状态来源。收到 `202` 后显示“已加入队列”，随后由任务 SSE 或详情轮询更新；页面刷新后根据后台任务恢复状态，不能只依赖组件内 `loading`。

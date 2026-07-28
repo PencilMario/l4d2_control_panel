@@ -7,9 +7,8 @@ import {
 } from "react";
 import {
   ArrowLeft,
-  Clipboard,
+  Copy,
   Download,
-  Radio,
   Search,
   StepForward,
 } from "lucide-react";
@@ -23,20 +22,6 @@ import {
 } from "../api/client";
 import { useConsoleFollow } from "./useConsoleFollow";
 
-const LEVEL_LABELS: Record<JobLogLevel, string> = {
-  output: "输出",
-  info: "信息",
-  warn: "警告",
-  error: "错误",
-};
-const JOB_STATUS_LABELS: Record<string, string> = {
-  pending: "排队中",
-  running: "执行中",
-  succeeded: "已成功",
-  failed: "失败",
-  interrupted: "已中断",
-};
-
 type Props = {
   job: Job;
   onBack: () => void;
@@ -45,7 +30,6 @@ type Props = {
 export function JobLogsPage({ job, onBack }: Props) {
   const [records, setRecords] = useState<JobLogRecord[]>([]);
   const [query, setQuery] = useState("");
-  const [source, setSource] = useState("all");
   const [level, setLevel] = useState<JobLogLevel | "all">("all");
   const [truncated, setTruncated] = useState(false);
   const [status, setStatus] = useState("正在读取日志");
@@ -93,18 +77,13 @@ export function JobLogsPage({ job, onBack }: Props) {
     };
   }, [job.ID]);
 
-  const sources = useMemo(
-    () => Array.from(new Set(records.map((record) => record.source))).sort(),
-    [records],
-  );
   const visible = useMemo(
     () =>
       records.filter((record) => {
-        if (source !== "all" && record.source !== source) return false;
         if (level !== "all" && record.level !== level) return false;
-        return !deferredQuery || record.message.toLowerCase().includes(deferredQuery);
+        return !deferredQuery || record.message.toLowerCase().includes(deferredQuery) || record.source.toLowerCase().includes(deferredQuery);
       }),
-    [deferredQuery, level, records, source],
+    [deferredQuery, level, records],
   );
 
   const onScroll = (event: UIEvent<HTMLPreElement>) => {
@@ -132,45 +111,39 @@ export function JobLogsPage({ job, onBack }: Props) {
   return (
     <section className="task-log-page">
       <div className="task-log-head">
-        <button className="icon-button" type="button" aria-label="返回任务列表" title="返回任务列表" onClick={onBack}>
-          <ArrowLeft aria-hidden="true" />
-        </button>
-        <div>
-          <h2>任务日志: {job.Type || "unknown"}</h2>
-          <span className="task-log-id">{job.ID.slice(0, 8)}</span>
+        <div className="task-log-heading-group">
+          <button className="task-log-back" type="button" aria-label="返回任务列表" onClick={onBack}><ArrowLeft aria-hidden="true" /><span>返回任务列表</span></button>
+          <div>
+            <h2 aria-label={`任务日志: ${job.Type || "unknown"}`}>任务日志: {job.Type || "unknown"}<span className="task-log-id">{job.ID.slice(0, 8)}</span></h2>
+            <p>底层运维过程的详细事件流与诊断数据输出</p>
+          </div>
         </div>
-        <span className={`job-state ${job.Status}`}>{JOB_STATUS_LABELS[job.Status] || job.Status}</span>
+        <div className="task-log-head-actions">
+          <button type="button" aria-label="复制日志" onClick={() => void copy()}><Copy aria-hidden="true" /><span>复制日志</span></button>
+          <button className="task-log-download" type="button" aria-label="下载完整日志" onClick={() => void download()}><Download aria-hidden="true" /><span>下载完整日志</span></button>
+        </div>
       </div>
 
       <div className="task-log-toolbar">
+        <div className="task-log-levels" role="group" aria-label="日志级别筛选">
+          <span>级别筛选:</span>
+          {([['all', '全部'], ['info', '信息'], ['warn', '警告'], ['error', '错误']] as const).map(([value, label]) => <button className={level === value ? 'active' : ''} type="button" key={value} onClick={() => setLevel(value)}>{label}</button>)}
+        </div>
         <label className="task-log-search">
           <Search aria-hidden="true" />
-          <input aria-label="搜索任务日志" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索当前日志" />
+          <input aria-label="搜索任务日志" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索日志消息..." />
         </label>
-        <select aria-label="筛选日志来源" value={source} onChange={(event) => setSource(event.target.value)}>
-          <option value="all">全部来源</option>
-          {sources.map((item) => <option value={item} key={item}>{item}</option>)}
-        </select>
-        <select aria-label="筛选日志级别" value={level} onChange={(event) => setLevel(event.target.value as JobLogLevel | "all")}>
-          <option value="all">全部级别</option>
-          {(Object.keys(LEVEL_LABELS) as JobLogLevel[]).map((item) => <option value={item} key={item}>{LEVEL_LABELS[item]}</option>)}
-        </select>
-        <button className="icon-button" type="button" aria-label="复制当前日志" title="复制当前日志" onClick={() => void copy()}><Clipboard aria-hidden="true" /></button>
-        <button className="icon-button" type="button" aria-label="下载完整日志" title="下载完整日志" onClick={() => void download()}><Download aria-hidden="true" /></button>
       </div>
 
-      <div className="task-log-status" role="status">
-        <span><Radio aria-hidden="true" />{status}</span>
-        <span>{visible.length} / {records.length} 条</span>
-      </div>
+      <div className="task-log-status" role="status"><span>{status}</span><span>{visible.length} / {records.length} 条</span></div>
       {truncated ? <div className="task-log-truncated">早期日志已因 10 MiB 上限截断</div> : null}
       <div className="task-log-output-wrap">
         <pre className="task-log-output" ref={follow.outputRef} onScroll={onScroll} tabIndex={0}>
           {visible.map((record) => (
             <span className={`task-log-line ${record.level}`} key={record.seq}>
+              <span>{record.seq}</span>
               <time>{formatTime(record.timestamp)}</time>
               <b>{record.source}</b>
-              <i>{LEVEL_LABELS[record.level]}</i>
               <code>{record.message}</code>
             </span>
           ))}

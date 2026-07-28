@@ -90,9 +90,29 @@ describe("App", () => {
     expect(document.querySelector(".page-content")).toBeInTheDocument();
     expect(document.querySelector(".overview-summary")).toBeInTheDocument();
     expect(document.querySelector(".instance-panel")).toBeInTheDocument();
+    expect(document.querySelectorAll(".instance-metrics .performance-metric")).toHaveLength(8);
+    expect(document.querySelector(".instance-command-bar")).toBeInTheDocument();
+    expect(document.querySelector(".instance-title-line > .status-badge")).toBeInTheDocument();
+    expect(document.querySelector(".performance-panel .performance-current")).not.toBeInTheDocument();
     expect(screen.getByText("L4D2 控制面板")).toBeVisible();
+    expect(screen.queryByText("v2.4.1-release")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "游戏实例总览" })).toBeVisible();
+    expect(screen.getByText("实时观测《求生之路 2》所有专用服务器实例的生命周期、负载与在线玩家")).toBeVisible();
+    expect(screen.getByText("全量服务运行正常")).toBeVisible();
+    expect(screen.getByText("活跃在全服各对局中")).toBeVisible();
+    expect(screen.getByText("暂无待处理风险操作")).toBeVisible();
+    expect(screen.getByRole("button", { name: "创建实例" })).toHaveTextContent("创建游戏实例");
     expect(screen.getByText("控制节点状态")).toBeVisible();
     expect(screen.getByText("管理员")).toBeVisible();
+  });
+
+  it("folds each instance performance detail independently", async () => {
+    render(<App initialInstances={[instance]} />);
+    expect(screen.getByTestId("performance-chart")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "收起性能详情" }));
+    expect(screen.queryByTestId("performance-chart")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "展开性能详情与历史曲线" }));
+    expect(screen.getByTestId("performance-chart")).toBeInTheDocument();
   });
 
   it("uses the game version without exposing the internal release ID", () => {
@@ -110,17 +130,25 @@ describe("App", () => {
     }));
     render(<App />);
     await userEvent.click(await screen.findByRole("button", { name: "内容仓库" }));
-    expect(await screen.findByText("保存位置")).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 1, name: "内容仓库" })).toBeVisible();
+    expect(screen.getByText("统一管理共享游戏本体、共享 VPK 模组包、插件版本包及 GitHub 自动发布源")).toBeVisible();
+    expect(await screen.findByText("当前安装版本")).toBeVisible();
+    expect(screen.getByText("物理保存位置")).toBeVisible();
+    expect(screen.getByText("初始化就绪状态")).toBeVisible();
     expect(await screen.findByText("2.2.4.3")).toBeVisible();
     expect(screen.getByText("/data/game/current")).toBeVisible();
     expect(screen.getByRole("tablist", { name: "内容仓库分类" })).toBeVisible();
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
       "共享游戏本体",
-      "共享 VPK",
-      "插件包",
-      "GitHub 发布源",
+      "共享 VPK (0)",
+      "插件包 (0)",
+      "GitHub 发布源 (0)",
     ]);
-    expect(screen.getByRole("button", { name: "更新共享游戏本体" })).toHaveClass("shared-game-update");
+    expect(screen.getByRole("heading", { level: 3, name: "触发共享游戏本体更新" })).toBeVisible();
+    expect(screen.getByRole("radio", { name: /有玩家时跳过/ })).toBeVisible();
+    expect(screen.getByRole("radio", { name: /等待玩家离开/ })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /强制执行/ })).toBeVisible();
+    expect(screen.getByRole("button", { name: "更新游戏本体" })).toHaveClass("shared-game-update");
   });
 
   it("keeps the newest 1000 console lines and follows after sending a command", async () => {
@@ -162,6 +190,13 @@ describe("App", () => {
     act(() => sockets[0].onmessage?.({ data: "ready\n" } as MessageEvent));
     act(() => flushFrames());
     expect(output).toHaveTextContent("ready");
+    expect(scrollTop).toBe(600);
+
+    scrollTop = 100;
+    fireEvent.scroll(output);
+    expect(screen.getByRole("button", { name: "继续跟随最新输出" })).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "继续跟随最新输出" }));
+    act(() => flushFrames());
     expect(scrollTop).toBe(600);
 
     await userEvent.type(screen.getByRole("textbox"), "status");
@@ -610,7 +645,7 @@ describe("App", () => {
     const playerTotal = screen.getByText("在线玩家").closest("article");
     expect(playerTotal).not.toBeNull();
     expect(within(playerTotal!).getByText("--")).toBeInTheDocument();
-    expect(screen.getByText("实时观测状态")).toBeInTheDocument();
+    expect(screen.getByText("1 个实例处于停止状态")).toBeInTheDocument();
     expect(calls).toContain("/api/instances/1/overview");
     expect(calls).not.toContain("/api/instances/1/players");
     expect(calls).not.toContain("/api/instances/1/resources");
@@ -1012,7 +1047,7 @@ describe("App", () => {
     );
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "私有文件" }));
-    expect(await screen.findByRole("heading", { name: "私有文件" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "私有文件工作区" })).toBeVisible();
     vi.unstubAllGlobals();
   });
   it("disables instance-scoped content actions when no instance exists", async () => {
@@ -1145,11 +1180,19 @@ describe("App", () => {
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
     await userEvent.click(screen.getByRole("tab", { name: "共享 VPK" }));
+    expect(screen.getByRole("region", { name: "VPK 上传区" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "上传前清理" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("columnheader", { name: "文件名" })).toBeVisible();
+    expect(screen.getByRole("columnheader", { name: "大小" })).toBeVisible();
+    expect(screen.getByRole("columnheader", { name: "校验 Hash" })).toBeVisible();
+    expect(screen.queryByRole("columnheader", { name: "上传时间" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "清理模式" })).not.toBeInTheDocument();
     const download = await screen.findByRole("link", { name: "下载 maps.vpk" });
     expect(download).toHaveAttribute(
       "href",
       "/api/content/vpk/maps.vpk/download",
     );
+    expect(screen.getByRole("button", { name: "清理资源 maps.vpk" })).toBeVisible();
     vi.unstubAllGlobals();
   });
 
@@ -1208,7 +1251,8 @@ describe("App", () => {
     );
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "计划任务" }));
-    await userEvent.click(screen.getByRole("button", { name: "保存计划" }));
+    await userEvent.click(screen.getByRole("button", { name: "新建计划任务" }));
+    await userEvent.click(screen.getByRole("button", { name: "新建任务" }));
     expect(await screen.findByRole("status")).toHaveTextContent("计划已保存");
     expect(submitted).toMatchObject({
 		instance_id: "",
@@ -1233,7 +1277,8 @@ describe("App", () => {
     );
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "计划任务" }));
-    await userEvent.click(screen.getByRole("button", { name: "保存计划" }));
+    await userEvent.click(screen.getByRole("button", { name: "新建计划任务" }));
+    await userEvent.click(screen.getByRole("button", { name: "新建任务" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "invalid Cron expression",
     );
@@ -1623,6 +1668,22 @@ describe("App", () => {
       ),
     ).toBe(true);
   });
+
+  it("uploads a plugin package dropped onto the package upload zone", async () => {
+    const calls: Array<[RequestInfo | URL, RequestInit | undefined]> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push([input, init]);
+      return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
+    await userEvent.click(screen.getByRole("tab", { name: "插件包" }));
+    const file = new File(["archive"], "plugins.zip", { type: "application/zip" });
+    fireEvent.drop(screen.getByRole("region", { name: "插件包上传区" }), { dataTransfer: { files: [file] } });
+    await waitFor(() => expect(calls.some(([path, init]) =>
+      String(path).includes("/api/packages/uploads?filename=plugins.zip") && init?.method === "POST" && init.body === file
+    )).toBe(true));
+  });
   it("keeps confirmation actions busy until task creation completes", async () => {
     const request = deferred<Response>();
     let updatePosts = 0;
@@ -1703,10 +1764,11 @@ describe("App", () => {
     }));
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "计划任务" }));
+    await userEvent.click(screen.getByRole("button", { name: "新建计划任务" }));
     await userEvent.selectOptions(screen.getByLabelText("任务"), "release_hot");
     expect(screen.queryByLabelText("GitHub 源")).not.toBeInTheDocument();
     expect(screen.getByText(/使用目标实例当前配置的插件包/)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "保存计划" }));
+    await userEvent.click(screen.getByRole("button", { name: "新建任务" }));
     expect(submitted.type).toBe("release_hot");
     expect(JSON.parse(submitted.payload)).toEqual({});
   });
@@ -1731,15 +1793,24 @@ describe("App", () => {
     );
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "玩家" }));
-    const playerDialog = await screen.findByRole("dialog", { name: "深夜战役" });
+    const playerDialog = await screen.findByRole("dialog", { name: "在线玩家与对局摘要" });
+    expect(playerDialog).toHaveClass("players-modal");
+    expect(within(playerDialog).getByText("深夜战役 (1 / 12 人在线)")).toBeVisible();
+    expect(within(playerDialog).getByText("当前地图")).toBeVisible();
+    expect(within(playerDialog).queryByText("游戏模式")).not.toBeInTheDocument();
+    expect(within(playerDialog).getByText("在线容量")).toBeVisible();
+    expect(within(playerDialog).getByText("公网 IP")).toBeVisible();
+    expect(within(playerDialog).getByText("221.215.78.153:27991")).toBeVisible();
+    expect(within(playerDialog).getByRole("columnheader", { name: "玩家名称" })).toBeVisible();
+    expect(within(playerDialog).getByRole("columnheader", { name: "Steam ID" })).toBeVisible();
+    expect(within(playerDialog).queryByRole("columnheader", { name: "Loss" })).not.toBeInTheDocument();
     expect(within(playerDialog).getByText("c2m1_highway")).toBeVisible();
     expect(within(playerDialog).getByText("1 / 12")).toBeVisible();
-    expect(within(playerDialog).getByText("2.2.4.3 10097 · 安全")).toBeVisible();
+    expect(within(playerDialog).queryByText("幸存者/感染者")).not.toBeInTheDocument();
     expect(within(playerDialog).getByText("STEAM_1:0:42")).toBeVisible();
     expect(within(playerDialog).getByText("00:48")).toBeVisible();
     expect(within(playerDialog).getByText("29 ms")).toBeVisible();
-    expect(within(playerDialog).getByText("0%")).toBeVisible();
-    await userEvent.click(await screen.findByRole("button", { name: "踢出" }));
+    await userEvent.click(await screen.findByRole("button", { name: "踢出玩家" }));
     expect(calls.some(([, init]) => init?.method === "POST")).toBe(false);
     await userEvent.click(screen.getByRole("button", { name: "确认踢出" }));
     expect(calls.some(([, init]) => init?.method === "POST")).toBe(true);
@@ -1816,7 +1887,7 @@ describe("App", () => {
     expect(jobReads).toBe(1);
   });
 
-  it("confirms the selected VPK list and uploads in sequential 8 MiB chunks", async () => {
+  it("uploads the selected VPK directly in sequential 8 MiB chunks", async () => {
     const chunkSize = 8 * 1024 * 1024;
     const patchCalls: Array<{ offset: number; size: number }> = [];
     vi.stubGlobal(
@@ -1848,14 +1919,11 @@ describe("App", () => {
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
     await userEvent.click(screen.getByRole("tab", { name: "共享 VPK" }));
+    await userEvent.click(screen.getByRole("button", { name: "直接上传" }));
     const fakeFile = new File([new Uint8Array(chunkSize + 3)], "maps.vpk");
     fireEvent.change(screen.getByLabelText("上传 VPK"), {
       target: { files: [fakeFile] },
     });
-    const dialog = await screen.findByRole("dialog", { name: "已选择 1 个 VPK" });
-    expect(within(dialog).getByText("maps.vpk")).toBeVisible();
-    await userEvent.selectOptions(within(dialog).getByLabelText("maps.vpk 处理方式"), "direct");
-    await userEvent.click(within(dialog).getByRole("button", { name: "加入上传队列" }));
     await waitFor(() => expect(patchCalls).toHaveLength(2));
     expect(patchCalls).toEqual([
       { offset: 0, size: chunkSize },
@@ -1866,12 +1934,9 @@ describe("App", () => {
 
   it("defaults every selected VPK to upload-time cleanup", async () => {
     const calls: string[] = [];
-    let finishComplete!: () => void;
-    const complete = new Promise<void>((resolve) => { finishComplete = resolve; });
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input); calls.push(path);
       if (path === "/api/content/vpk/uploads") return new Response('{"id":"u1"}', { status: 201, headers: { "Content-Type": "application/json" } });
-      if (path.includes("/complete")) { await complete; return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }); }
       return new Response(!init?.method ? "[]" : "{}", { status: 200, headers: { "Content-Type": "application/json" } });
     }));
     render(<App initialInstances={[instance]} />);
@@ -1879,12 +1944,10 @@ describe("App", () => {
     await userEvent.click(screen.getByRole("tab", { name: "共享 VPK" }));
     const file = new File([new Uint8Array(2048)], "small.vpk");
     const second = new File([new Uint8Array(16)], "second.vpk");
-    fireEvent.change(screen.getByLabelText("上传 VPK"), { target: { files: [file, second] } });
-    const dialog = await screen.findByRole("dialog", { name: "已选择 2 个 VPK" });
-    expect(within(dialog).getByText("small.vpk")).toBeVisible();
-    expect(within(dialog).getByText("second.vpk")).toBeVisible();
-    expect(within(dialog).getByLabelText("small.vpk 处理方式")).toHaveValue("clean");
-    expect(within(dialog).getByLabelText("second.vpk 处理方式")).toHaveValue("clean");
-    finishComplete();
+    fireEvent.drop(screen.getByRole("region", { name: "VPK 上传区" }), { dataTransfer: { files: [file, second] } });
+    expect(screen.getByRole("button", { name: "上传前清理" })).toHaveAttribute("aria-pressed", "true");
+    expect(await screen.findByText("small.vpk")).toBeVisible();
+    expect(await screen.findByText("second.vpk")).toBeVisible();
+    expect(screen.getAllByText(/上传前清理 ·/)).toHaveLength(2);
   });
 });

@@ -113,6 +113,44 @@ afterEach(() => {
 });
 
 describe("PrivateFilesPage", () => {
+  it("uses the reference workspace header and reveals selected-entry actions in the top toolbar", async () => {
+    mockPrivateAPI();
+    render(<PrivateFilesPage instances={[instance]} queue={vi.fn()} />);
+    expect(screen.getByRole("heading", { name: "私有文件工作区" })).toBeVisible();
+    expect(screen.getByText("管理与改动单台游戏实例独占的 cfg 与 addons 覆盖文件")).toBeVisible();
+    expect(screen.getByLabelText("导入 ZIP")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "导出 ZIP" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "移动 server.cfg" })).not.toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("treeitem", { name: "cfg" }));
+    await userEvent.click(screen.getByRole("treeitem", { name: "server.cfg" }));
+    expect(screen.getByRole("button", { name: "移动 server.cfg" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "删除 server.cfg" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "编辑 server.cfg" })).toBeVisible();
+  });
+
+  it("opens editable text files in the editor when they are selected", async () => {
+    mockPrivateAPI();
+    render(<PrivateFilesPage instances={[instance]} queue={vi.fn()} />);
+    await userEvent.click(await screen.findByRole("treeitem", { name: "cfg" }));
+    await userEvent.click(screen.getByRole("treeitem", { name: "server.cfg" }));
+    expect(await screen.findByLabelText("文件内容")).toHaveValue("hostname smoke");
+  });
+
+  it("defaults new files inside the selected directory or beside the selected file", async () => {
+    mockPrivateAPI();
+    const prompt = vi.spyOn(window, "prompt").mockReturnValue(null);
+    render(<PrivateFilesPage instances={[instance]} queue={vi.fn()} />);
+
+    await userEvent.click(await screen.findByRole("treeitem", { name: "empty" }));
+    await userEvent.click(screen.getByRole("button", { name: "新建文件" }));
+    expect(prompt).toHaveBeenLastCalledWith("新文件相对路径", "empty/new.cfg");
+
+    await userEvent.click(screen.getByRole("treeitem", { name: "cfg" }));
+    await userEvent.click(screen.getByRole("treeitem", { name: "server.cfg" }));
+    await userEvent.click(screen.getByRole("button", { name: "新建文件" }));
+    expect(prompt).toHaveBeenLastCalledWith("新文件相对路径", "cfg/new.cfg");
+  });
+
   it("explains and performs a full workspace ZIP replacement without applying", async () => {
     const { calls } = mockPrivateAPI();
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -218,6 +256,7 @@ describe("PrivateFilesPage", () => {
     const queue = vi.fn().mockResolvedValue(undefined);
     render(<PrivateFilesPage instances={[instance]} queue={queue} />);
     await userEvent.click(await screen.findByRole("treeitem", { name: "cfg" }));
+    await userEvent.click(screen.getByRole("treeitem", { name: "server.cfg" }));
     await userEvent.click(screen.getByRole("button", { name: "编辑 server.cfg" }));
     await userEvent.clear(screen.getByLabelText("文件内容"));
     await userEvent.type(screen.getByLabelText("文件内容"), "hostname staged");
@@ -261,7 +300,9 @@ describe("PrivateFilesPage", () => {
     await screen.findByRole("tree");
     await userEvent.click(screen.getByRole("button", { name: "新建目录" }));
     await userEvent.click(screen.getByRole("treeitem", { name: "cfg" }));
+    await userEvent.click(screen.getByRole("treeitem", { name: "server.cfg" }));
     await userEvent.click(screen.getByRole("button", { name: "移动 server.cfg" }));
+    await userEvent.click(screen.getByRole("treeitem", { name: "server.cfg" }));
     await userEvent.click(screen.getByRole("button", { name: "删除 server.cfg" }));
     expect(calls.some((call) => call.path.endsWith("/private/directories"))).toBe(true);
     expect(
@@ -415,6 +456,7 @@ describe("PrivateFilesPage", () => {
       : original(input, init));
     render(<PrivateFilesPage instances={[instance]} queue={vi.fn()} />);
     await userEvent.click(await screen.findByRole("treeitem", { name: "cfg" }));
+    await userEvent.click(screen.getByRole("treeitem", { name: "server.cfg" }));
     await userEvent.click(screen.getByRole("button", { name: "编辑 server.cfg" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("不是可编辑的 UTF-8 文本");
     expect(screen.queryByLabelText("文件内容")).not.toBeInTheDocument();
@@ -431,6 +473,7 @@ describe("PrivateFilesPage", () => {
       return original(input, init);
     });
     render(<PrivateFilesPage instances={[instance]} queue={vi.fn()} />);
+    await userEvent.click(await screen.findByRole("treeitem", { name: "README" }));
     await userEvent.click(await screen.findByRole("button", { name: "编辑 README" }));
     expect(await screen.findByLabelText("文件内容")).toHaveValue("说明");
   });
@@ -462,6 +505,7 @@ describe("PrivateFilesPage", () => {
     const queueAndWait = vi.fn(() => new Promise<any>((resolve) => { finish = resolve; }));
     render(<PrivateFilesPage instances={[instance]} queue={vi.fn()} queueAndWait={queueAndWait} />);
     const apply = await screen.findByRole("button", { name: "应用更改" });
+    await waitFor(() => expect(apply).toBeEnabled());
     act(() => {
       apply.click();
       apply.click();

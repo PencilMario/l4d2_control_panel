@@ -8,24 +8,45 @@ import {
 } from "react";
 import {
   Activity,
+  AlertCircle,
+  ArrowDown,
+  Ban,
   Box,
   CalendarClock,
+  CheckCircle2,
+  Clock,
+  ChevronDown,
+  ChevronUp,
   CircleStop,
   Database,
+  Download,
+  Edit3,
+  ExternalLink,
+  FileArchive,
   Files,
+  FolderGit2,
   Gauge,
+  Globe2,
+  Layers,
+  Key,
   ListTodo,
+  Lock,
   Map,
+  MapPin,
   Play,
   Plus,
   RefreshCw,
   ScrollText,
+  Save,
+  Send,
   Server,
   Settings,
   ShieldCheck,
   SlidersHorizontal,
   TerminalSquare,
   Trash2,
+  Upload,
+  UserX,
   Users,
   X,
 } from "lucide-react";
@@ -41,12 +62,15 @@ import {
 } from "./InstanceConfigModal";
 import { PrivateFilesPage } from "./PrivateFilesPage";
 import { SchedulesPage } from "./SchedulesPage";
-import { VPKUploadDialog } from "./VPKUploadDialog";
 import { VPKUploadQueue } from "./VPKUploadQueue";
-import { cancelVPKUpload, enqueueVPKUploads, retryVPKUpload, startVPKUploadQueue, type VPKUploadTask } from "../vpk/uploadQueue";
+import { cancelVPKUpload, enqueueVPKUploads, retryVPKUpload, startVPKUploadQueue, type VPKUploadMode, type VPKUploadTask } from "../vpk/uploadQueue";
 import { useConsoleFollow } from "./useConsoleFollow";
 import { appendConsoleOutput } from "./consoleBuffer";
 import {
+  formatBytes as formatMetricBytes,
+  formatBytesPerSecond,
+  formatLatency,
+  formatPercent,
   PerformancePanel,
   type PerformanceHistoryPoint,
 } from "./PerformancePanel";
@@ -691,7 +715,6 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
         <div className="product-mark">
           <span><ShieldCheck aria-hidden="true" /></span>
           <b>L4D2 控制面板</b>
-          <small>v2.4.1-release</small>
         </div>
         <div className="topbar-actions">
           <span className={`node-pill ${health.status}`}>
@@ -781,7 +804,7 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
         {["overview", "content", "jobs", "settings"].includes(page) ? (
           <div className={page === "overview" ? "page-heading overview-heading" : "page-heading"}>
             <h1>{pageTitle}</h1>
-            {page !== "overview" ? <p>管理游戏进程、内容部署与计划维护</p> : null}
+            {page !== "overview" ? <p>{page === "content" ? "统一管理共享游戏本体、共享 VPK 模组包、插件版本包及 GitHub 自动发布源" : page === "jobs" ? "持久化排队与异步执行的游戏维护、更新、备份及清理任务" : "管理游戏进程、内容部署与计划维护"}</p> : null}
           </div>
         ) : null}
         {error && (
@@ -967,6 +990,7 @@ function Overview({
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [reinstalling, setReinstalling] = useState<Instance | null>(null);
   const [deleting, setDeleting] = useState<Instance | null>(null);
+  const [expandedPerformance, setExpandedPerformance] = useState<Record<string, boolean>>({});
   const packagesByID = new globalThis.Map(
     packages.map((item) => [item.id, item]),
   );
@@ -996,48 +1020,62 @@ function Overview({
   };
   return (
     <>
+      <header className="overview-head">
+        <div>
+          <h1>游戏实例总览</h1>
+          <p>实时观测《求生之路 2》所有专用服务器实例的生命周期、负载与在线玩家</p>
+        </div>
+        <button className="command-primary overview-create" aria-label="创建实例" onClick={() => setCreating(true)}>
+          <Plus />
+          创建游戏实例
+        </button>
+      </header>
       <section className="metrics overview-summary">
         <Metric
-          icon={<Activity />}
+          icon={<Server />}
           label="运行实例"
-          value={`${running} / ${instances.length}`}
-          note="实时观测状态"
+          value={String(running)}
+          unit={`/ ${instances.length}`}
+          note={running === instances.length ? "全量服务运行正常" : `${instances.length - running} 个实例处于停止状态`}
+          noteTone="success"
         />
         <Metric
           icon={<Users />}
           label="在线玩家"
           value={totalPlayers}
-          note="A2S 查询"
+          unit="人"
+          note="活跃在全服各对局中"
         />
         <Metric
-          icon={<Database />}
+          icon={<Layers />}
           label="游戏实例"
           value={String(instances.length)}
+          unit="个"
           note="独立隔离进程"
         />
         <Metric
-          icon={<RefreshCw />}
-          label="游戏本体版本"
-          value={sharedGameVersionLabel(sharedGame)}
-          note="共享安装"
+          icon={<CheckCircle2 />}
+          label="共享游戏本体"
+          value={sharedGameVersionLabel(sharedGame).split(" ")[0]}
+          note="就绪 (Steam AppID 222860)"
+          compact
+          noteTone="success"
         />
         <Metric
-          icon={<CircleStop />}
+          icon={<AlertCircle />}
           label="待处理事项"
           value={String(pendingItems)}
-          note={pendingItems ? "插件包更新待应用" : "当前无需处理"}
+          unit="项"
+          note={pendingItems ? "插件包更新待应用" : "暂无待处理风险操作"}
+          noteTone={pendingItems ? "warning" : undefined}
         />
       </section>
       <section className="work">
         <div className="section-head">
           <h2>所有游戏实例 ({instances.length})</h2>
-          <button className="create" onClick={() => setCreating(true)}>
-            <Plus />
-            创建实例
-          </button>
         </div>
         <div className="grid instance-list">
-          {instances.map((x) => {
+          {instances.map((x, index) => {
             const selectedPackage = packagesByID.get(x.package_id);
             const packagePending =
               Boolean(x.package_id) && x.package_id !== x.applied_package_id;
@@ -1049,64 +1087,64 @@ function Overview({
                 : x.observed_max_players;
             const starting = pendingActions.has(`${x.id}:start`);
             const stopping = pendingActions.has(`${x.id}:stop`);
+            const performanceExpanded = expandedPerformance[x.id] ?? index === 0;
             return (
               <article className={`card instance-panel ${state}`} key={x.id}>
-                <div className="card-top">
-                  <span className="status">
-                    <i></i>
-                    {stateLabel(state)}
-                  </span>
-                  <div className="card-tools">
-                    <button
-                      className="icon-btn"
-                      aria-label={`配置 ${x.name}`}
-                      title="实例配置"
-                      onClick={() => setEditing(x)}
-                    >
-                      <SlidersHorizontal />
-                    </button>
-                    <button
-                      className="icon-btn danger"
-                      aria-label={`删除实例 ${x.name}`}
-                      title="永久删除实例"
-                      onClick={() => setDeleting(x)}
-                    >
-                      <Trash2 />
-                    </button>
+                <header className="instance-command-bar">
+                  <span className="instance-mark"><Server /></span>
+                  <div className="instance-identity">
+                    <div className="instance-title-line">
+                      <h3>{x.name}</h3>
+                      <span className="status-badge">
+                        <i></i>
+                        {stateLabel(state)}
+                      </span>
+                    </div>
+                    <p className="endpoint">
+                      LOCAL-01 : {x.game_port}
+                      {x.sourcetv_port ? ` · TV ${x.sourcetv_port}` : ""}
+                      {x.plugin_ports.length ? ` · 插件 ${x.plugin_ports.join(", ")}` : ""}
+                    </p>
+                    <p className="instance-package">
+                      {selectedPackage ? `${selectedPackage.filename} · ${selectedPackage.version}` : "未选择插件包"}
+                      {packagePending ? <em>待应用</em> : null}
+                    </p>
                   </div>
+                  <div className="instance-commands">
+                    {containerRunning ? (
+                      <button className="instance-command command-danger" aria-label={`停止 ${x.name}`} disabled={stopping} aria-busy={stopping} onClick={() => setPending(x)}>{stopping ? <RefreshCw /> : <CircleStop />}{stopping ? "停止中" : "停止游戏实例"}</button>
+                    ) : (
+                      <button className="instance-command command-primary" aria-label="启动" disabled={starting} aria-busy={starting} onClick={() => void action(x.id, "start")}>{starting ? <RefreshCw /> : <Play />}{starting ? "启动中" : "启动游戏实例"}</button>
+                    )}
+                    <button className="instance-command" aria-label="控制台" onClick={() => setTerminal(x)}><TerminalSquare />游戏控制台</button>
+                    <button className="instance-command" aria-label="玩家" onClick={() => setPlayers(x)}><Users />在线玩家 ({x.players === null ? "--" : x.players}/{observedCapacity === null ? "--" : observedCapacity})</button>
+                    <button className="instance-command" aria-label={`配置 ${x.name}`} onClick={() => setEditing(x)}><SlidersHorizontal />私有配置</button>
+                    <button className="instance-command" aria-label="更新" onClick={() => setReinstalling(x)}><RefreshCw />插件更新</button>
+                    <button className="tool-button command-danger" aria-label={`删除实例 ${x.name}`} title="永久删除实例" onClick={() => setDeleting(x)}><Trash2 /></button>
+                  </div>
+                </header>
+                <div className="instance-metrics" aria-label={`${x.name} 关键指标`}>
+                  <InstanceMetric label={x.current_map ? "当前地图" : "启动地图"} value={x.current_map || x.start_map} note={x.game_mode.toUpperCase()} />
+                  <InstanceMetric label="玩家" value={`${x.players === null ? "--" : x.players} / ${observedCapacity === null ? "--" : observedCapacity}`} />
+                  <InstanceMetric label="CPU" value={formatPercent(x.cpu)} />
+                  <InstanceMetric label="内存" value={`${formatMetricBytes(x.memory_bytes)} / ${formatMetricBytes(x.memory_limit_bytes)} (${formatPercent(x.memory_percent ?? null)})`} />
+                  <InstanceMetric label="下载" value={formatBytesPerSecond(x.network_rx_bytes_per_sec ?? null)} note={`累计 ${formatMetricBytes(x.network_rx_bytes)}`} />
+                  <InstanceMetric label="上传" value={formatBytesPerSecond(x.network_tx_bytes_per_sec ?? null)} note={`累计 ${formatMetricBytes(x.network_tx_bytes)}`} />
+                  <InstanceMetric label="A2S 延迟" value={formatLatency(x.a2s_latency_ms ?? null)} />
+                  <InstanceMetric label="总占用" value={formatMetricBytes((x.image_size_bytes ?? 0) + (x.game_size_bytes ?? 0) + (x.private_size_bytes ?? 0) + (x.backups_size_bytes ?? 0) + (x.console_size_bytes ?? 0))} note={`游戏 ${formatMetricBytes(x.game_size_bytes)} · 私有 ${formatMetricBytes(x.private_size_bytes)} · 备份 ${formatMetricBytes(x.backups_size_bytes)} · 日志 ${formatMetricBytes(x.console_size_bytes)} · 镜像 ${formatMetricBytes(x.image_size_bytes)}`} />
                 </div>
-                <h3>{x.name}</h3>
-                <p className="endpoint">
-                  LOCAL-01 : {x.game_port}
-                  {x.sourcetv_port ? ` · TV ${x.sourcetv_port}` : ""}
-                  {x.plugin_ports.length
-                    ? ` · 插件 ${x.plugin_ports.join(", ")}`
-                    : ""}
-                </p>
-                <div className="package-line">
-                  <span>
-                    <small>插件包</small>
-                    <b>
-                      {selectedPackage
-                        ? `${selectedPackage.filename} · ${selectedPackage.version}`
-                        : "未选择"}
-                    </b>
-                  </span>
-                  {packagePending ? <em>待应用</em> : null}
+                <div className="performance-section-title">
+                  <span><Activity />性能历史采样（最近约 1 小时）</span>
+                  <button
+                    type="button"
+                    aria-expanded={performanceExpanded}
+                    onClick={() => setExpandedPerformance((current) => ({ ...current, [x.id]: !performanceExpanded }))}
+                  >
+                    {performanceExpanded ? "收起性能详情" : "展开性能详情与历史曲线"}
+                    {performanceExpanded ? <ChevronUp /> : <ChevronDown />}
+                  </button>
                 </div>
-                <div className="map">
-                  <Map />
-                  <span>
-                    <small>{x.current_map ? "当前地图" : "启动地图"}</small>
-                    <b>{x.current_map || x.start_map}</b>
-                  </span>
-                  <em>{x.game_mode.toUpperCase()}</em>
-                </div>
-                <div className="player-capacity">
-                  <small>玩家</small>
-                  <b>{x.players === null ? "--" : x.players} / {observedCapacity === null ? "--" : observedCapacity}</b>
-                </div>
-                <PerformancePanel
+                {performanceExpanded ? <PerformancePanel
                   snapshot={{
                     image_size_bytes: x.image_size_bytes ?? null,
                     game_size_bytes: x.game_size_bytes ?? null,
@@ -1130,49 +1168,13 @@ function Overview({
                     a2s_latency_ms: x.a2s_latency_ms ?? null,
                   }}
                   history={performanceHistory[x.id] || EMPTY_PERFORMANCE_HISTORY}
-                />
+                /> : null}
                 <div className="bar">
                   <i
                     style={{
                       width: state === "running" ? "100%" : "2%",
                     }}
                   />
-                </div>
-                <div className="actions">
-                  {containerRunning ? (
-                    <button
-                      aria-label={`停止 ${x.name}`}
-                      disabled={stopping}
-                      aria-busy={stopping}
-                      onClick={() => setPending(x)}
-                    >
-                      {stopping ? <RefreshCw /> : <CircleStop />}
-                      {stopping ? "停止中" : "停止"}
-                    </button>
-                  ) : (
-                    <button
-                      disabled={starting}
-                      aria-busy={starting}
-                      onClick={() => void action(x.id, "start")}
-                    >
-                      {starting ? <RefreshCw /> : <Play />}
-                      {starting ? "启动中" : "启动"}
-                    </button>
-                  )}
-                  <button onClick={() => setTerminal(x)}>
-                    <TerminalSquare />
-                    控制台
-                  </button>
-                  <button onClick={() => setPlayers(x)}>
-                    <Users />
-                    玩家
-                  </button>
-                  <button
-                    onClick={() => setReinstalling(x)}
-                  >
-                    <RefreshCw />
-                    更新
-                  </button>
                 </div>
               </article>
             );
@@ -1247,6 +1249,7 @@ function Terminal({
 }) {
   const [output, setOutput] = useState("");
   const [input, setInput] = useState("");
+  const [connected, setConnected] = useState(false);
   const socket = useRef<WebSocket | null>(null);
   const consoleFollow = useConsoleFollow(output);
   useEffect(() => {
@@ -1255,6 +1258,9 @@ function Terminal({
       `${protocol}://${location.host}/api/instances/${instance.id}/console`,
     );
     ws.binaryType = "arraybuffer";
+    ws.onopen = () => setConnected(true);
+    ws.onclose = () => setConnected(false);
+    ws.onerror = () => setConnected(false);
     ws.onmessage = (e) => {
       const text =
         typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data);
@@ -1264,20 +1270,30 @@ function Terminal({
     return () => ws.close();
   }, [instance.id]);
   return (
-    <div className="terminal-modal">
-      <div className="terminal-head">
-        <span>
-          <i></i>
-          {instance.name} / 原生控制台
-        </span>
-        <button onClick={close}>
-          <X />
-        </button>
-      </div>
-      <pre ref={consoleFollow.outputRef} onScroll={consoleFollow.onScroll}>
-        {output}
-      </pre>
-      <form
+    <div className="terminal-backdrop">
+      <section className="terminal-modal" role="dialog" aria-modal="true" aria-label={`${instance.name} 原生游戏控制台`}>
+        <header className="terminal-head">
+          <div className="terminal-title">
+            <span className="terminal-mark"><TerminalSquare /></span>
+            <div>
+              <h3>原生游戏控制台 <small>（{instance.name}）</small></h3>
+              <p><span className={connected ? "connected" : "connecting"}><i></i>{connected ? "控制台已建立连接" : "正在连接控制台"}</span><b>·</b> 端口: {instance.game_port}</p>
+            </div>
+          </div>
+          <div className="terminal-head-actions">
+            <button type="button" onClick={() => setOutput("")}><Trash2 />清空显示</button>
+            <button type="button" className="terminal-close" aria-label="关闭控制台" onClick={close}><X /></button>
+          </div>
+        </header>
+        <div className="terminal-body">
+          <pre ref={consoleFollow.outputRef} onScroll={consoleFollow.onScroll}>
+            {output || <span className="terminal-empty">暂无游戏控制台输出日志</span>}
+          </pre>
+          {!consoleFollow.following ? (
+            <button type="button" className="terminal-resume" onClick={consoleFollow.forceFollow}><ArrowDown />继续跟随最新输出</button>
+          ) : null}
+        </div>
+        <form
         onSubmit={(e) => {
           e.preventDefault();
           if (input) {
@@ -1287,14 +1303,16 @@ function Terminal({
           }
         }}
       >
-        <b>srcds&gt;</b>
+        <b>&gt;</b>
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
+          placeholder="输入原生控制台指令 (例: status, changelevel c1m1_hotel, sm_say Hello)"
           autoFocus
         />
-        <button>发送</button>
-      </form>
+        <button aria-label="发送"><Send />发送命令</button>
+        </form>
+      </section>
     </div>
   );
 }
@@ -1322,8 +1340,12 @@ function ContentPage({
   const [vpks, setVpks] = useState<any[]>([]);
   const [selected, setSelected] = useState(instances[0]?.id || "");
   const [contentError, setContentError] = useState("");
-  const [pendingVPKFiles, setPendingVPKFiles] = useState<File[]>([]);
   const [vpkUploadTasks, setVPKUploadTasks] = useState<VPKUploadTask[]>([]);
+  const [vpkUploadMode, setVPKUploadMode] = useState<VPKUploadMode>("clean");
+  const [vpkDragActive, setVPKDragActive] = useState(false);
+  const [packageDragActive, setPackageDragActive] = useState(false);
+  const vpkInputRef = useRef<HTMLInputElement>(null);
+  const packageInputRef = useRef<HTMLInputElement>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [sources, setSources] = useState<GitHubSource[]>([]);
   const [sourceEditor, setSourceEditor] = useState<GitHubSource | null>(null);
@@ -1348,6 +1370,24 @@ function ContentPage({
       },
     );
     await Promise.all([loadVPK(), reloadPackages()]);
+  };
+  const addPackageFiles = (files: File[]) => {
+    const file = files.find((item) => item.name.toLowerCase().endsWith(".zip"));
+    if (!file) {
+      setContentError("请选择 .zip 插件包");
+      return;
+    }
+    void runContentAction("upload:package", () => uploadPackage(file));
+  };
+  const addVPKFiles = (files: File[]) => {
+    const accepted = files.filter((file) => file.name.toLowerCase().endsWith(".vpk"));
+    if (!accepted.length) {
+      setContentError("请选择 .vpk 文件");
+      return;
+    }
+    setContentError("");
+    void enqueueVPKUploads(accepted.map((file) => ({ file, mode: vpkUploadMode })))
+      .catch((reason) => setContentError(errorMessage(reason)));
   };
   const renameVPK = async (name: string) => {
     const next = window.prompt("新的 VPK 文件名", name);
@@ -1397,12 +1437,13 @@ function ContentPage({
       )}
       <div className="content-tabs" role="tablist" aria-label="内容仓库分类">
         {[
-          ["game", "共享游戏本体"],
-          ["vpk", "共享 VPK"],
-          ["packages", "插件包"],
-          ["github", "GitHub 发布源"],
-        ].map(([value, label]) => (
+          { value: "game", label: "共享游戏本体", icon: Server, count: null },
+          { value: "vpk", label: "共享 VPK", icon: FileArchive, count: vpks.length },
+          { value: "packages", label: "插件包", icon: FolderGit2, count: packages.length },
+          { value: "github", label: "GitHub 发布源", icon: ExternalLink, count: sources.length },
+        ].map(({ value, label, icon: Icon, count }) => (
           <button
+            aria-label={label}
             aria-selected={contentTab === value}
             className={contentTab === value ? "active" : ""}
             key={value}
@@ -1410,16 +1451,62 @@ function ContentPage({
             type="button"
             onClick={() => setContentTab(value as typeof contentTab)}
           >
-            {label}
+            <Icon />
+            <span>{label}</span>
+            {count !== null ? <em aria-hidden="true"> ({count})</em> : null}
           </button>
         ))}
       </div>
       <div className="content-tab-panel" role="tabpanel" hidden={contentTab !== "game"}>
-      <Panel
-        title="共享游戏本体"
-        action={
+        <section className="shared-game-panel">
+          <div className="shared-game-details">
+            <div>
+              <small>当前安装版本</small>
+              <b>{sharedGameVersionLabel(sharedGame)}</b>
+            </div>
+            <div>
+              <small>物理保存位置</small>
+              <code>{sharedGame.path || "/data/game/current"}</code>
+            </div>
+            <div>
+              <small>初始化就绪状态</small>
+              <b className={sharedGame.migration_state === "ready" ? "ready" : "pending"}>
+                <CheckCircle2 />
+                {sharedGame.migration_state === "ready" ? "就绪 (全量内容未损坏)" : sharedGame.migration_state || "未知"}
+              </b>
+            </div>
+          </div>
+
+          <div className="shared-game-update-panel">
+            <h3><RefreshCw />触发共享游戏本体更新</h3>
+            <fieldset>
+              <legend>在线玩家处理策略 (在线玩家策略)</legend>
+              <div className="shared-game-policies">
+                {[
+                  { value: "skip", title: "有玩家时跳过", description: "保护对局无打扰" },
+                  { value: "wait", title: "等待玩家离开", description: "空服后自动执行" },
+                  { value: "force", title: "强制执行", description: "中断当前在线连接" },
+                ].map((policy) => (
+                  <label className={`shared-game-policy-card ${policy.value === "force" ? "force" : ""}`} key={policy.value}>
+                    <input
+                      type="radio"
+                      name="shared-game-policy"
+                      value={policy.value}
+                      checked={gamePolicy === policy.value}
+                      onChange={() => setGamePolicy(policy.value)}
+                    />
+                    <span>
+                      <b>{policy.title}</b>
+                      <small>{policy.description}</small>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+
+            <div className="shared-game-update-actions">
           <button
-            className="danger shared-game-update"
+                className="shared-game-update"
             disabled={contentActions.pending.has("game:update")}
             aria-busy={contentActions.pending.has("game:update")}
             onClick={() => {
@@ -1430,77 +1517,78 @@ function ContentPage({
               });
             }}
           >
-            更新共享游戏本体
+                <RefreshCw /><span>更新游戏本体</span>
           </button>
-        }
-      >
-        <div className="shared-game-details">
-          <div><small>版本号</small><b>{sharedGameVersionLabel(sharedGame)}</b></div>
-          <div><small>保存位置</small><code>{sharedGame.path || "/data/game/current"}</code></div>
-          <div><small>状态</small><b>{sharedGame.migration_state === "ready" ? "就绪" : sharedGame.migration_state || "未知"}</b></div>
-        </div>
-        <label className="shared-game-policy">
-          所有服务器在线玩家策略
-          <select aria-label="所有服务器在线玩家策略" value={gamePolicy} onChange={(event) => setGamePolicy(event.target.value)}>
-            <option value="skip">任一不符合则跳过</option>
-            <option value="wait">等待全部空服</option>
-            <option value="force">强制执行</option>
-          </select>
-        </label>
-        <p>该操作不绑定实例；任一活动服务器有玩家或查询失败时，等待/跳过策略会阻止整个更新。</p>
-      </Panel>
+            </div>
+          </div>
+        </section>
       </div>
       <div className="content-tab-panel" role="tabpanel" hidden={contentTab !== "vpk"}>
       <VPKUploadQueue tasks={vpkUploadTasks} onRetry={(task) => void retryVPKUpload(task)} onCancel={(task) => void cancelVPKUpload(task)} />
-      <Panel
-        title="共享 VPK"
-        action={
-          <FileButton
-            label="上传 VPK"
-            accept=".vpk"
-            multiple
-            onFiles={(files) => setPendingVPKFiles(files)}
-          />
-        }
+      <section
+        className={`content-vpk-drop ${vpkDragActive ? "dragging" : ""}`}
+        aria-label="VPK 上传区"
+        tabIndex={0}
+        onClick={(event) => { if (!(event.target as HTMLElement).closest("button")) vpkInputRef.current?.click(); }}
+        onKeyDown={(event) => { if ((event.key === "Enter" || event.key === " ") && event.target === event.currentTarget) { event.preventDefault(); vpkInputRef.current?.click(); } }}
+        onDragEnter={(event) => { event.preventDefault(); setVPKDragActive(true); }}
+        onDragOver={(event) => { event.preventDefault(); setVPKDragActive(true); }}
+        onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setVPKDragActive(false); }}
+        onDrop={(event) => { event.preventDefault(); setVPKDragActive(false); addVPKFiles(Array.from(event.dataTransfer.files)); }}
       >
-        {vpks.map((x) => (
-          <div className="data-row" key={x.name}>
-            <div>
-              <b>{x.name}</b>
-              <small>
-                {formatBytes(x.size)} · {String(x.hash).slice(0, 12)}
-              </small>
-            </div>
-            <div className="inline-actions">
-              <a
-                aria-label={`下载 ${x.name}`}
-                download
-                href={`/api/content/vpk/${encodeURIComponent(x.name)}/download`}
-              >
-                下载
-              </a>
-              <button disabled={contentActions.pending.has(`vpk:rename:${x.name}`)} aria-busy={contentActions.pending.has(`vpk:rename:${x.name}`)} onClick={() => runContentAction(`vpk:rename:${x.name}`, () => renameVPK(x.name))}>
-                重命名
-              </button>
-              <button disabled={contentActions.pending.has(`vpk:clean:${x.name}`)} aria-busy={contentActions.pending.has(`vpk:clean:${x.name}`)} onClick={() => runContentAction(`vpk:clean:${x.name}`, () => cleanVPK(x.name))}>
-                清理资源
-              </button>
-              <button
-                className="danger"
-                disabled={contentActions.pending.has(`vpk:delete:${x.name}`)}
-                aria-busy={contentActions.pending.has(`vpk:delete:${x.name}`)}
-                onClick={() => runContentAction(`vpk:delete:${x.name}`, () => deleteVPK(x.name))}
-              >
-                删除
-              </button>
-            </div>
+        <div className="content-vpk-upload-icon"><Upload /></div>
+        <div className="content-vpk-drop-copy">
+          <h2>拖放 .vpk 文件至此处进行上传</h2>
+          <p>支持多文件同时加入队列，文件将供所有游戏实例共享使用</p>
+        </div>
+        <div className="content-vpk-upload-controls">
+          <span>上传处理模式:</span>
+          <div className="content-vpk-mode-switch">
+            <button type="button" aria-pressed={vpkUploadMode === "clean"} onClick={() => setVPKUploadMode("clean")}>上传前清理</button>
+            <button type="button" aria-pressed={vpkUploadMode === "direct"} onClick={() => setVPKUploadMode("direct")}>直接上传</button>
           </div>
-        ))}
-        {vpks.length === 0 ? <div className="empty">暂无共享 VPK</div> : null}
-      </Panel>
-      {pendingVPKFiles.length ? <VPKUploadDialog files={pendingVPKFiles} onCancel={() => setPendingVPKFiles([])} onConfirm={(items) => { setPendingVPKFiles([]); void enqueueVPKUploads(items).catch((reason) => setContentError(errorMessage(reason))); }} /> : null}
+          <input ref={vpkInputRef} className="content-drop-input" aria-label="上传 VPK" type="file" accept=".vpk" multiple onChange={(event) => { addVPKFiles(Array.from(event.target.files || [])); event.target.value = ""; }} />
+        </div>
+      </section>
+      <section className="content-vpk-library" aria-labelledby="content-vpk-library-title">
+        <header><h2 id="content-vpk-library-title">共享 VPK 库 ({vpks.length})</h2></header>
+        {vpks.length ? <div className="content-vpk-table-wrap"><table className="content-vpk-table">
+          <thead><tr><th>文件名</th><th>大小</th><th>校验 Hash</th><th>操作</th></tr></thead>
+          <tbody>{vpks.map((x) => (
+            <tr key={x.name}>
+              <td><b>{x.name}</b></td>
+              <td>{formatBytes(x.size)}</td>
+              <td><code>{String(x.hash).slice(0, 16)}</code></td>
+              <td><div className="content-vpk-actions">
+                <a title="下载" aria-label={`下载 ${x.name}`} download href={`/api/content/vpk/${encodeURIComponent(x.name)}/download`}><Download /></a>
+                <button title="重命名" aria-label={`重命名 ${x.name}`} disabled={contentActions.pending.has(`vpk:rename:${x.name}`)} aria-busy={contentActions.pending.has(`vpk:rename:${x.name}`)} onClick={() => runContentAction(`vpk:rename:${x.name}`, () => renameVPK(x.name))}><Edit3 /></button>
+                <button title="手动清理" aria-label={`清理资源 ${x.name}`} disabled={contentActions.pending.has(`vpk:clean:${x.name}`)} aria-busy={contentActions.pending.has(`vpk:clean:${x.name}`)} onClick={() => runContentAction(`vpk:clean:${x.name}`, () => cleanVPK(x.name))}><RefreshCw /></button>
+                <button title="删除" aria-label={`删除 ${x.name}`} className="danger" disabled={contentActions.pending.has(`vpk:delete:${x.name}`)} aria-busy={contentActions.pending.has(`vpk:delete:${x.name}`)} onClick={() => runContentAction(`vpk:delete:${x.name}`, () => deleteVPK(x.name))}><Trash2 /></button>
+              </div></td>
+            </tr>
+          ))}</tbody>
+        </table></div> : <div className="empty">暂无共享 VPK</div>}
+      </section>
       </div>
       <div className="content-tab-panel" role="tabpanel" hidden={contentTab !== "packages" && contentTab !== "github"}>
+      {contentTab === "packages" ? (
+        <section
+          className={`content-package-drop ${packageDragActive ? "dragging" : ""}`}
+          aria-label="插件包上传区"
+          tabIndex={0}
+          aria-busy={contentActions.pending.has("upload:package")}
+          onClick={() => { if (!contentActions.pending.has("upload:package")) packageInputRef.current?.click(); }}
+          onKeyDown={(event) => { if ((event.key === "Enter" || event.key === " ") && !contentActions.pending.has("upload:package")) { event.preventDefault(); packageInputRef.current?.click(); } }}
+          onDragEnter={(event) => { event.preventDefault(); setPackageDragActive(true); }}
+          onDragOver={(event) => { event.preventDefault(); setPackageDragActive(true); }}
+          onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setPackageDragActive(false); }}
+          onDrop={(event) => { event.preventDefault(); setPackageDragActive(false); if (!contentActions.pending.has("upload:package")) addPackageFiles(Array.from(event.dataTransfer.files)); }}
+        >
+          <div className="content-package-upload-icon">{contentActions.pending.has("upload:package") ? <RefreshCw /> : <Upload />}</div>
+          <div><h2>{contentActions.pending.has("upload:package") ? "正在上传插件包" : "拖放 .zip 插件包至此处上传"}</h2><p>上传后可部署至指定游戏实例，支持 SourceMod 与 Metamod 插件归档</p></div>
+          <input ref={packageInputRef} className="content-drop-input" aria-label="上传 ZIP" type="file" accept=".zip" disabled={contentActions.pending.has("upload:package")} onChange={(event) => { addPackageFiles(Array.from(event.target.files || [])); event.target.value = ""; }} />
+        </section>
+      ) : null}
       {contentTab === "packages" ? (
         <label className="content-instance-selector">
           更新目标实例
@@ -1515,10 +1603,8 @@ function ContentPage({
         title={contentTab === "github" ? "GitHub 发布源" : "插件包"}
         action={
           contentTab === "github" ? (
-            <button onClick={() => setSourceEditor({ id: "", name: "", repository: "", asset_pattern: "" })}>添加 GitHub 源</button>
-          ) : (
-            <FileButton label="上传 ZIP" accept=".zip" disabled={contentActions.pending.has("upload:package")} busy={contentActions.pending.has("upload:package")} onFile={(file) => runContentAction("upload:package", () => uploadPackage(file))} />
-          )
+            <button onClick={() => setSourceEditor({ id: "", name: "", repository: "", asset_pattern: "" })}><Plus />添加 GitHub 源</button>
+          ) : undefined
         }
       >
         {contentTab === "github" && sourceEditor ? (
@@ -1536,7 +1622,7 @@ function ContentPage({
             <label>源名称<input aria-label="源名称" value={sourceEditor.name} onChange={(event) => setSourceEditor({ ...sourceEditor, name: event.target.value })} required /></label>
             <label>GitHub 仓库<input aria-label="GitHub 仓库" value={sourceEditor.repository} onChange={(event) => setSourceEditor({ ...sourceEditor, repository: event.target.value })} required /></label>
             <label>Release 资源规则<input aria-label="Release 资源规则" value={sourceEditor.asset_pattern} onChange={(event) => setSourceEditor({ ...sourceEditor, asset_pattern: event.target.value })} required /></label>
-            <div className="inline-actions"><button className="create" disabled={contentActions.pending.has(`source:save:${sourceEditor.id || "new"}`)} aria-busy={contentActions.pending.has(`source:save:${sourceEditor.id || "new"}`)}>{contentActions.pending.has(`source:save:${sourceEditor.id || "new"}`) ? <><RefreshCw />保存中…</> : "保存源"}</button><button type="button" onClick={() => setSourceEditor(null)}>取消</button></div>
+            <div className="inline-actions"><button className="command-primary" disabled={contentActions.pending.has(`source:save:${sourceEditor.id || "new"}`)} aria-busy={contentActions.pending.has(`source:save:${sourceEditor.id || "new"}`)}>{contentActions.pending.has(`source:save:${sourceEditor.id || "new"}`) ? <><RefreshCw />保存中…</> : "保存源"}</button><button type="button" onClick={() => setSourceEditor(null)}>取消</button></div>
           </form>
         ) : null}
         {contentTab === "github" ? <div className="source-grid">
@@ -1545,7 +1631,7 @@ function ContentPage({
               <div><b>{source.name}</b><small>{source.repository}</small><code>{source.asset_pattern}</code></div>
               <div className="inline-actions">
                 <button disabled={contentActions.pending.has(`source:check:${source.id}`)} aria-busy={contentActions.pending.has(`source:check:${source.id}`)} aria-label={`检查更新 ${source.name}`} onClick={() => runContentAction(`source:check:${source.id}`, () => queue(`/api/github-sources/${source.id}/check`, {}))}>检查更新</button>
-                <button onClick={() => setSourceEditor(source)}>编辑</button>
+                <button onClick={() => setSourceEditor(source)}><Edit3 />编辑</button>
                 <button className="danger" disabled={contentActions.pending.has(`source:delete:${source.id}`)} aria-busy={contentActions.pending.has(`source:delete:${source.id}`)} onClick={() => { if (window.confirm(`删除源 ${source.name}？已下载插件包会保留。`)) runContentAction(`source:delete:${source.id}`, async () => { await api(`/api/github-sources/${source.id}`, { method: "DELETE" }); await loadSources(); }); }}>删除</button>
               </div>
             </article>
@@ -1671,42 +1757,48 @@ function PlayersModal({
     <>
       <div className="modal-wrap">
         <div className="modal players-modal" role="dialog" aria-modal="true" aria-labelledby="players-title">
-          <div className="section-head">
-            <div>
-              <p className="eyebrow">ONLINE PLAYERS</p>
-              <h2 id="players-title">{instance.name}</h2>
+          <header className="players-head">
+            <div className="players-heading">
+              <span className="players-heading-icon"><Users /></span>
+              <div>
+                <h2 id="players-title">在线玩家与对局摘要</h2>
+                <p>{instance.name} ({snapshot?.players?.length ?? 0} / {snapshot?.max_players ?? instance.max_players} 人在线)</p>
+              </div>
             </div>
-            <button aria-label="关闭玩家列表" onClick={close}>
+            <button className="players-close" aria-label="关闭玩家列表" onClick={close}>
               <X />
             </button>
-          </div>
+          </header>
           {playersError && (
             <div className="error" role="alert">
               {playersError}
             </div>
           )}
-          {snapshot?.match ? <MatchSummary match={snapshot.match} /> : null}
+          <section className="players-summary" aria-label="对局摘要">
+            <PlayerSummaryItem icon={<MapPin />} label="当前地图" value={snapshot?.match?.map || snapshot?.map || instance.current_map || instance.start_map} />
+            <PlayerSummaryItem icon={<Users />} label="在线容量" value={`${snapshot?.players?.length ?? 0} / ${snapshot?.max_players ?? snapshot?.match?.max_players ?? instance.max_players}`} />
+            <PlayerSummaryItem icon={<Globe2 />} label="公网 IP" value={snapshot?.match?.public_address || "--"} />
+          </section>
           {snapshot?.players?.length ? (
-            <div className="player-operations-wrap">
+            <div className="players-list">
+              <div className="player-operations-wrap">
               <table className="player-operations">
                 <thead>
-                  <tr><th>UserID</th><th>名称</th><th>UniqueID</th><th>已连接</th><th>Ping</th><th>Loss</th><th>分数</th><th>操作</th></tr>
+                  <tr><th>玩家名称</th><th>Steam ID</th><th>加入时长</th><th>延迟</th><th>得分</th><th>处置操作</th></tr>
                 </thead>
                 <tbody>
                   {snapshot.players.map((player) => (
                     <tr key={`${player.name}-${player.user_id}`}>
-                      <td data-label="UserID"><b>{player.user_id || "未映射"}</b></td>
-                      <td data-label="名称"><b>{player.name}</b></td>
-                      <td data-label="UniqueID"><code>{player.unique_id || "--"}</code></td>
-                      <td data-label="已连接">{player.connected || "--"}</td>
-                      <td data-label="Ping">{player.ping === undefined ? "--" : `${player.ping} ms`}</td>
-                      <td data-label="Loss">{player.loss === undefined ? "--" : `${player.loss}%`}</td>
-                      <td data-label="分数">{player.score ?? "--"}</td>
-                      <td data-label="操作">
+                      <td data-label="玩家名称"><b>{player.name}</b></td>
+                      <td data-label="Steam ID"><code>{player.unique_id || "--"}</code></td>
+                      <td data-label="加入时长">{player.connected || "--"}</td>
+                      <td className="player-ping" data-label="延迟">{player.ping === undefined ? "--" : `${player.ping} ms`}</td>
+                      <td data-label="得分">{player.score ?? "--"}</td>
+                      <td data-label="处置操作">
                         {player.user_id > 0 ? (
-                          <div className="inline-actions">
-                            <button onClick={() => requestAction(player, "kick")}>踢出</button>
-                            <button className="danger" onClick={() => requestAction(player, "ban")}>永久封禁</button>
+                          <div className="player-actions">
+                            <button className="player-kick" onClick={() => requestAction(player, "kick")}><UserX />踢出玩家</button>
+                            <button className="player-ban" onClick={() => requestAction(player, "ban")}><Ban />永久封禁</button>
                           </div>
                         ) : "--"}
                       </td>
@@ -1714,10 +1806,11 @@ function PlayersModal({
                   ))}
                 </tbody>
               </table>
+              </div>
             </div>
           ) : null}
           {snapshot && !snapshot.players?.length && (
-            <div className="empty">当前没有在线玩家</div>
+            <div className="players-empty">当前服务器暂无在线玩家</div>
           )}
         </div>
       </div>
@@ -1735,22 +1828,15 @@ function PlayersModal({
   );
 }
 
-function MatchSummary({ match }: { match: PlayerMatch }) {
-  const secure = match.secure === null ? "--" : match.secure ? "安全" : "不安全";
-  const value = (input: string) => input || "--";
+function PlayerSummaryItem({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
   return (
-    <section className="match-summary" aria-label="对局摘要">
-      <div className="match-summary-grid">
-        <div className="match-primary"><small>地图</small><b>{value(match.map)}</b></div>
-        <div><small>真人玩家</small><b>{match.humans} / {match.max_players}</b></div>
-        <div><small>主机 / 系统</small><b>{value(match.hostname)} · {value(match.os)}</b></div>
-        <div><small>版本</small><b>{value(match.version)} · {secure}</b></div>
+    <div className="players-summary-item">
+      {icon}
+      <div>
+        <small>{label}</small>
+        <b>{value || "--"}</b>
       </div>
-      <div className="match-addresses">
-        <span>内网 <code>{value(match.private_address)}</code></span>
-        <span>公网 <code>{value(match.public_address)}</code></span>
-      </div>
-    </section>
+    </div>
   );
 }
 
@@ -1934,132 +2020,43 @@ function SettingsPage() {
     }
   };
   return (
-    <div className="content-layout">
+    <div className="settings-reference-page">
+      <header className="settings-reference-head">
+        <h2>系统设置</h2>
+        <p>配置 SteamCMD 登录凭据、GitHub 访问令牌、后台任务保留上限及日志清理策略</p>
+      </header>
       {settingsError && (
         <div className="error" role="alert">
           {settingsError}
         </div>
       )}
-      <form className="control-form" onSubmit={saveSteam}>
-        <p className="eyebrow">STEAMCMD LICENSE</p>
-        <h2>Steam 安装凭据</h2>
-        <p>
-          {steam
-            ? "已加密配置；匿名首装仍可用"
-            : "匿名首装已支持；仅许可账号需要配置凭据"}
-        </p>
-        <label>
-          用户名
-          <input name="username" autoComplete="username" required />
-        </label>
-        <label>
-          密码
-          <input
-            name="password"
-            type="password"
-            autoComplete="current-password"
-            required
-          />
-        </label>
-        <button className="create" disabled={settingsActions.pending.has("steam")} aria-busy={settingsActions.pending.has("steam")}>
-          {settingsActions.pending.has("steam") ? <><RefreshCw />保存中…</> : "加密保存"}
-        </button>
-      </form>
-      <form className="control-form" onSubmit={saveGithub}>
-        <p className="eyebrow">GITHUB RELEASES</p>
-        <h2>GitHub Token</h2>
-        <p>{github ? "已加密配置" : "未配置；公开仓库仍可有限访问"}</p>
-        <label>
-          Token
-          <input name="token" type="password" required />
-        </label>
-        <button className="create" disabled={settingsActions.pending.has("github")} aria-busy={settingsActions.pending.has("github")}>
-          {settingsActions.pending.has("github") ? <><RefreshCw />保存中…</> : "加密保存"}
-        </button>
-      </form>
-      <form className="control-form" onSubmit={saveJobSettings}>
-        <p className="eyebrow">JOB RECORDS</p>
-        <h2>任务记录</h2>
-        <p>除正在运行的任务外，所有已结束任务共用此保留上限。</p>
-        <label>
-          已完成任务保留数量
-          <input
-            type="number"
-            min={1}
-            max={500}
-            step={1}
-            required
-            value={draftJobLimit}
-            disabled={!jobSettingsReady || savingJobs}
-            onChange={(event) => {
-              setDraftJobLimit(event.target.value);
-              setJobsNotice("");
-            }}
-          />
-        </label>
-        {jobsNotice ? <p role="status">{jobsNotice}</p> : null}
-        <button
-          className="create"
-          type="submit"
-          aria-label="保存任务记录设置"
-          disabled={!jobSettingsReady || savingJobs}
-          aria-busy={savingJobs}
-        >
-          {savingJobs ? "保存中…" : "保存"}
-        </button>
-      </form>
-      <section className="control-form" aria-labelledby="game-log-settings-title">
-        <p className="eyebrow">PERSISTENT GAME LOGS</p>
-        <h2 id="game-log-settings-title">游戏日志</h2>
-        <p>默认保留 14 天。日志跨游戏重装和插件重装保留；永久删除实例时一并删除。</p>
-        <p>调高保留天数不会恢复已删除日志。清理结果可在任务流水中查看。</p>
-        <form onSubmit={saveGameLogSettings}>
-          <label>
-            游戏日志保留天数
-            <input
-              type="number"
-              min={1}
-              max={365}
-              step={1}
-              required
-              value={draftGameLogDays}
-              disabled={!gameLogSettingsReady || gameLogBusy !== ""}
-              onChange={(event) => {
-                const value = event.target.value;
-                setDraftGameLogDays(value);
-                setGameLogsNotice("");
-                const days = Number(value);
-                setSettingsError(
-                  value !== "" && (!Number.isInteger(days) || days < 1 || days > 365)
-                    ? "游戏日志保留天数必须为 1 至 365 的整数"
-                    : "",
-                );
-              }}
-            />
-          </label>
-          <p>当前确认值：{confirmedGameLogDays} 天</p>
-          <button
-            className="create"
-            type="submit"
-            aria-label="保存游戏日志设置"
-            disabled={!gameLogSettingsReady || gameLogBusy !== ""}
-            aria-busy={gameLogBusy === "save"}
-          >
-            {gameLogBusy === "save" ? "保存中…" : "保存"}
-          </button>
+      <div className="settings-reference-grid">
+        <form className="settings-card" onSubmit={saveSteam}>
+          <div className="settings-card-title"><h3><Key />Steam 安装凭据</h3><span className={steam ? "configured" : "unconfigured"}>{steam ? "已配置" : "未配置"}</span></div>
+          <p>{steam ? "已加密配置；匿名首装仍可用" : "匿名首装已支持；仅许可账号需要配置凭据"}</p>
+          <div className="settings-fields"><label>Steam 账号用户名<input aria-label="用户名" name="username" autoComplete="username" placeholder="Steam 登录用户名" required /></label><label>Steam 账号密码<input aria-label="密码" name="password" type="password" autoComplete="current-password" placeholder="••••••••••••" required /></label></div>
+          <footer><small><Lock />敏感信息密文存储</small><button className="settings-save" aria-label="加密保存" disabled={settingsActions.pending.has("steam")} aria-busy={settingsActions.pending.has("steam")}>{settingsActions.pending.has("steam") ? <RefreshCw /> : <Save />}<span>{settingsActions.pending.has("steam") ? "保存中…" : "保存 Steam 凭据"}</span></button></footer>
         </form>
-        <button
-          className="create"
-          type="button"
-          aria-label="立即清理游戏日志"
-          disabled={!gameLogSettingsReady || gameLogBusy !== ""}
-          aria-busy={gameLogBusy === "cleanup"}
-          onClick={() => void cleanupGameLogs()}
-        >
-          {gameLogBusy === "cleanup" ? "提交中…" : "立即清理"}
-        </button>
-        {gameLogsNotice ? <p role="status">{gameLogsNotice}</p> : null}
-      </section>
+        <form className="settings-card" onSubmit={saveGithub}>
+          <div className="settings-card-title"><h3><ShieldCheck />GitHub 访问令牌 <span>(Personal Access Token)</span></h3><span className={github ? "configured" : "unconfigured"}>{github ? "已配置" : "未配置"}</span></div>
+          <p>用于突破 GitHub REST API 速率限制并访问私有插件发布仓库。</p>
+          <div className="settings-fields"><label>Personal Access Token (ghp_...)<input name="token" type="password" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" required /></label></div>
+          <footer><small>未配置时公开仓库仍可受限访问</small><button className="settings-save" disabled={settingsActions.pending.has("github")} aria-busy={settingsActions.pending.has("github")}>{settingsActions.pending.has("github") ? <RefreshCw /> : <Save />}<span>{settingsActions.pending.has("github") ? "保存中…" : "更新 GitHub 令牌"}</span></button></footer>
+        </form>
+        <form className="settings-card" onSubmit={saveJobSettings}>
+          <div className="settings-card-title"><h3><Clock />后台任务记录保留上限</h3></div>
+          <p>设定已完成或已失败的历史任务保留数量上限（允许范围：1 - 500 条）。</p>
+          <div className="settings-fields"><label>已完成任务保留数量<input type="number" min={1} max={500} step={1} required value={draftJobLimit} disabled={!jobSettingsReady || savingJobs} onChange={(event) => { setDraftJobLimit(event.target.value); setJobsNotice(""); }} /></label></div>
+          {jobsNotice ? <p className="settings-notice" role="status">{jobsNotice}</p> : null}
+          <footer><small>除正在运行的任务外，所有已结束任务共用此保留上限。</small><button className="settings-save" type="submit" aria-label="保存任务记录设置" disabled={!jobSettingsReady || savingJobs} aria-busy={savingJobs}>{savingJobs ? <RefreshCw /> : <Save />}<span>{savingJobs ? "保存中…" : "保存任务保留设置"}</span></button></footer>
+        </form>
+        <section className="settings-card" aria-labelledby="game-log-settings-title">
+          <div className="settings-card-title"><h3 id="game-log-settings-title"><Trash2 />游戏日志保留策略</h3></div>
+          <p>设定游戏控制台与 SourceMod 插件日志保留天数（允许范围：1 - 365 天）。</p>
+          <form className="settings-fields" onSubmit={saveGameLogSettings}><label>游戏日志保留天数<input type="number" min={1} max={365} step={1} required value={draftGameLogDays} disabled={!gameLogSettingsReady || gameLogBusy !== ""} onChange={(event) => { const value = event.target.value; setDraftGameLogDays(value); setGameLogsNotice(""); const days = Number(value); setSettingsError(value !== "" && (!Number.isInteger(days) || days < 1 || days > 365) ? "游戏日志保留天数必须为 1 至 365 的整数" : ""); }} /></label><p>当前确认值：{confirmedGameLogDays} 天</p><footer><button className="settings-cleanup" type="button" aria-label="立即清理游戏日志" disabled={!gameLogSettingsReady || gameLogBusy !== ""} aria-busy={gameLogBusy === "cleanup"} onClick={() => void cleanupGameLogs()}>{gameLogBusy === "cleanup" ? "提交中…" : "立即清理过期日志"}</button><button className="settings-save" type="submit" aria-label="保存游戏日志设置" disabled={!gameLogSettingsReady || gameLogBusy !== ""} aria-busy={gameLogBusy === "save"}>{gameLogBusy === "save" ? <RefreshCw /> : <Save />}<span>{gameLogBusy === "save" ? "保存中…" : "保存日志策略"}</span></button></footer></form>
+          {gameLogsNotice ? <p className="settings-notice" role="status">{gameLogsNotice}</p> : null}
+        </section>
+      </div>
     </div>
   );
 }
@@ -2082,8 +2079,8 @@ function FileButton({
   busy?: boolean;
 }) {
   return (
-    <label className="create file-button" aria-busy={busy} aria-disabled={disabled}>
-      {busy ? <RefreshCw /> : <Plus />}
+    <label className="command-primary file-button" aria-busy={busy} aria-disabled={disabled}>
+      {busy ? <RefreshCw /> : <Upload />}
       {busy ? "处理中…" : label}
       <input
         type="file"
@@ -2399,23 +2396,32 @@ function Metric({
   icon,
   label,
   value,
+  unit,
   note,
+  compact = false,
+  noteTone,
 }: {
   icon: ReactNode;
   label: string;
   value: string;
+  unit?: string;
   note: string;
+  compact?: boolean;
+  noteTone?: "success" | "warning";
 }) {
   return (
-    <article className="metric">
+    <article className={`metric${compact ? " compact" : ""}${noteTone ? ` note-${noteTone}` : ""}`}>
       <span>{icon}</span>
       <div>
         <small>{label}</small>
-        <b>{value}</b>
+        <b>{value}{unit ? <i>{unit}</i> : null}</b>
         <em>{note}</em>
       </div>
     </article>
   );
+}
+function InstanceMetric({ label, value, note }: { label: string; value: string; note?: string }) {
+  return <span className="performance-metric" title={note}><small>{label}</small><b>{value}</b>{note ? <em>{note}</em> : null}</span>;
 }
 const displayState = (instance: Instance) =>
   instance.observed_state ?? instance.actual_state;

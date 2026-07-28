@@ -133,23 +133,11 @@ describe("PerformancePanel", () => {
       { snapshot: { ...snapshot }, history: historyReference, loading: true },
     )).toBe(false);
   });
-  it("renders current metrics and switches chart modes", async () => {
+  it("renders only the independent chart surface and switches modes", async () => {
     render(<PerformancePanel snapshot={snapshot} history={history} />);
-    expect(screen.getAllByText("CPU")).toHaveLength(3);
-    expect(screen.getByText("0%")).toBeInTheDocument();
-    expect(screen.getByText("0 B / 2 GiB (0%)")).toBeInTheDocument();
-    expect(screen.getByText("下载")).toBeInTheDocument();
-    expect(screen.getByText("上传")).toBeInTheDocument();
-    expect(screen.getByText("磁盘读")).toBeInTheDocument();
-    expect(screen.getByText("磁盘写")).toBeInTheDocument();
-    expect(screen.getByText("PID")).toBeInTheDocument();
-    expect(screen.getAllByText("0")).toHaveLength(1);
-    expect(screen.getByText("1h 1m 1s")).toBeInTheDocument();
-    expect(screen.getByText("0 ms")).toBeInTheDocument();
-    expect(screen.getByText("总占用")).toBeInTheDocument();
-    expect(screen.getByText("5.7 GiB")).toBeInTheDocument();
-    expect(screen.getByText("游戏 512 MiB · 私有 128 MiB · 备份 64 MiB · 日志 32 MiB · 镜像 5 GiB")).toBeInTheDocument();
-    expect(screen.queryByText("玩家")).not.toBeInTheDocument();
+    expect(document.querySelector(".performance-current")).not.toBeInTheDocument();
+    expect(screen.getAllByText("CPU")).toHaveLength(1);
+    expect(screen.getByText("处理器占用 (%)")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "网络" })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("button", { name: "CPU" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByTestId("performance-chart")).toBeInTheDocument();
@@ -172,12 +160,11 @@ describe("PerformancePanel", () => {
   it("shows null as -- while retaining zero and simplified network legends", () => {
     render(<PerformancePanel snapshot={snapshot} history={history} initialMode="网络" />);
     expect(screen.getByRole("button", { name: "网络" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getAllByText("下载").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("上传").length).toBeGreaterThan(0);
+    expect(screen.getByText("下载")).toBeInTheDocument();
+    expect(screen.getByText("上传")).toBeInTheDocument();
     expect(screen.queryByText("网络 RX")).not.toBeInTheDocument();
     expect(screen.queryByText("网络 TX")).not.toBeInTheDocument();
     expect(screen.getByTestId("performance-chart")).toHaveAttribute("data-series-count", "2");
-    expect(screen.getAllByText("--").length).toBeGreaterThan(0);
   });
   it("keeps the chart dimensions while history is loading", () => {
     render(<PerformancePanel snapshot={snapshot} history={[]} loading />);

@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { ChevronDown, ExternalLink, RotateCw, Search } from "lucide-react";
+import { CheckCircle2, ChevronDown, Clock, FileText, RotateCw, Search, XCircle } from "lucide-react";
 import { api, type Job, type JobEvent } from "../api/client";
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "interrupted"]);
 const STATUS_LABELS: Record<string, string> = {
   pending: "排队中",
   running: "执行中",
-  succeeded: "成功",
-  failed: "失败",
+  succeeded: "已成功",
+  failed: "已失败",
   interrupted: "已中断",
 };
 const EVENT_LABELS: Record<string, string> = {
@@ -18,6 +18,13 @@ const EVENT_LABELS: Record<string, string> = {
   failed: "任务失败",
   interrupted: "任务中断",
   snapshot: "历史快照",
+};
+const STATUS_ICONS = {
+  pending: Clock,
+  running: Clock,
+  succeeded: CheckCircle2,
+  failed: XCircle,
+  interrupted: XCircle,
 };
 
 export function JobsPage({ onOpenLogs }: { onOpenLogs?: (job: Job) => void }) {
@@ -165,20 +172,14 @@ export function JobsPage({ onOpenLogs }: { onOpenLogs?: (job: Job) => void }) {
           const expanded = expandedID === item.ID;
           const detail = details[item.ID];
           const panelID = `job-log-${item.ID}`;
+          const StatusIcon = STATUS_ICONS[item.Status as keyof typeof STATUS_ICONS] || Clock;
           return (
             <article
               className={`job-entry ${expanded ? "expanded" : ""}`}
               key={item.ID}
               role="rowgroup"
             >
-              <button
-                className="job-row job-row-toggle"
-                type="button"
-                aria-expanded={expanded}
-                aria-controls={panelID}
-                aria-label={`查看 ${type} 任务日志，任务 ID ${item.ID}`}
-                onClick={() => toggle(item)}
-              >
+              <div className="job-row" role="row">
                 <span className="job-code">
                   <span>{item.ID.slice(0, 8)}</span>
                 </span>
@@ -186,19 +187,27 @@ export function JobsPage({ onOpenLogs }: { onOpenLogs?: (job: Job) => void }) {
                 <span className="job-target">{item.InstanceID ? item.InstanceID.slice(0, 8) : "全局共享"}</span>
                 <span className="job-stage">
                   <b>{item.Stage || "queued"}</b>
+                  {item.Status === "running" ? (
+                    <span className="job-progress-track" role="progressbar" aria-label={`${type} 任务进度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={item.Percent || 0}>
+                      <i style={{ width: `${item.Percent || 0}%` }} />
+                    </span>
+                  ) : null}
                   <small>{item.Error || item.Message || "等待后台执行"}</small>
                   <small>{durationSummary(item)}</small>
                 </span>
                 <span className={`job-state ${item.Status}`}>
-                  {STATUS_LABELS[item.Status] || item.Status}
+                  <StatusIcon aria-hidden="true" />
+                  <span>{STATUS_LABELS[item.Status] || item.Status}</span>
                   <small>{item.Status}</small>
                 </span>
                 <span className="job-time">{formatTimestamp(item.CreatedAt)}</span>
                 <span className="job-operation">
-                  任务日志
-                  <ChevronDown className="job-chevron" aria-hidden="true" />
+                  <button type="button" className="job-event-toggle" aria-expanded={expanded} aria-controls={panelID} aria-label={`查看 ${type} 任务日志，任务 ID ${item.ID}`} onClick={() => toggle(item)}>
+                    <span>事件</span><ChevronDown className="job-chevron" aria-hidden="true" />
+                  </button>
+                  {onOpenLogs ? <button type="button" className="job-full-log" aria-label={`打开 ${type} 完整任务日志`} onClick={() => onOpenLogs(item)}><FileText aria-hidden="true" /><span>任务日志</span></button> : null}
                 </span>
-              </button>
+              </div>
               {expanded ? (
                 <div
                   className="job-log-panel"
@@ -217,21 +226,7 @@ export function JobsPage({ onOpenLogs }: { onOpenLogs?: (job: Job) => void }) {
                       </button>
                     </div>
                   ) : detail ? (
-                    <>
-                      {onOpenLogs ? (
-                        <div className="job-log-actions">
-                          <button
-                            className="create"
-                            type="button"
-                            onClick={() => onOpenLogs(detail)}
-                          >
-                            <ExternalLink aria-hidden="true" />
-                            打开完整日志
-                          </button>
-                        </div>
-                      ) : null}
-                      <JobLog detail={detail} />
-                    </>
+                    <JobLog detail={detail} />
                   ) : (
                     <div className="job-log-loading">暂无任务日志</div>
                   )}
@@ -250,6 +245,7 @@ function JobLog({ detail }: { detail: Job }) {
   const events = detail.Events || [];
   return (
     <>
+      <b className="job-log-title">任务事件链:</b>
       {detail.Error ? (
         <div className="job-log-failure">
           <b>{detail.Status === "interrupted" ? "中断原因" : "失败原因"}</b>

@@ -37,10 +37,29 @@ describe("JobsPage", () => {
     render(<JobsPage />);
 
     expect(await screen.findByRole("group", { name: "任务状态筛选" })).toBeVisible();
+    expect(screen.getByRole("group", { name: "任务状态筛选" }).closest(".job-filters")).toBeVisible();
     expect(screen.getByRole("searchbox", { name: "搜索任务" })).toBeVisible();
     for (const column of ["任务编号", "任务类型", "目标对象", "阶段 / 进度", "状态", "创建时间", "操作"]) {
       expect(screen.getByRole("columnheader", { name: column })).toBeVisible();
     }
+  });
+
+  it("shows reference status styling and a progress bar for a running task", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json([{
+      ID: "job-running",
+      Type: "game_update",
+      Status: "running",
+      Stage: "download",
+      Percent: 42,
+      CreatedAt: "2026-07-16T08:00:00Z",
+    }])));
+
+    render(<JobsPage />);
+
+    const progress = await screen.findByRole("progressbar", { name: "game_update 任务进度" });
+    expect(progress).toHaveAttribute("aria-valuenow", "42");
+    expect(progress.closest(".job-row")?.querySelector(".job-state")).toHaveClass("job-state", "running");
+    expect(screen.getByRole("button", { name: /查看 game_update 任务日志/ })).toHaveTextContent("事件");
   });
 
   it("refreshes an expanded running job when its summary timestamp changes", async () => {
@@ -210,7 +229,7 @@ describe("JobsPage", () => {
     const toggle = await screen.findByRole("button", {
       name: "查看 install 任务日志，任务 ID job-start-failed",
     });
-    expect(toggle).toHaveTextContent("未执行");
+    expect(toggle.closest(".job-row")).toHaveTextContent("未执行");
 
     await userEvent.click(toggle);
     const details = await screen.findByRole("region", {
@@ -270,7 +289,8 @@ describe("JobsPage", () => {
       }),
     );
 
-    render(<JobsPage onOpenLogs={() => {}} />);
+    const onOpenLogs = vi.fn();
+    render(<JobsPage onOpenLogs={onOpenLogs} />);
     await userEvent.click(
       await screen.findByRole("button", {
         name: "查看 game_update 任务日志，任务 ID job-one",
@@ -279,9 +299,9 @@ describe("JobsPage", () => {
     expect(
       await screen.findByRole("region", { name: "game_update 任务日志" }),
     ).toHaveTextContent("job-one complete");
-    expect(screen.getByRole("button", { name: "打开完整日志" })).toHaveClass(
-      "create",
-    );
+    expect(screen.getByText("任务事件链:")).toBeVisible();
+    await userEvent.click(screen.getAllByRole("button", { name: /打开 .* 完整任务日志/ })[0]);
+    expect(onOpenLogs).toHaveBeenCalledWith(expect.objectContaining({ ID: "job-one" }));
 
     await userEvent.click(
       screen.getByRole("button", {

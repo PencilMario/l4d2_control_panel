@@ -2,15 +2,22 @@ import {
   useCallback,
   useLayoutEffect,
   useRef,
+  useState,
   type UIEvent,
 } from "react";
 
-const BOTTOM_TOLERANCE = 4;
+const BOTTOM_TOLERANCE = 40;
 
 export function useConsoleFollow(outputVersion: unknown) {
   const outputRef = useRef<HTMLPreElement | null>(null);
-  const following = useRef(true);
+  const followingRef = useRef(true);
+  const [following, setFollowingState] = useState(true);
   const animationFrame = useRef<number | null>(null);
+
+  const setFollowing = useCallback((next: boolean) => {
+    followingRef.current = next;
+    setFollowingState(next);
+  }, []);
 
   const scrollToBottom = useCallback(() => {
     if (animationFrame.current !== null) {
@@ -25,12 +32,12 @@ export function useConsoleFollow(outputVersion: unknown) {
   }, []);
 
   const forceFollow = useCallback(() => {
-    following.current = true;
+    setFollowing(true);
     if (outputRef.current) {
       outputRef.current.scrollTop = outputRef.current.scrollHeight;
     }
     scrollToBottom();
-  }, [scrollToBottom]);
+  }, [scrollToBottom, setFollowing]);
 
   const onScroll = useCallback((event: UIEvent<HTMLPreElement>) => {
     const output = event.currentTarget;
@@ -40,11 +47,15 @@ export function useConsoleFollow(outputVersion: unknown) {
       cancelAnimationFrame(animationFrame.current);
       animationFrame.current = null;
     }
-    following.current = atBottom;
-  }, []);
+    setFollowing(atBottom);
+  }, [setFollowing]);
 
   useLayoutEffect(() => {
-    if (following.current) scrollToBottom();
+    if (!followingRef.current) return;
+    if (outputRef.current) {
+      outputRef.current.scrollTop = outputRef.current.scrollHeight;
+    }
+    scrollToBottom();
   }, [outputVersion, scrollToBottom]);
 
   useLayoutEffect(
@@ -60,6 +71,7 @@ export function useConsoleFollow(outputVersion: unknown) {
     outputRef,
     forceFollow,
     onScroll,
-    isFollowing: () => following.current,
+    following,
+    isFollowing: () => followingRef.current,
   };
 }

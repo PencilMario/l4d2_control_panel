@@ -8,7 +8,7 @@ const instances = (id = 'i') => [{ id, name: id }];
 afterEach(() => vi.restoreAllMocks());
 
 describe('GameLogsPage', () => {
-  it('uses the private-files page contract with an in-page target instance selector', async () => {
+  it('uses the reference game-log workspace with an in-page target instance selector', async () => {
     const api = vi.fn().mockResolvedValue([]);
     const instances = [
       { id: 'i1', name: '死亡中心' },
@@ -18,11 +18,26 @@ describe('GameLogsPage', () => {
     render(<GameLogsPage instances={instances} api={api} />);
 
     expect(screen.getByRole('heading', { name: '游戏日志分类预览', level: 1 })).toBeVisible();
+    expect(screen.getByText('分类浏览、在线诊断与下载游戏引擎控制台日志与 SourceMod 插件日志')).toBeVisible();
     expect(screen.getByRole('combobox', { name: '目标实例' })).toHaveValue('i1');
-    expect(screen.getByRole('toolbar', { name: '游戏日志工具栏' })).toHaveClass('private-toolbar');
-    expect(screen.getByRole('complementary', { name: '游戏日志目录' })).toHaveClass('private-tree-pane');
-    expect(screen.getByLabelText('日志查看区')).toHaveClass('private-workspace');
+    expect(screen.getByRole('toolbar', { name: '游戏日志工具栏' })).toHaveClass('game-log-toolbar');
+    expect(screen.getByRole('searchbox', { name: '搜索日志关键字' })).toHaveAttribute('placeholder', '搜索日志关键字...');
+    expect(screen.getByRole('complementary', { name: '游戏日志目录' })).toHaveClass('game-log-tree-pane');
+    expect(screen.getByLabelText('日志查看区')).toHaveClass('game-log-viewer');
+    expect(screen.getByRole('button', { name: 'Download' })).toHaveTextContent('下载完整日志');
+    expect(screen.getByRole('button', { name: 'Download' })).toBeDisabled();
     await waitFor(() => expect(api).toHaveBeenCalledWith('/api/instances/i1/game-logs/tree', expect.anything()));
+  });
+
+  it('filters preview lines from the toolbar search and updates the visible line count', async () => {
+    const api = vi.fn().mockResolvedValueOnce([{ ...entry, path: 'a.log' }]).mockResolvedValueOnce({ text: 'INFO ready\nWARN retry\nINFO done' });
+    render(<GameLogsPage instances={instances()} api={api} />);
+    fireEvent.click(await waitFor(() => screen.getByLabelText('a.log')));
+    await waitFor(() => expect(screen.getByText('共 3 行')).toBeVisible());
+    fireEvent.change(screen.getByRole('searchbox', { name: '搜索日志关键字' }), { target: { value: 'warn' } });
+    expect(screen.getByText('共 1 行')).toBeVisible();
+    expect(screen.getByText((_, element) => element?.tagName === 'CODE' && element.textContent === 'WARN retry')).toBeVisible();
+    expect(screen.queryByText((_, element) => element?.tagName === 'CODE' && element.textContent === 'INFO ready')).toBeNull();
   });
 
   it('consumes the bare Entry[] contract and builds directories from relative paths', async () => {
@@ -35,14 +50,14 @@ describe('GameLogsPage', () => {
     expect(screen.getByLabelText('logs/archive/a.log')).toBeTruthy();
   });
 
-  it('shows selected file metadata', async () => {
+  it('shows the selected path and visible line count in the reference viewer header', async () => {
     const api = vi.fn().mockResolvedValueOnce([entry]).mockResolvedValueOnce({ text: 'INFO hi', size: 12, modified_at: entry.modified_at });
     render(<GameLogsPage instances={instances('i1')} api={api} />);
     fireEvent.click(await waitFor(() => screen.getByLabelText('Toggle game/logs')));
     fireEvent.click(screen.getByLabelText('Toggle game/logs/archive'));
     fireEvent.click(screen.getByLabelText(entry.path));
-    await waitFor(() => expect(screen.getByText(/12 B/)).toBeTruthy());
-    expect(screen.getByText(/2026/)).toBeTruthy();
+    await waitFor(() => expect(screen.getByText(entry.path)).toBeTruthy());
+    expect(screen.getByText('共 1 行')).toBeTruthy();
   });
 
   it('refreshes both tree and the current preview when the file still exists', async () => {
@@ -88,7 +103,7 @@ describe('GameLogsPage', () => {
   it('uses the private-files mobile drawer contract and restores focus on Escape', async () => {
     const api = vi.fn().mockResolvedValue([]);
     render(<GameLogsPage instances={instances()} api={api} />);
-    const trigger = screen.getByRole('button', { name: '打开文件树' });
+    const trigger = screen.getByRole('button', { name: '选择日志文件' });
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
     expect(document.getElementById('game-logs-drawer')).toHaveAttribute('aria-hidden', 'true');
     fireEvent.click(trigger);
@@ -105,7 +120,7 @@ describe('GameLogsPage', () => {
   it('closes the mobile drawer from the same close control as private files', async () => {
     const api = vi.fn().mockResolvedValue([]);
     render(<GameLogsPage instances={instances()} api={api} />);
-    const trigger = screen.getByRole('button', { name: '打开文件树' });
+    const trigger = screen.getByRole('button', { name: '选择日志文件' });
     fireEvent.click(trigger);
     await waitFor(() => expect(screen.getByRole('dialog', { name: '游戏日志目录' })).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: '关闭文件树' }));
@@ -117,7 +132,7 @@ describe('GameLogsPage', () => {
     const api = vi.fn().mockResolvedValue([{ ...entry, path: 'a.log' }]);
     render(<GameLogsPage instances={instances()} api={api} />);
     await waitFor(() => expect(screen.getByLabelText('a.log')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: '打开文件树' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择日志文件' }));
     const drawer = screen.getByRole('dialog', { name: '游戏日志目录' });
     const first = within(drawer).getByRole('button', { name: '关闭文件树' });
     const last = within(drawer).getByRole('treeitem', { name: 'a.log' });

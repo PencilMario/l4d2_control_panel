@@ -109,7 +109,8 @@ describe("SchedulesPage", () => {
       }),
     );
     render(<SchedulesPage instances={instances} packages={packages} />);
-    const button = await screen.findByRole("button", { name: "保存计划" });
+    await userEvent.click(await screen.findByRole("button", { name: "新建计划任务" }));
+    const button = await screen.findByRole("button", { name: "新建任务" });
 
     act(() => {
       button.click();
@@ -125,7 +126,7 @@ describe("SchedulesPage", () => {
     const user = userEvent.setup();
     render(<SchedulesPage instances={instances} packages={packages} />);
 
-    await user.click(await screen.findByRole("button", { name: "任务说明" }));
+    await user.click(await screen.findByRole("button", { name: "任务类型说明" }));
     const dialog = screen.getByRole("dialog", { name: "计划任务类型说明" });
     for (const label of [
       "游戏更新",
@@ -209,10 +210,11 @@ describe("SchedulesPage", () => {
     const user = userEvent.setup();
     render(<SchedulesPage instances={instances} packages={packages} />);
 
+    await user.click(await screen.findByRole("button", { name: "新建计划任务" }));
     await user.selectOptions(await screen.findByLabelText("任务"), "package_hot");
     expect(screen.queryByLabelText("插件包")).not.toBeInTheDocument();
     expect(screen.getByText("使用目标实例当前配置的插件包；计划任务不会覆盖实例插件包设置。")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "保存计划" }));
+    await user.click(screen.getByRole("button", { name: "新建任务" }));
 
     await screen.findByRole("status");
     const create = requests.find(
@@ -228,10 +230,11 @@ describe("SchedulesPage", () => {
     const user = userEvent.setup();
     render(<SchedulesPage instances={instances} packages={packages} />);
 
+    await user.click(await screen.findByRole("button", { name: "新建计划任务" }));
     await user.selectOptions(await screen.findByLabelText("任务"), "release_hot");
     expect(screen.queryByLabelText("GitHub 源")).not.toBeInTheDocument();
     expect(screen.getByText("使用目标实例当前配置的插件包；计划任务不会覆盖实例插件包设置。")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "保存计划" }));
+    await user.click(screen.getByRole("button", { name: "新建任务" }));
 
     const create = requests.find(
       ({ path, init }) => path === "/api/schedules" && init?.method === "POST",
@@ -246,12 +249,13 @@ describe("SchedulesPage", () => {
     const user = userEvent.setup();
     render(<SchedulesPage instances={instances} packages={packages} />);
 
+    await user.click(await screen.findByRole("button", { name: "新建计划任务" }));
     await user.selectOptions(await screen.findByLabelText("任务"), "cleanup");
     expect(screen.queryByLabelText("实例")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("在线玩家策略")).not.toBeInTheDocument();
     await user.clear(screen.getByLabelText("保留天数"));
     await user.type(screen.getByLabelText("保留天数"), "45");
-    await user.click(screen.getByRole("button", { name: "保存计划" }));
+    await user.click(screen.getByRole("button", { name: "新建任务" }));
 
     await screen.findByRole("status");
     const create = requests.find(
