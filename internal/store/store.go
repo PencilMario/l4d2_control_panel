@@ -84,6 +84,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = migratePackageSourceIDs(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err = migrateJobHistory(db); err != nil {
 		db.Close()
 		return nil, err
@@ -93,6 +97,34 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	return &Store{db: db}, nil
+}
+
+func migratePackageSourceIDs(db *sql.DB) error {
+	var applied int
+	if err := db.QueryRow(`SELECT count(*) FROM schema_migrations WHERE version=9`).Scan(&applied); err != nil || applied > 0 {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`ALTER TABLE instances ADD COLUMN package_source_id TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE instances SET package_source_id=COALESCE((SELECT MIN(id) FROM github_sources WHERE repository=instances.package_source_repository HAVING COUNT(*)=1),'') WHERE package_source_repository<>'' AND package_source_id=''`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE scheduled_tasks SET type='package_full' WHERE type='package_hot'`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE scheduled_tasks SET type='release_full' WHERE type='release_hot'`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(9,CURRENT_TIMESTAMP)`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func migrateGlobalGameSchedules(db *sql.DB) error {
@@ -280,6 +312,7 @@ func (s *Store) SharedGameState(ctx context.Context) (domain.SharedGameState, er
 }
 
 func (s *Store) CreateInstance(ctx context.Context, v domain.Instance) error {
+	normalizePackageSelection(&v)
 	now := time.Now().UTC()
 	v.CreatedAt, v.UpdatedAt = now, now
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -287,7 +320,7 @@ func (s *Store) CreateInstance(ctx context.Context, v domain.Instance) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `INSERT INTO instances(id,node_id,name,container_id,game_port,sourcetv_port,start_map,game_mode,tickrate,max_players,extra_args,runtime_image,package_version,selected_package_id,package_source_repository,desired_state,actual_state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, fields(v)...); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO instances(id,node_id,name,container_id,game_port,sourcetv_port,start_map,game_mode,tickrate,max_players,extra_args,runtime_image,package_version,selected_package_id,package_source_id,package_source_repository,desired_state,actual_state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, fields(v)...); err != nil {
 		return err
 	}
 	if err = replacePluginPorts(ctx, tx, v.ID, v.PluginPorts); err != nil {
@@ -296,13 +329,14 @@ func (s *Store) CreateInstance(ctx context.Context, v domain.Instance) error {
 	return tx.Commit()
 }
 func (s *Store) UpdateInstance(ctx context.Context, v domain.Instance) error {
+	normalizePackageSelection(&v)
 	v.UpdatedAt = time.Now().UTC()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	r, err := tx.ExecContext(ctx, `UPDATE instances SET node_id=?,name=?,container_id=?,game_port=?,sourcetv_port=?,start_map=?,game_mode=?,tickrate=?,max_players=?,extra_args=?,runtime_image=?,package_version=?,selected_package_id=?,package_source_repository=?,desired_state=?,actual_state=?,updated_at=? WHERE id=?`, v.NodeID, v.Name, v.ContainerID, v.GamePort, v.SourceTVPort, v.StartMap, v.GameMode, v.Tickrate, v.MaxPlayers, v.ExtraArgs, v.RuntimeImage, v.PackageVersion, v.SelectedPackageID, v.PackageSourceRepository, v.DesiredState, v.ActualState, v.UpdatedAt.Format(time.RFC3339Nano), v.ID)
+	r, err := tx.ExecContext(ctx, `UPDATE instances SET node_id=?,name=?,container_id=?,game_port=?,sourcetv_port=?,start_map=?,game_mode=?,tickrate=?,max_players=?,extra_args=?,runtime_image=?,package_version=?,selected_package_id=?,package_source_id=?,package_source_repository=?,desired_state=?,actual_state=?,updated_at=? WHERE id=?`, v.NodeID, v.Name, v.ContainerID, v.GamePort, v.SourceTVPort, v.StartMap, v.GameMode, v.Tickrate, v.MaxPlayers, v.ExtraArgs, v.RuntimeImage, v.PackageVersion, v.SelectedPackageID, v.PackageSourceID, v.PackageSourceRepository, v.DesiredState, v.ActualState, v.UpdatedAt.Format(time.RFC3339Nano), v.ID)
 	if err != nil {
 		return err
 	}
@@ -409,14 +443,14 @@ func (s *Store) allPluginPorts(ctx context.Context) (map[string][]int, error) {
 	return ports, rows.Err()
 }
 
-const selectInstance = `SELECT id,node_id,name,container_id,game_port,sourcetv_port,start_map,game_mode,tickrate,max_players,extra_args,runtime_image,package_version,selected_package_id,package_source_repository,desired_state,actual_state,created_at,updated_at FROM instances`
+const selectInstance = `SELECT id,node_id,name,container_id,game_port,sourcetv_port,start_map,game_mode,tickrate,max_players,extra_args,runtime_image,package_version,selected_package_id,package_source_id,package_source_repository,desired_state,actual_state,created_at,updated_at FROM instances`
 
 type scanner interface{ Scan(...any) error }
 
 func scanInstance(s scanner) (domain.Instance, error) {
 	var v domain.Instance
 	var c, u string
-	err := s.Scan(&v.ID, &v.NodeID, &v.Name, &v.ContainerID, &v.GamePort, &v.SourceTVPort, &v.StartMap, &v.GameMode, &v.Tickrate, &v.MaxPlayers, &v.ExtraArgs, &v.RuntimeImage, &v.PackageVersion, &v.SelectedPackageID, &v.PackageSourceRepository, &v.DesiredState, &v.ActualState, &c, &u)
+	err := s.Scan(&v.ID, &v.NodeID, &v.Name, &v.ContainerID, &v.GamePort, &v.SourceTVPort, &v.StartMap, &v.GameMode, &v.Tickrate, &v.MaxPlayers, &v.ExtraArgs, &v.RuntimeImage, &v.PackageVersion, &v.SelectedPackageID, &v.PackageSourceID, &v.PackageSourceRepository, &v.DesiredState, &v.ActualState, &c, &u)
 	if err == nil {
 		v.CreatedAt, _ = time.Parse(time.RFC3339Nano, c)
 		v.UpdatedAt, _ = time.Parse(time.RFC3339Nano, u)
@@ -424,7 +458,15 @@ func scanInstance(s scanner) (domain.Instance, error) {
 	return v, err
 }
 func fields(v domain.Instance) []any {
-	return []any{v.ID, v.NodeID, v.Name, v.ContainerID, v.GamePort, v.SourceTVPort, v.StartMap, v.GameMode, v.Tickrate, v.MaxPlayers, v.ExtraArgs, v.RuntimeImage, v.PackageVersion, v.SelectedPackageID, v.PackageSourceRepository, v.DesiredState, v.ActualState, v.CreatedAt.Format(time.RFC3339Nano), v.UpdatedAt.Format(time.RFC3339Nano)}
+	return []any{v.ID, v.NodeID, v.Name, v.ContainerID, v.GamePort, v.SourceTVPort, v.StartMap, v.GameMode, v.Tickrate, v.MaxPlayers, v.ExtraArgs, v.RuntimeImage, v.PackageVersion, v.SelectedPackageID, v.PackageSourceID, v.PackageSourceRepository, v.DesiredState, v.ActualState, v.CreatedAt.Format(time.RFC3339Nano), v.UpdatedAt.Format(time.RFC3339Nano)}
+}
+
+func normalizePackageSelection(v *domain.Instance) {
+	if v.PackageSourceID != "" {
+		v.SelectedPackageID = ""
+	} else if v.SelectedPackageID != "" {
+		v.PackageSourceRepository = ""
+	}
 }
 
 func (s *Store) LoadCredential() (hash, salt []byte, found bool, err error) {

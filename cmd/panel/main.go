@@ -162,7 +162,7 @@ func main() {
 		return ports.Reservations(instances), nil
 	}, Listening: ports.IsListening}
 	healthChecker := health.Checker{Host: cfg.GameHost, Query: a2s.Client{}, Probe: engine}
-	instanceProvisioner := provisioning.Service{Root: cfg.DataRoot, Packages: packageManager, Deployer: updatePipeline, Instances: db, SharedState: db, Overlay: overlayClient}
+	instanceProvisioner := provisioning.Service{Root: cfg.DataRoot, Packages: packageManager, Sources: db, Deployer: updatePipeline, Instances: db, SharedState: db, Overlay: overlayClient}
 	sharedGate := maintenance.NewGate()
 	gameLogManager := gamelogs.NewManager(cfg.DataRoot, gamelogs.Options{})
 	life := lifecycle.New(db, engine, portChecker, cfg.DataRoot, lifecycle.WithHealth(healthChecker), lifecycle.WithSpace(disk.Checker{}, startMinimumFreeBytes), lifecycle.WithProvisioner(instanceProvisioner), lifecycle.WithMaintenanceGate(sharedGate), lifecycle.WithLogPreparer(gameLogManager))
@@ -192,9 +192,10 @@ func main() {
 		log.Printf("private upload recovery: %v", err)
 	}
 	updateCoordinator := &updates.Coordinator{Lifecycle: life, Deployer: updatePipeline, Instances: db}
-	gameCoordinator := &updates.GameCoordinator{Root: cfg.DataRoot, Instances: db, Lifecycle: life, Updater: engine, Private: privateManager, Packages: packageManager, Deployer: updatePipeline}
+	sourceSynchronizer := releases.Synchronizer{Client: releases.Client{}, Sources: db, Packages: packageManager, Secrets: secretService}
+	gameCoordinator := &updates.GameCoordinator{Root: cfg.DataRoot, Instances: db, Lifecycle: life, Updater: engine, Private: privateManager, Packages: packageManager, Sources: sourceSynchronizer, Deployer: updatePipeline}
 	sharedPublisher := updates.FilesystemGamePublisher{Root: cfg.DataRoot}
-	sharedRebuilder := updates.SharedGameRebuilder{Overlay: overlayClient, Packages: packageManager, Deployer: updatePipeline, Private: privateManager}
+	sharedRebuilder := updates.SharedGameRebuilder{Overlay: overlayClient, Packages: packageManager, Sources: db, Deployer: updatePipeline, Private: privateManager}
 	sharedGameCoordinator := &updates.SharedGameCoordinator{Root: cfg.DataRoot, Instances: db, Players: playerService, Installer: engine, Reconciler: sharedRebuilder, Lifecycle: life, Gate: sharedGate}
 	sharedGameMigration := &sharedmigration.SharedGameService{Root: cfg.DataRoot, Instances: db, Installer: engine, Publisher: sharedPublisher, Layout: sharedmigration.FilesystemLayout{Root: cfg.DataRoot}, Reconciler: sharedRebuilder, Gate: sharedGate}
 	dispatcher := automation.Dispatcher{Jobs: jobManager, Players: playerService, Packages: packageManager, PackagesUpdate: updateCoordinator, GameUpdate: gameCoordinator, SharedGameUpdate: sharedGameCoordinator, Releases: releases.Client{}, Sources: db, Instances: db, Maintenance: maintenance.New(cfg.DataRoot), Gate: sharedGate, Secrets: secretService}

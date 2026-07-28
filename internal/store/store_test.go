@@ -190,6 +190,57 @@ func TestSelectedPackagePersistsIndependentlyFromAppliedPackage(t *testing.T) {
 	}
 }
 
+func TestPackageSourcePersistsIndependentlyFromAppliedPackage(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	value := domain.Instance{ID: "source-instance", NodeID: "local", Name: "Source", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", PackageSourceID: "source-a", PackageVersion: "release-a", DesiredState: domain.StateStopped, ActualState: domain.StateStopped}
+	if err := s.CreateInstance(context.Background(), value); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Instance(context.Background(), value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PackageSourceID != "source-a" || got.SelectedPackageID != "" || got.PackageVersion != "release-a" {
+		t.Fatalf("instance=%#v", got)
+	}
+}
+
+func TestOpenMigratesHotPackageSchedulesToFull(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "panel.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, task := range []domain.ScheduledTask{{ID: "package", InstanceID: "a", Type: "package_hot", Cron: "0 4 * * *", Timezone: "UTC", OnlinePolicy: "force"}, {ID: "release", InstanceID: "a", Type: "release_hot", Cron: "0 5 * * *", Timezone: "UTC", OnlinePolicy: "force"}} {
+		if err := s.SaveScheduledTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.DB().Exec(`DELETE FROM schema_migrations WHERE version=9`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	tasks, err := s.ScheduledTasks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 2 || tasks[0].Type != "package_full" || tasks[1].Type != "release_full" {
+		t.Fatalf("tasks=%#v", tasks)
+	}
+}
+
 func TestMigrationBackfillsSelectedPackageFromAppliedPackage(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "panel.db")
 	legacy := openLegacyInstanceDatabase(t, path, "package-a")

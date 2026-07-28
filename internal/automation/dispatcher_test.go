@@ -5,7 +5,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/releases"
@@ -47,26 +46,10 @@ func TestScheduledReleaseReportsDeletedSource(t *testing.T) {
 	}
 }
 
-func TestScheduledPackageUpdateUsesInstanceSelectedPackage(t *testing.T) {
-	manager, err := content.NewPackageManager(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	selected := content.PackageVersion{ID: uuid.NewString(), Filename: "selected.zip", Version: "v-selected", HotCompatible: true}
-	if err := manager.UpdateMetadata(selected); err != nil {
-		t.Fatal(err)
-	}
-	updater := &fakePackageUpdater{}
-	d := Dispatcher{
-		Instances:      fakeInstanceRepo{instance: domain.Instance{ID: "instance", SelectedPackageID: selected.ID}},
-		Packages:       manager,
-		PackagesUpdate: updater,
-	}
-	if err := d.run(context.Background(), domain.ScheduledTask{InstanceID: "instance", Type: "package_hot", Payload: `{"package_id":"wrong"}`}); err != nil {
-		t.Fatal(err)
-	}
-	if updater.packageID != selected.ID {
-		t.Fatalf("package=%q want %q", updater.packageID, selected.ID)
+func TestScheduledHotPackageUpdatesAreRetired(t *testing.T) {
+	err := (Dispatcher{}).run(context.Background(), domain.ScheduledTask{InstanceID: "instance", Type: "package_hot"})
+	if err == nil || err.Error() != "unsupported scheduled task type" {
+		t.Fatalf("err=%v", err)
 	}
 }
 
@@ -102,42 +85,9 @@ func (f *fakePackageUpdater) ApplyPackage(_ context.Context, _ string, item cont
 	return nil
 }
 
-func TestScheduledReleaseUpdateAppliesOnlyNewRelease(t *testing.T) {
-	for _, tc := range []struct {
-		name, kind string
-		mode       updates.Mode
-	}{
-		{"hot", "release_hot", updates.Hot}, {"full", "release_full", updates.Full},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			updater := &fakePackageUpdater{}
-			fetcher := &fakeReleaseFetcher{result: releases.FetchResult{Package: content.PackageVersion{ID: "new"}, Updated: true}}
-			manager, err := content.NewPackageManager(t.TempDir())
-			if err != nil {
-				t.Fatal(err)
-			}
-			selected := content.PackageVersion{ID: uuid.NewString(), Filename: "plugins.zip", SourceRepository: "owner/repo"}
-			if err := manager.UpdateMetadata(selected); err != nil {
-				t.Fatal(err)
-			}
-			d := Dispatcher{Instances: fakeInstanceRepo{instance: domain.Instance{ID: "instance", SelectedPackageID: selected.ID}}, Packages: manager, PackagesUpdate: updater, ReleaseFetcher: fetcher}
-			task := domain.ScheduledTask{InstanceID: "instance", Type: tc.kind, Payload: `{"repository":"wrong/repo","asset_pattern":"wrong"}`}
-			if err := d.run(context.Background(), task); err != nil {
-				t.Fatal(err)
-			}
-			if updater.calls != 1 {
-				t.Fatalf("calls=%d", updater.calls)
-			}
-			if fetcher.repository != "owner/repo" || fetcher.assetPattern != `^plugins\.zip$` {
-				t.Fatalf("fetch source=%q pattern=%q", fetcher.repository, fetcher.assetPattern)
-			}
-			fetcher.result = releases.FetchResult{Updated: false}
-			if err := d.run(context.Background(), task); err != nil {
-				t.Fatal(err)
-			}
-			if updater.calls != 1 {
-				t.Fatalf("unchanged release applied: calls=%d", updater.calls)
-			}
-		})
+func TestScheduledHotReleaseUpdatesAreRetired(t *testing.T) {
+	err := (Dispatcher{}).run(context.Background(), domain.ScheduledTask{InstanceID: "instance", Type: "release_hot"})
+	if err == nil || err.Error() != "unsupported scheduled task type" {
+		t.Fatalf("err=%v", err)
 	}
 }

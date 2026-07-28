@@ -262,7 +262,6 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Post("/api/github-sources/{id}/check", s.checkGitHubSource)
 		r.Post("/api/packages/uploads", s.uploadPackage)
 		r.Post("/api/packages/github", s.fetchRelease)
-		r.Post("/api/instances/{id}/updates", s.updatePackage)
 		r.Post("/api/instances/{id}/game-update", s.updateGame)
 		r.Get("/api/schedules", s.listSchedules)
 		r.Post("/api/schedules", s.saveSchedule)
@@ -836,17 +835,17 @@ func unhealthyObservationState(current domain.InstanceState) domain.InstanceStat
 }
 
 type instanceInput struct {
-	Name                    string `json:"name"`
-	GamePort                int    `json:"game_port"`
-	SourceTVPort            int    `json:"sourcetv_port"`
-	PluginPorts             []int  `json:"plugin_ports"`
-	StartMap                string `json:"start_map"`
-	GameMode                string `json:"game_mode"`
-	Tickrate                int    `json:"tickrate"`
-	MaxPlayers              int    `json:"max_players"`
-	ExtraArgs               string `json:"extra_args"`
-	PackageID               string `json:"package_id"`
-	PackageSourceRepository string `json:"package_source_repository"`
+	Name            string `json:"name"`
+	GamePort        int    `json:"game_port"`
+	SourceTVPort    int    `json:"sourcetv_port"`
+	PluginPorts     []int  `json:"plugin_ports"`
+	StartMap        string `json:"start_map"`
+	GameMode        string `json:"game_mode"`
+	Tickrate        int    `json:"tickrate"`
+	MaxPlayers      int    `json:"max_players"`
+	ExtraArgs       string `json:"extra_args"`
+	PackageID       string `json:"package_id"`
+	PackageSourceID string `json:"source_id"`
 }
 
 func (s *Server) validateInstanceInput(input *instanceInput) (content.PackageVersion, error) {
@@ -859,9 +858,17 @@ func (s *Server) validateInstanceInput(input *instanceInput) (content.PackageVer
 	if _, err := srcds.ParseExtraArgs(input.ExtraArgs); err != nil {
 		return content.PackageVersion{}, err
 	}
-	item, err := s.packages.Get(input.PackageID)
-	if err != nil {
-		return content.PackageVersion{}, fmt.Errorf("invalid package: %w", err)
+	if (input.PackageID == "") == (input.PackageSourceID == "") {
+		return content.PackageVersion{}, errors.New("exactly one package_id or source_id is required")
+	}
+	var item content.PackageVersion
+	var err error
+	if input.PackageSourceID != "" {
+		if _, err = s.store.GitHubSource(context.Background(), input.PackageSourceID); err != nil {
+			return item, fmt.Errorf("invalid source: %w", err)
+		}
+	} else if item, err = s.packages.Get(input.PackageID); err != nil {
+		return item, fmt.Errorf("invalid package: %w", err)
 	}
 	slices.Sort(input.PluginPorts)
 	return item, nil
@@ -878,7 +885,8 @@ func (input instanceInput) apply(instance domain.Instance) domain.Instance {
 	instance.MaxPlayers = input.MaxPlayers
 	instance.ExtraArgs = input.ExtraArgs
 	instance.SelectedPackageID = input.PackageID
-	instance.PackageSourceRepository = input.PackageSourceRepository
+	instance.PackageSourceID = input.PackageSourceID
+	instance.PackageSourceRepository = ""
 	return instance
 }
 
@@ -914,7 +922,7 @@ func (s *Server) updateInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	next := input.apply(instance)
 	runtimeChanged := runtimeConfigurationChanged(instance, next)
-	packageNeedsApply := instance.SelectedPackageID != input.PackageID || instance.PackageSourceRepository != input.PackageSourceRepository || (input.PackageSourceRepository == "" && instance.PackageVersion != input.PackageID)
+	packageNeedsApply := instance.SelectedPackageID != input.PackageID || instance.PackageSourceID != input.PackageSourceID || (input.PackageSourceID == "" && instance.PackageVersion != input.PackageID)
 	requiresJob := instance.ContainerID != "" && (runtimeChanged || packageNeedsApply)
 	if requiresJob && s.jobs == nil {
 		writeError(w, 503, "operations_unavailable", "job manager unavailable")
@@ -939,7 +947,14 @@ func (s *Server) updateInstance(w http.ResponseWriter, r *http.Request) {
 	job, ok := s.startJob(w, r, instance.ID, "reconfigure", func(ctx context.Context, reporter jobs.Reporter) error {
 		if packageNeedsApply {
 			reporter.Progress("package", 20, "deploying selected package")
-			if err := s.updateCoordinator.ApplyPackage(ctx, instance.ID, item, updates.Full); err != nil {
+			if input.PackageSourceID != "" {
+				if s.gameUpdates == nil {
+					return errors.New("instance package update unavailable")
+				}
+				if err := s.gameUpdates.Reinstall(ctx, instance.ID, updates.ReinstallOptions{Package: true}); err != nil {
+					return err
+				}
+			} else if err := s.updateCoordinator.ApplyPackage(ctx, instance.ID, item, updates.Full); err != nil {
 				return err
 			}
 		}
@@ -1349,43 +1364,6 @@ func (s *Server) checkGitHubSource(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 202, job)
 }
-func (s *Server) updatePackage(w http.ResponseWriter, r *http.Request) {
-	if s.packages == nil || s.updateCoordinator == nil || s.jobs == nil {
-		writeError(w, 503, "updates_unavailable", "update pipeline unavailable")
-		return
-	}
-	var input struct {
-		PackageID string       `json:"package_id"`
-		Mode      updates.Mode `json:"mode"`
-		Confirm   bool         `json:"confirm"`
-	}
-	if decodeJSON(w, r, &input) != nil {
-		return
-	}
-	if input.Mode == updates.Full && !input.Confirm {
-		writeError(w, 428, "confirmation_required", "full update requires confirmation")
-		return
-	}
-	item, err := s.packages.Get(input.PackageID)
-	if err != nil {
-		writeError(w, 404, "package_not_found", err.Error())
-		return
-	}
-	if input.Mode == updates.Hot && !item.HotCompatible {
-		writeError(w, 422, "hot_update_forbidden", "package is not hot-update compatible")
-		return
-	}
-	id := chi.URLParam(r, "id")
-	job, ok := s.startJob(w, r, id, "package_"+string(input.Mode), func(ctx context.Context, reporter jobs.Reporter) error {
-		reporter.Progress("deploy", 10, "deploying package")
-		return s.updateCoordinator.ApplyPackage(ctx, id, item, input.Mode)
-	})
-	if !ok {
-		return
-	}
-	writeJSON(w, 202, job)
-}
-
 func (s *Server) listVPK(w http.ResponseWriter, r *http.Request) {
 	if s.uploads == nil {
 		writeError(w, 503, "content_unavailable", "content manager unavailable")

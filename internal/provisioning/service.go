@@ -36,8 +36,11 @@ type SharedOverlay interface {
 }
 
 type Service struct {
-	Root        string
-	Packages    PackageSource
+	Root     string
+	Packages PackageSource
+	Sources  interface {
+		GitHubSource(context.Context, string) (domain.GitHubSource, error)
+	}
 	Deployer    Deployer
 	Instances   InstanceRepository
 	SharedState SharedStateSource
@@ -90,12 +93,27 @@ func currentReleaseID(root string) (string, error) {
 }
 
 func (s Service) Prepare(ctx context.Context, instance domain.Instance) error {
-	if instance.SelectedPackageID == "" && instance.PackageSourceRepository == "" {
+	if instance.SelectedPackageID == "" && instance.PackageSourceID == "" && instance.PackageSourceRepository == "" {
 		return errors.New("instance package is required")
 	}
 	var item content.PackageVersion
 	var err error
-	if instance.PackageSourceRepository != "" {
+	if instance.PackageSourceID != "" {
+		if s.Sources == nil {
+			return errors.New("source package lookup unavailable")
+		}
+		source, sourceErr := s.Sources.GitHubSource(ctx, instance.PackageSourceID)
+		if sourceErr != nil {
+			return sourceErr
+		}
+		resolver, ok := s.Packages.(interface {
+			LatestSourceVersion(string) (content.PackageVersion, error)
+		})
+		if !ok {
+			return errors.New("source package lookup unavailable")
+		}
+		item, err = resolver.LatestSourceVersion(source.Repository)
+	} else if instance.PackageSourceRepository != "" {
 		resolver, ok := s.Packages.(interface {
 			LatestSourceVersion(string) (content.PackageVersion, error)
 		})

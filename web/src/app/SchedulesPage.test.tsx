@@ -121,7 +121,7 @@ describe("SchedulesPage", () => {
     expect(button).toBeDisabled();
     expect(button).toHaveAttribute("aria-busy", "true");
   });
-  it("shows detailed descriptions for all eight task types", async () => {
+  it("shows detailed descriptions for the six supported task types", async () => {
     mockSchedules([]);
     const user = userEvent.setup();
     render(<SchedulesPage instances={instances} packages={packages} />);
@@ -130,10 +130,8 @@ describe("SchedulesPage", () => {
     const dialog = screen.getByRole("dialog", { name: "计划任务类型说明" });
     for (const label of [
       "游戏更新",
-      "插件热更新",
       "插件完整更新",
       "仅同步 GitHub 源",
-      "GitHub Release 热更新",
       "GitHub Release 完整更新",
       "备份",
       "清理",
@@ -205,13 +203,13 @@ describe("SchedulesPage", () => {
     ).toBe(true);
   });
 
-  it("creates hot-package schedules from the instance package setting", async () => {
+  it("creates full-package schedules from the instance package setting", async () => {
     const { requests } = mockSchedules([]);
     const user = userEvent.setup();
     render(<SchedulesPage instances={instances} packages={packages} />);
 
     await user.click(await screen.findByRole("button", { name: "新建计划任务" }));
-    await user.selectOptions(await screen.findByLabelText("任务"), "package_hot");
+    await user.selectOptions(await screen.findByLabelText("任务"), "package_full");
     expect(screen.queryByLabelText("插件包")).not.toBeInTheDocument();
     expect(screen.getByText("使用目标实例当前配置的插件包；计划任务不会覆盖实例插件包设置。")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "新建任务" }));
@@ -221,7 +219,7 @@ describe("SchedulesPage", () => {
       ({ path, init }) => path === "/api/schedules" && init?.method === "POST",
     );
     const body = JSON.parse(String(create?.init?.body));
-    expect(body.type).toBe("package_hot");
+    expect(body.type).toBe("package_full");
     expect(JSON.parse(body.payload)).toEqual({});
   });
 
@@ -231,7 +229,7 @@ describe("SchedulesPage", () => {
     render(<SchedulesPage instances={instances} packages={packages} />);
 
     await user.click(await screen.findByRole("button", { name: "新建计划任务" }));
-    await user.selectOptions(await screen.findByLabelText("任务"), "release_hot");
+    await user.selectOptions(await screen.findByLabelText("任务"), "release_full");
     expect(screen.queryByLabelText("GitHub 源")).not.toBeInTheDocument();
     expect(screen.getByText("使用目标实例当前配置的插件包；计划任务不会覆盖实例插件包设置。")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "新建任务" }));
@@ -240,7 +238,7 @@ describe("SchedulesPage", () => {
       ({ path, init }) => path === "/api/schedules" && init?.method === "POST",
     );
     const body = JSON.parse(String(create?.init?.body));
-    expect(body.type).toBe("release_hot");
+    expect(body.type).toBe("release_full");
     expect(JSON.parse(body.payload)).toEqual({});
   });
 

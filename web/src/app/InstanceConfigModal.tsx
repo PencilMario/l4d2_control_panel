@@ -6,9 +6,9 @@ export type PackageVersion = {
   filename: string;
   version: string;
   size: number;
-  hot_compatible: boolean;
   source_repository?: string;
 };
+export type GitHubSource = { id: string; name: string; repository: string; asset_pattern: string };
 
 export type InstanceConfigValues = {
   name: string;
@@ -21,20 +21,20 @@ export type InstanceConfigValues = {
   max_players: number;
   extra_args: string;
   package_id: string;
-  package_source_repository?: string;
+  source_id?: string;
 };
 
 export type ConfigurableInstance = InstanceConfigValues & {
   id: string;
   actual_state: string;
   applied_package_id: string;
-  package_source_repository?: string;
 };
 
 type Props = {
   mode: "create" | "edit";
   instance?: ConfigurableInstance;
   packages: PackageVersion[];
+  sources?: GitHubSource[];
   onClose: () => void;
   onSubmit: (values: InstanceConfigValues) => Promise<void> | void;
 };
@@ -51,7 +51,7 @@ const createDefaults = (packages: PackageVersion[]): InstanceConfigValues => ({
   extra_args:
     "-sv_lan 0 -ip 0.0.0.0 +sv_clockcorrection_msecs 25 -timeout 10 +sv_setmax 32 +servercfgfile server.cfg",
   package_id: packages[0]?.id || "",
-  package_source_repository: "",
+  source_id: "",
 });
 
 export function buildLaunchPreview(value: InstanceConfigValues) {
@@ -87,10 +87,10 @@ export function InstanceConfigModal({
   mode,
   instance,
   packages,
+  sources = [],
   onClose,
   onSubmit,
 }: Props) {
-  const sourceRepositories = Array.from(new Set(packages.map((item) => item.source_repository).filter((value): value is string => Boolean(value))));
   const configuredPackageMissing = Boolean(instance?.package_id) && !packages.some((item) => item.id === instance?.package_id);
   const [values, setValues] = useState<InstanceConfigValues>(() =>
     instance
@@ -105,7 +105,7 @@ export function InstanceConfigModal({
           max_players: instance.max_players,
           extra_args: instance.extra_args,
           package_id: packages.some((item) => item.id === instance.package_id) ? instance.package_id : "",
-          package_source_repository: instance.package_source_repository || "",
+          source_id: instance.source_id || "",
         }
       : createDefaults(packages),
   );
@@ -186,19 +186,19 @@ export function InstanceConfigModal({
             <label>
               插件包
               <select
-                value={values.package_source_repository ? `source:${values.package_source_repository}` : values.package_id}
+                value={values.source_id ? `source:${values.source_id}` : values.package_id}
                 onChange={(event) => {
                   const selected = event.target.value;
                   setValues((current) => selected.startsWith("source:")
-                    ? { ...current, package_id: "", package_source_repository: selected.slice(7) }
-                    : { ...current, package_id: selected, package_source_repository: "" });
+                    ? { ...current, package_id: "", source_id: selected.slice(7) }
+                    : { ...current, package_id: selected, source_id: "" });
                 }}
                 required
               >
                 {packages.length ? <option value="" disabled>{configuredPackageMissing ? "原插件包已不存在，请重新选择" : "请选择插件包"}</option> : null}
-                {sourceRepositories.map((repository) => (
-                  <option key={`source:${repository}`} value={`source:${repository}`}>
-                    GitHub · {repository}（始终最新）
+                {sources.map((source) => (
+                  <option key={`source:${source.id}`} value={`source:${source.id}`}>
+                    GitHub · {source.name} · {source.repository}
                   </option>
                 ))}
                 {packages.filter((item) => !item.source_repository).map((item) => (
@@ -318,7 +318,7 @@ export function InstanceConfigModal({
           </button>
           <button
             className="command-primary"
-            disabled={submitting || !packages.length || (!values.package_id && !values.package_source_repository)}
+            disabled={submitting || (!values.package_id && !values.source_id)}
             aria-busy={submitting}
           >
             {submitting ? <RefreshCw /> : null}

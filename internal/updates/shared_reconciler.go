@@ -19,6 +19,9 @@ type FullPackageApplier interface {
 type SharedGameRebuilder struct {
 	Overlay  UpperResetter
 	Packages PackageSource
+	Sources  interface {
+		GitHubSource(context.Context, string) (domain.GitHubSource, error)
+	}
 	Deployer FullPackageApplier
 	Private  PrivateApplier
 }
@@ -40,12 +43,27 @@ func (r SharedGameRebuilder) Switch(ctx context.Context, instance domain.Instanc
 	if releaseID == "" {
 		return errors.New("shared game release is required")
 	}
-	if instance.SelectedPackageID == "" && instance.PackageSourceRepository == "" {
+	if instance.SelectedPackageID == "" && instance.PackageSourceID == "" && instance.PackageSourceRepository == "" {
 		return errors.New("instance package is required")
 	}
 	var item content.PackageVersion
 	var err error
-	if instance.PackageSourceRepository != "" {
+	if instance.PackageSourceID != "" {
+		if r.Sources == nil {
+			return errors.New("source package lookup unavailable")
+		}
+		source, sourceErr := r.Sources.GitHubSource(ctx, instance.PackageSourceID)
+		if sourceErr != nil {
+			return sourceErr
+		}
+		resolver, ok := r.Packages.(interface {
+			LatestSourceVersion(string) (content.PackageVersion, error)
+		})
+		if !ok {
+			return errors.New("source package lookup unavailable")
+		}
+		item, err = resolver.LatestSourceVersion(source.Repository)
+	} else if instance.PackageSourceRepository != "" {
 		resolver, ok := r.Packages.(interface {
 			LatestSourceVersion(string) (content.PackageVersion, error)
 		})
