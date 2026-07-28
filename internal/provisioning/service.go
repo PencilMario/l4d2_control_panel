@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
@@ -48,22 +49,44 @@ func (s Service) RecoverOverlays(ctx context.Context) error {
 		return errors.New("shared game services are unavailable")
 	}
 	state, err := s.SharedState.SharedGameState(ctx)
-	if err != nil {
-		return fmt.Errorf("shared game state is unavailable: %w", err)
-	}
-	if state.MigrationState != "ready" || state.ActiveReleaseID == "" {
-		return errors.New("shared game is not ready")
+	releaseID := ""
+	if err == nil && state.MigrationState == "ready" && state.ActiveReleaseID != "" {
+		releaseID = state.ActiveReleaseID
+	} else {
+		releaseID, err = currentReleaseID(s.Root)
+		if err != nil {
+			return errors.New("shared game is not ready")
+		}
 	}
 	instances, err := s.Instances.Instances(ctx)
 	if err != nil {
 		return fmt.Errorf("list instances for overlay recovery: %w", err)
 	}
 	for _, instance := range instances {
-		if err := s.Overlay.Ensure(ctx, instance.ID, state.ActiveReleaseID); err != nil {
+		if err := s.Overlay.Ensure(ctx, instance.ID, releaseID); err != nil {
 			return fmt.Errorf("recover instance overlay %s: %w", instance.ID, err)
 		}
 	}
 	return nil
+}
+
+var releaseIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+func currentReleaseID(root string) (string, error) {
+	current := filepath.Join(root, "game", "current")
+	target, err := os.Readlink(current)
+	if err != nil {
+		return "", err
+	}
+	releaseID := filepath.Base(target)
+	if !releaseIDPattern.MatchString(releaseID) || filepath.Clean(target) != filepath.Join("releases", releaseID) {
+		return "", errors.New("invalid current release link")
+	}
+	info, err := os.Stat(filepath.Join(root, "game", "releases", releaseID))
+	if err != nil || !info.IsDir() {
+		return "", errors.New("current release is unavailable")
+	}
+	return releaseID, nil
 }
 
 func (s Service) Prepare(ctx context.Context, instance domain.Instance) error {

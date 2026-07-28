@@ -3,6 +3,8 @@ package provisioning
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -81,14 +83,30 @@ func TestRecoverOverlaysEnsuresEveryInstanceUsesActiveRelease(t *testing.T) {
 	}
 }
 
-func TestRecoverOverlaysRejectsNonReadySharedGame(t *testing.T) {
+func TestRecoverOverlaysUsesCanonicalCurrentReleaseWhenStateIsMissing(t *testing.T) {
 	events := []string{}
-	service := Service{Instances: &fakeRepo{instances: []domain.Instance{{ID: "one"}}}, SharedState: sharedStateRepo{}, Overlay: fakeOverlay{events: &events}}
+	root := t.TempDir()
+	release := filepath.Join(root, "game", "releases", "release-1")
+	if err := os.MkdirAll(release, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("releases", "release-1"), filepath.Join(root, "game", "current")); err != nil {
+		t.Fatal(err)
+	}
+	service := Service{Root: root, Instances: &fakeRepo{instances: []domain.Instance{{ID: "one"}}}, SharedState: sharedStateRepo{}, Overlay: fakeOverlay{events: &events}}
+	if err := service.RecoverOverlays(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(events, ","); got != "ensure:one:release-1" {
+		t.Fatalf("events=%v", events)
+	}
+}
+
+func TestRecoverOverlaysRejectsMissingStateWithoutCanonicalCurrentRelease(t *testing.T) {
+	events := []string{}
+	service := Service{Root: t.TempDir(), Instances: &fakeRepo{instances: []domain.Instance{{ID: "one"}}}, SharedState: sharedStateRepo{}, Overlay: fakeOverlay{events: &events}}
 	if err := service.RecoverOverlays(context.Background()); err == nil || !strings.Contains(err.Error(), "shared game is not ready") {
 		t.Fatalf("err=%v", err)
-	}
-	if len(events) != 0 {
-		t.Fatalf("events=%v", events)
 	}
 }
 

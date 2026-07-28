@@ -6,9 +6,9 @@ Docker or host restarts remove the kernel OverlayFS mounts used by every game in
 
 ## Design
 
-Panel startup remains the canonical recovery owner. Before lifecycle container reconciliation, it reads the shared game state. When the state is `ready` and has an active release, it calls the existing overlay-helper `Ensure(instance ID, active release ID)` operation for every persisted instance. Only after all mounts are available does ordinary container reconciliation adopt containers and run health checks.
+Panel startup remains the canonical recovery owner. Before lifecycle container reconciliation, it reads the shared game state. When the state is `ready` and has an active release, it uses that release. For migrated installations whose database state predates shared-game persistence, it may instead resolve the publisher-owned `game/current` symlink, but only when it points directly to an existing `game/releases/<safe-id>` directory. It then calls the existing overlay-helper `Ensure(instance ID, active release ID)` operation for every persisted instance. Only after all mounts are available does ordinary container reconciliation adopt containers and run health checks.
 
-An unavailable or non-ready shared game state does not invent a release or alter data. Recovery returns an error containing the affected instance ID; the existing startup path logs reconciliation as deferred and leaves containers and instance data intact.
+An unavailable or non-ready shared game state without a valid canonical current-release pointer does not invent a release or alter data. Recovery returns an error containing the affected instance ID; the existing startup path logs reconciliation as deferred and leaves containers and instance data intact.
 
 ## Compatibility Boundary
 
