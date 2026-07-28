@@ -101,6 +101,9 @@ func TestGameReinstallPackageOnlyForcesFullDeployment(t *testing.T) {
 	if got := strings.Join(events, ","); got != "deploy:full,commit" {
 		t.Fatalf("events=%s", got)
 	}
+	if repo.instance.PackageVersion != "pkg" {
+		t.Fatalf("applied package=%q", repo.instance.PackageVersion)
+	}
 }
 
 func TestGameReinstallCombinedStopsAndStartsOnce(t *testing.T) {

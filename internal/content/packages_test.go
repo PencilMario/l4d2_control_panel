@@ -46,7 +46,7 @@ func packageZip(t *testing.T, files map[string]string) []byte {
 	return raw
 }
 
-func TestPackageSourceKeepsOnlyLatest(t *testing.T) {
+func TestPackageSourceCleanupRetainsPreviousVersions(t *testing.T) {
 	manager, _ := NewPackageManager(t.TempDir())
 	raw := packageZip(t, map[string]string{"cfg/plugin.cfg": "x"})
 	first, err := manager.AddUpload("plugins.zip", "v1", bytes.NewReader(raw), int64(len(raw)))
@@ -72,7 +72,7 @@ func TestPackageSourceKeepsOnlyLatest(t *testing.T) {
 	if err != nil || latest.ID != second.ID {
 		t.Fatalf("latest=%#v err=%v", latest, err)
 	}
-	if _, err := manager.Get(first.ID); !os.IsNotExist(err) {
-		t.Fatalf("old package still exists: %v", err)
+	if _, err := manager.Get(first.ID); err != nil {
+		t.Fatalf("referenced old package was removed: %v", err)
 	}
 }

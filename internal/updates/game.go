@@ -86,7 +86,6 @@ func (c GameCoordinator) Reinstall(ctx context.Context, id string, options Reins
 		if c.Packages == nil || c.Deployer == nil {
 			return c.fault(ctx, id, errors.New("package reinstall unavailable"))
 		}
-		var item content.PackageVersion
 		if instance.PackageSourceRepository != "" {
 			resolver, ok := c.Packages.(interface {
 				LatestSourceVersion(string) (content.PackageVersion, error)

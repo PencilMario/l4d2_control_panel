@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isValidSHA256, responseError } from "./uploadQueue";
+import { cleanupStrategy, isValidSHA256, responseError } from "./uploadQueue";
 
 describe("responseError", () => {
   it("uses the API error message for failed uploads", async () => {
@@ -14,5 +14,12 @@ describe("isValidSHA256", () => {
     expect(isValidSHA256("ab".repeat(31))).toBe(false);
     expect(isValidSHA256("z".repeat(64))).toBe(false);
     expect(isValidSHA256(undefined)).toBe(false);
+  });
+});
+
+describe("cleanupStrategy", () => {
+  it("routes large VPK files to server cleanup to avoid exhausting browser WASM memory", () => {
+    expect(cleanupStrategy(256 * 1024 * 1024)).toBe("local");
+    expect(cleanupStrategy(736.1 * 1024 * 1024)).toBe("server");
   });
 });

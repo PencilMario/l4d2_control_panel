@@ -59,20 +59,9 @@ func (m *PackageManager) LatestSourceVersion(repository string) (PackageVersion,
 	return latest, nil
 }
 func (m *PackageManager) RemoveSourceVersionsExcept(repository, keepID string) error {
-	items, err := m.List()
-	if err != nil {
-		return err
-	}
-	for _, item := range items {
-		if item.SourceRepository == repository && item.ID != keepID {
-			if err := os.Remove(item.ArchivePath); err != nil && !os.IsNotExist(err) {
-				return err
-			}
-			if err := os.Remove(filepath.Join(m.directory, item.ID+".json")); err != nil && !os.IsNotExist(err) {
-				return err
-			}
-		}
-	}
+	// Package cleanup must know which versions are still referenced by instances.
+	// The package manager does not own that information, so retain old releases.
+	_, _ = repository, keepID
 	return nil
 }
 func NewPackageManager(root string) (*PackageManager, error) {

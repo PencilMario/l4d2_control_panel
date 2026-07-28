@@ -91,6 +91,7 @@ export function InstanceConfigModal({
   onSubmit,
 }: Props) {
   const sourceRepositories = Array.from(new Set(packages.map((item) => item.source_repository).filter((value): value is string => Boolean(value))));
+  const configuredPackageMissing = Boolean(instance?.package_id) && !packages.some((item) => item.id === instance?.package_id);
   const [values, setValues] = useState<InstanceConfigValues>(() =>
     instance
       ? {
@@ -103,7 +104,7 @@ export function InstanceConfigModal({
           tickrate: instance.tickrate,
           max_players: instance.max_players,
           extra_args: instance.extra_args,
-          package_id: instance.package_id,
+          package_id: packages.some((item) => item.id === instance.package_id) ? instance.package_id : "",
           package_source_repository: instance.package_source_repository || "",
         }
       : createDefaults(packages),
@@ -194,7 +195,7 @@ export function InstanceConfigModal({
                 }}
                 required
               >
-                {packages.length ? <option value="" disabled>请选择插件包</option> : null}
+                {packages.length ? <option value="" disabled>{configuredPackageMissing ? "原插件包已不存在，请重新选择" : "请选择插件包"}</option> : null}
                 {sourceRepositories.map((repository) => (
                   <option key={`source:${repository}`} value={`source:${repository}`}>
                     GitHub · {repository}（始终最新）
@@ -317,7 +318,7 @@ export function InstanceConfigModal({
           </button>
           <button
             className="command-primary"
-            disabled={submitting || !packages.length}
+            disabled={submitting || !packages.length || (!values.package_id && !values.package_source_repository)}
             aria-busy={submitting}
           >
             {submitting ? <RefreshCw /> : null}

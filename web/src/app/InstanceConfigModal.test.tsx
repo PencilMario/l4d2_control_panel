@@ -158,6 +158,22 @@ describe("InstanceConfigModal", () => {
     expect(screen.getByLabelText("插件包")).toHaveDisplayValue("请选择插件包");
   });
 
+  it("requires a valid replacement when the configured package no longer exists", () => {
+    render(
+      <InstanceConfigModal
+        mode="edit"
+        instance={{ ...instance, package_id: "deleted-package" }}
+        packages={[packageA, packageB]}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("插件包")).toHaveValue("");
+    expect(screen.getByLabelText("插件包")).toHaveDisplayValue("原插件包已不存在，请重新选择");
+    expect(screen.getByRole("button", { name: "保存并应用" })).toBeDisabled();
+  });
+
   it("disables creation when no package is available", () => {
     render(
       <InstanceConfigModal
