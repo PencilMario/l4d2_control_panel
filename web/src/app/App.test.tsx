@@ -1810,6 +1810,9 @@ describe("App", () => {
     expect(within(playerDialog).getByText("STEAM_1:0:42")).toBeVisible();
     expect(within(playerDialog).getByText("00:48")).toBeVisible();
     expect(within(playerDialog).getByText("29 ms")).toBeVisible();
+    expect(within(playerDialog).getByText("Ellis").closest("tr")).toHaveClass("player-row");
+    expect(within(playerDialog).getByText("00:48")).toHaveClass("player-connected");
+    expect(within(playerDialog).getByText("2")).toHaveClass("player-score");
     await userEvent.click(await screen.findByRole("button", { name: "踢出玩家" }));
     expect(calls.some(([, init]) => init?.method === "POST")).toBe(false);
     await userEvent.click(screen.getByRole("button", { name: "确认踢出" }));

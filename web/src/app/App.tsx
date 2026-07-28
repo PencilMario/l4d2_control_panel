@@ -1788,12 +1788,12 @@ function PlayersModal({
                 </thead>
                 <tbody>
                   {snapshot.players.map((player) => (
-                    <tr key={`${player.name}-${player.user_id}`}>
+                    <tr className="player-row" key={`${player.name}-${player.user_id}`}>
                       <td data-label="玩家名称"><b>{player.name}</b></td>
                       <td data-label="Steam ID"><code>{player.unique_id || "--"}</code></td>
-                      <td data-label="加入时长">{player.connected || "--"}</td>
+                      <td className="player-connected" data-label="加入时长">{player.connected || "--"}</td>
                       <td className="player-ping" data-label="延迟">{player.ping === undefined ? "--" : `${player.ping} ms`}</td>
-                      <td data-label="得分">{player.score ?? "--"}</td>
+                      <td className="player-score" data-label="得分">{player.score ?? "--"}</td>
                       <td data-label="处置操作">
                         {player.user_id > 0 ? (
                           <div className="player-actions">

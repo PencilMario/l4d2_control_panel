@@ -138,6 +138,17 @@ describe("schedule help dialog layout", () => {
   });
 });
 
+describe("online players reference layout", () => {
+  it("keeps player values aligned to the reference table columns", () => {
+    expect(css).toContain(".player-operations-wrap { width: 100%; overflow-x: auto;");
+    expect(css).toContain(".player-operations { width: 100%; min-width: 100%; table-layout: fixed;");
+    expect(css).toContain(".player-operations { width: 650px; min-width: 650px;");
+    expect(css).toContain(".player-operations th:nth-child(1) { width: 14%; }");
+    expect(css).toContain(".player-operations th:nth-child(2) { width: 25%; }");
+    expect(css).toContain(".player-operations th:nth-child(6) { width: 32%; }");
+  });
+});
+
 describe("background jobs reference layout", () => {
   it("uses the reference filter and table geometry", () => {
     const filters = css.match(/\.job-filters\s*\{([^}]*)\}/)?.[1] ?? "";
