@@ -14,6 +14,7 @@
 - [Shared game body and instance overlays](specs/2026-07-17-shared-game-overlay-design.md)
 - [Frontend motion and asynchronous action guards](specs/2026-07-16-frontend-motion-and-action-guards-design.md)
 - [One-click deployment and update](specs/2026-07-18-one-click-deploy-update-design.md)
+- [Plugin package sources and instance full updates](specs/2026-07-29-plugin-package-source-design.md)
 
 ## Implementation Plans
 
