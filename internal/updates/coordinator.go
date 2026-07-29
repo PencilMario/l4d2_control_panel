@@ -5,6 +5,8 @@ import (
 	"errors"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
+	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 )
 
 type Lifecycle interface {
@@ -25,6 +27,7 @@ type Coordinator struct {
 }
 
 func (c Coordinator) ApplyPackage(ctx context.Context, instanceID string, item content.PackageVersion, mode Mode) error {
+	jobs.Logf(ctx, "package", joblogs.Info, "applying package instance=%s package_id=%s version=%s file=%s size=%s mode=%s", instanceID, item.ID, item.Version, item.Filename, jobs.FormatBytes(item.Size), mode)
 	instance, err := c.Instances.Instance(ctx, instanceID)
 	if err != nil {
 		return err
@@ -45,6 +48,7 @@ func (c Coordinator) ApplyPackage(ctx context.Context, instanceID string, item c
 	resume := instance.DesiredState == domain.StateRunning || instance.ActualState == domain.StateRunning || instance.ActualState == domain.StateStarting || instance.ActualState == domain.StateInstalling
 	wasActive := instance.ActualState == domain.StateRunning || instance.ActualState == domain.StateStarting || instance.ActualState == domain.StateInstalling
 	if wasActive {
+		jobs.Logf(ctx, "package", joblogs.Info, "stopping active instance for package deployment instance=%s", instanceID)
 		if err := c.Lifecycle.Stop(ctx, instanceID); err != nil {
 			return err
 		}
@@ -71,6 +75,7 @@ func (c Coordinator) ApplyPackage(ctx context.Context, instanceID string, item c
 }
 
 func (c Coordinator) rollbackStarted(ctx context.Context, instanceID string, transaction Deployment, cause error) error {
+	jobs.Logf(ctx, "package", joblogs.Warn, "rolling back started package deployment instance=%s error=%q", instanceID, cause.Error())
 	stopErr := c.Lifecycle.Stop(ctx, instanceID)
 	if stopErr != nil {
 		return errors.Join(cause, stopErr)
@@ -89,5 +94,9 @@ func (c Coordinator) markApplied(ctx context.Context, instanceID, packageID stri
 	}
 	instance.SelectedPackageID = packageID
 	instance.PackageVersion = packageID
-	return c.Instances.UpdateInstance(ctx, instance)
+	if err := c.Instances.UpdateInstance(ctx, instance); err != nil {
+		return err
+	}
+	jobs.Logf(ctx, "package", joblogs.Info, "package applied instance=%s package_id=%s", instanceID, packageID)
+	return nil
 }

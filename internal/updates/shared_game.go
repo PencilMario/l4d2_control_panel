@@ -10,6 +10,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
+	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/maintenance"
 )
 
@@ -47,6 +49,7 @@ type SharedGameCoordinator struct {
 }
 
 func (c SharedGameCoordinator) Update(ctx context.Context, onlinePolicy string) error {
+	jobs.Logf(ctx, "update", joblogs.Info, "shared game update requested online_policy=%s", onlinePolicy)
 	if onlinePolicy != "force" && onlinePolicy != "skip" && onlinePolicy != "wait" {
 		return errors.New("online policy must be skip, wait or force")
 	}
@@ -86,6 +89,7 @@ func (c SharedGameCoordinator) Update(ctx context.Context, onlinePolicy string) 
 	if err := c.Instances.SaveSharedGameState(ctx, state); err != nil {
 		return err
 	}
+	jobs.Logf(ctx, "update", joblogs.Info, "shared game update started operation=%s release=%s instances=%d", state.OperationID, activeRelease, len(instances))
 	if activeRelease == "" || state.MigrationState != "ready" {
 		return c.fail(ctx, state, errors.New("shared game release is not ready"))
 	}
@@ -97,6 +101,7 @@ func (c SharedGameCoordinator) Update(ctx context.Context, onlinePolicy string) 
 		if err := c.Lifecycle.Stop(ctx, instance.ID); err != nil {
 			return err
 		}
+		jobs.Logf(ctx, "update", joblogs.Info, "stopped instance=%s for shared game update", instance.ID)
 		active = append(active, instance)
 	}
 	state.OperationStage = "unmounting"
@@ -118,6 +123,7 @@ func (c SharedGameCoordinator) Update(ctx context.Context, onlinePolicy string) 
 	if err := c.Installer.InstallSharedGame(ctx, c.Root, activePath, instances[0], true); err != nil {
 		return c.fail(ctx, state, err)
 	}
+	jobs.Logf(ctx, "update", joblogs.Info, "validated shared game release=%s", activeRelease)
 	state.OperationStage = "rebuilding"
 	if err := c.Instances.SaveSharedGameState(ctx, state); err != nil {
 		return err
@@ -126,6 +132,7 @@ func (c SharedGameCoordinator) Update(ctx context.Context, onlinePolicy string) 
 		if err := c.Reconciler.Switch(ctx, instance, activeRelease, activeRelease); err != nil {
 			return c.fail(ctx, state, err)
 		}
+		jobs.Logf(ctx, "update", joblogs.Info, "rebuilt overlay instance=%s release=%s", instance.ID, activeRelease)
 	}
 	if err := pruneInactiveReleases(c.Root, activeRelease); err != nil {
 		return c.fail(ctx, state, err)
@@ -152,10 +159,15 @@ func (c SharedGameCoordinator) Update(ctx context.Context, onlinePolicy string) 
 	}
 	state.OperationID = ""
 	state.OperationStage = ""
-	return c.Instances.SaveSharedGameState(ctx, state)
+	if err := c.Instances.SaveSharedGameState(ctx, state); err != nil {
+		return err
+	}
+	jobs.Logf(ctx, "update", joblogs.Info, "shared game update completed release=%s restarted=%d", activeRelease, len(active))
+	return nil
 }
 
 func (c SharedGameCoordinator) fail(ctx context.Context, state domain.SharedGameState, cause error) error {
+	jobs.Logf(ctx, "update", joblogs.Error, "shared game update failed operation=%s stage=%s error=%q", state.OperationID, state.OperationStage, cause.Error())
 	state.MigrationState = "failed"
 	state.OperationStage = "failed"
 	_ = c.Instances.SaveSharedGameState(ctx, state)
@@ -201,11 +213,14 @@ func (c SharedGameCoordinator) waitForPlayers(ctx context.Context, instances []d
 			}
 		}
 		if len(blocked) == 0 {
+			jobs.Logf(ctx, "update", joblogs.Info, "online player check passed policy=%s", policy)
 			return nil
 		}
 		if policy == "skip" {
+			jobs.Logf(ctx, "update", joblogs.Warn, "shared game update skipped for online players blocked=%q", blocked)
 			return fmt.Errorf("shared game update skipped: %v", blocked)
 		}
+		jobs.Logf(ctx, "update", joblogs.Info, "waiting for online players blocked=%q retry_in=%s", blocked, delay)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

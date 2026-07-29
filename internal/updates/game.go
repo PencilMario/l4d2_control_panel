@@ -5,6 +5,8 @@ import (
 	"errors"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
+	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 )
 
 type InstanceRepository interface {
@@ -44,6 +46,7 @@ func (c GameCoordinator) Update(ctx context.Context, id string) error {
 }
 
 func (c GameCoordinator) Reinstall(ctx context.Context, id string, options ReinstallOptions) error {
+	jobs.Logf(ctx, "update", joblogs.Info, "instance reinstall started instance=%s game=%t package=%t", id, options.Game, options.Package)
 	if !options.Game && !options.Package {
 		return errors.New("at least one reinstall target is required")
 	}
@@ -70,6 +73,7 @@ func (c GameCoordinator) Reinstall(ctx context.Context, id string, options Reins
 		if err != nil {
 			return c.fault(ctx, id, err)
 		}
+		jobs.Logf(ctx, "update", joblogs.Info, "selected package instance=%s package_id=%s version=%s file=%s size=%s", id, item.ID, item.Version, item.Filename, jobs.FormatBytes(item.Size))
 	}
 	maintenance := false
 	if options.Game {
@@ -81,6 +85,7 @@ func (c GameCoordinator) Reinstall(ctx context.Context, id string, options Reins
 	resume := instance.DesiredState == domain.StateRunning
 	needsStop := instance.ActualState == domain.StateRunning || instance.ActualState == domain.StateStarting || instance.ActualState == domain.StateInstalling
 	if !maintenance && needsStop {
+		jobs.Logf(ctx, "update", joblogs.Info, "stopping instance for reinstall instance=%s", id)
 		if err := c.Lifecycle.Stop(ctx, id); err != nil {
 			return err
 		}
@@ -97,6 +102,7 @@ func (c GameCoordinator) Reinstall(ctx context.Context, id string, options Reins
 		return err
 	}
 	if options.Game {
+		jobs.Logf(ctx, "update", joblogs.Info, "updating game files instance=%s", id)
 		if err := c.Updater.UpdateGame(ctx, c.Root, instance); err != nil {
 			return c.fault(ctx, id, err)
 		}
@@ -118,6 +124,7 @@ func (c GameCoordinator) Reinstall(ctx context.Context, id string, options Reins
 		return err
 	}
 	if latest.DesiredState == domain.StateRunning {
+		jobs.Logf(ctx, "update", joblogs.Info, "restarting instance after reinstall instance=%s", id)
 		if err := c.Lifecycle.Start(ctx, id); err != nil {
 			if transaction != nil {
 				_ = transaction.Rollback()
@@ -151,12 +158,18 @@ func (c GameCoordinator) Reinstall(ctx context.Context, id string, options Reins
 			return err
 		}
 		latest.PackageVersion = item.ID
-		return c.Instances.UpdateInstance(ctx, latest)
+		if err := c.Instances.UpdateInstance(ctx, latest); err != nil {
+			return err
+		}
+		jobs.Logf(ctx, "update", joblogs.Info, "instance reinstall completed instance=%s game=%t package=%t package_id=%s", id, options.Game, options.Package, item.ID)
+		return nil
 	}
+	jobs.Logf(ctx, "update", joblogs.Info, "instance reinstall completed instance=%s game=%t package=%t", id, options.Game, options.Package)
 	return nil
 }
 
 func (c GameCoordinator) fault(ctx context.Context, id string, cause error) error {
+	jobs.Logf(ctx, "update", joblogs.Error, "instance reinstall failed instance=%s error=%q", id, cause.Error())
 	instance, err := c.Instances.Instance(ctx, id)
 	if err != nil {
 		return cause

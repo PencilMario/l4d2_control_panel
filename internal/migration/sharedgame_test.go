@@ -3,11 +3,32 @@ package migration
 import (
 	"context"
 	"errors"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
+	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 )
+
+type migrationLogSink struct {
+	mu       sync.Mutex
+	messages []string
+}
+
+func (s *migrationLogSink) Append(_ context.Context, _, _ string, _ joblogs.Level, message string) (joblogs.Record, error) {
+	s.mu.Lock()
+	s.messages = append(s.messages, message)
+	s.mu.Unlock()
+	return joblogs.Record{}, nil
+}
+func (*migrationLogSink) Finalize(context.Context, string) error { return nil }
+func (s *migrationLogSink) joined() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return strings.Join(s.messages, "\n")
+}
 
 type migrationRepo struct {
 	instances []domain.Instance
@@ -76,7 +97,14 @@ func TestSharedGameMigrationBuildsFreshReleaseAndMigratesAllStoppedInstances(t *
 	validate := true
 	repo := &migrationRepo{instances: []domain.Instance{{ID: "a", RuntimeImage: "runtime", ActualState: domain.StateStopped}, {ID: "b", RuntimeImage: "runtime", ActualState: domain.StateStopped}}}
 	service := SharedGameService{Root: t.TempDir(), Instances: repo, Installer: migrationInstaller{events: &events, validate: &validate}, Publisher: migrationPublisher{&events}, Layout: migrationLayout{&events}, Reconciler: migrationRebuilder{events: &events}}
-	if err := service.Migrate(context.Background()); err != nil {
+	sink := &migrationLogSink{}
+	jobManager := jobs.NewManager(jobs.WithLogSink(sink))
+	if _, err := jobManager.Start(context.Background(), "", "shared_game_migration", func(ctx context.Context, _ jobs.Reporter) error {
+		return service.Migrate(ctx)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := jobManager.Wait(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if validate {
@@ -87,6 +115,12 @@ func TestSharedGameMigrationBuildsFreshReleaseAndMigratesAllStoppedInstances(t *
 	}
 	if repo.state.MigrationState != "ready" || repo.state.ActiveReleaseID == "" || repo.state.OperationID != "" {
 		t.Fatalf("state=%#v", repo.state)
+	}
+	logs := sink.joined()
+	for _, want := range []string{"shared game migration started operation=", "release=", "instances=2", "installing shared game release=", "published shared game release=", "preparing instance=a", "switched instance=a", "preparing instance=b", "switched instance=b", "activated shared game release=", "shared game migration completed state=ready"} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("logs=%q missing %q", logs, want)
+		}
 	}
 }
 

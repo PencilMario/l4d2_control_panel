@@ -6,6 +6,8 @@ import (
 	"errors"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
+	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/maintenance"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 	"net/http"
@@ -40,6 +42,24 @@ type fakeEngine struct {
 	removed                   bool
 	events                    *[]string
 	createdSpec               docker.ContainerSpec
+}
+
+type lifecycleLogSink struct {
+	mu       sync.Mutex
+	messages []string
+}
+
+func (s *lifecycleLogSink) Append(_ context.Context, _, _ string, _ joblogs.Level, message string) (joblogs.Record, error) {
+	s.mu.Lock()
+	s.messages = append(s.messages, message)
+	s.mu.Unlock()
+	return joblogs.Record{}, nil
+}
+func (*lifecycleLogSink) Finalize(context.Context, string) error { return nil }
+func (s *lifecycleLogSink) joined() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return strings.Join(s.messages, "\n")
 }
 
 func (f *fakeEngine) Create(_ context.Context, spec docker.ContainerSpec) (string, error) {
@@ -163,7 +183,14 @@ func TestStartPreparesSelectedPackageBeforeCreatingContainer(t *testing.T) {
 	events := []string{}
 	engine := &fakeEngine{events: &events}
 	service := New(db, engine, freePorts{}, root, WithProvisioner(fakeProvisioner{repo: db, events: &events}), WithLogPreparer(fakeLogPreparer{events: &events}))
-	if err := service.Start(context.Background(), value.ID); err != nil {
+	sink := &lifecycleLogSink{}
+	jobManager := jobs.NewManager(jobs.WithLogSink(sink))
+	if _, err := jobManager.Start(context.Background(), value.ID, "start", func(ctx context.Context, _ jobs.Reporter) error {
+		return service.Start(ctx, value.ID)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := jobManager.Wait(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Join(events, ",") != "prepare,logs:prepared,create,start" {
@@ -175,6 +202,12 @@ func TestStartPreparesSelectedPackageBeforeCreatingContainer(t *testing.T) {
 	}
 	if got.PackageVersion != "package-a" || got.ActualState != domain.StateRunning {
 		t.Fatalf("instance=%#v", got)
+	}
+	logs := sink.joined()
+	for _, want := range []string{"lifecycle start requested instance=prepared", "provisioning package", "container created", "container started", "lifecycle start completed instance=prepared state=running"} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("logs=%q missing %q", logs, want)
+		}
 	}
 }
 

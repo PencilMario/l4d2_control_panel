@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
+	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/maintenance"
 	"os"
 	"path/filepath"
@@ -161,6 +163,7 @@ func New(repo Repository, engine Engine, ports PortChecker, dataRoot string, opt
 	return service
 }
 func (s *Service) Start(ctx context.Context, id string) error {
+	jobs.Logf(ctx, "lifecycle", joblogs.Info, "lifecycle start requested instance=%s", id)
 	ctx, release, err := s.lease(ctx)
 	if err != nil {
 		return err
@@ -181,6 +184,7 @@ func (s *Service) Start(ctx context.Context, id string) error {
 		if available < s.minimumInstallBytes {
 			return fmt.Errorf("insufficient disk space: have %d bytes, need %d", available, s.minimumInstallBytes)
 		}
+		jobs.Logf(ctx, "lifecycle", joblogs.Info, "disk preflight instance=%s available=%s required=%s", id, jobs.FormatBytes(int64(available)), jobs.FormatBytes(int64(s.minimumInstallBytes)))
 	}
 	declaredPorts := []int{v.GamePort}
 	if v.SourceTVPort != 0 {
@@ -191,6 +195,7 @@ func (s *Service) Start(ctx context.Context, id string) error {
 		if err := s.ports.Available(ctx, v.ID, declaredPorts); err != nil {
 			return err
 		}
+		jobs.Logf(ctx, "lifecycle", joblogs.Info, "port preflight completed instance=%s ports=%v", id, declaredPorts)
 	}
 	if v.ContainerID == "" {
 		base := filepath.Join(s.dataRoot, "instances", v.ID)
@@ -212,6 +217,7 @@ func (s *Service) Start(ctx context.Context, id string) error {
 			return err
 		}
 		if needsProvision {
+			jobs.Logf(ctx, "lifecycle", joblogs.Info, "provisioning package instance=%s selected_package=%s source_id=%s source_repository=%s", id, v.SelectedPackageID, v.PackageSourceID, v.PackageSourceRepository)
 			if err := s.provisioner.Prepare(ctx, v); err != nil {
 				return s.fault(ctx, v, err)
 			}
@@ -234,6 +240,7 @@ func (s *Service) Start(ctx context.Context, id string) error {
 			return s.fault(ctx, v, err)
 		}
 		v.ContainerID = containerID
+		jobs.Logf(ctx, "lifecycle", joblogs.Info, "container created instance=%s container=%s image=%s", id, containerID, v.RuntimeImage)
 		if err := s.repo.UpdateInstance(ctx, v); err != nil {
 			return err
 		}
@@ -241,15 +248,21 @@ func (s *Service) Start(ctx context.Context, id string) error {
 	if err := s.engine.Start(ctx, v.ContainerID); err != nil {
 		return s.fault(ctx, v, err)
 	}
+	jobs.Logf(ctx, "lifecycle", joblogs.Info, "container started instance=%s container=%s", id, v.ContainerID)
 	if s.health != nil {
 		if err := s.health.Wait(ctx, v); err != nil {
 			return s.fault(ctx, v, err)
 		}
 	}
 	v.DesiredState, v.ActualState = domain.StateRunning, domain.StateRunning
-	return s.repo.UpdateInstance(ctx, v)
+	if err := s.repo.UpdateInstance(ctx, v); err != nil {
+		return err
+	}
+	jobs.Logf(ctx, "lifecycle", joblogs.Info, "lifecycle start completed instance=%s state=running", id)
+	return nil
 }
 func (s *Service) Stop(ctx context.Context, id string) error {
+	jobs.Logf(ctx, "lifecycle", joblogs.Info, "lifecycle stop requested instance=%s", id)
 	ctx, release, err := s.lease(ctx)
 	if err != nil {
 		return err
@@ -266,13 +279,19 @@ func (s *Service) Stop(ctx context.Context, id string) error {
 		return errors.New("instance has no container")
 	}
 	_ = s.engine.RunSupervisor(ctx, v.ContainerID, "stop")
+	jobs.Logf(ctx, "lifecycle", joblogs.Info, "supervisor stop requested instance=%s container=%s", id, v.ContainerID)
 	if err := s.engine.Stop(ctx, v.ContainerID, 15); err != nil {
 		return s.fault(ctx, v, err)
 	}
 	v.DesiredState, v.ActualState = domain.StateStopped, domain.StateStopped
-	return s.repo.UpdateInstance(ctx, v)
+	if err := s.repo.UpdateInstance(ctx, v); err != nil {
+		return err
+	}
+	jobs.Logf(ctx, "lifecycle", joblogs.Info, "lifecycle stop completed instance=%s state=stopped", id)
+	return nil
 }
 func (s *Service) Restart(ctx context.Context, id string) error {
+	jobs.Logf(ctx, "lifecycle", joblogs.Info, "lifecycle restart requested instance=%s", id)
 	ctx, release, err := s.lease(ctx)
 	if err != nil {
 		return err
@@ -281,9 +300,14 @@ func (s *Service) Restart(ctx context.Context, id string) error {
 	if err := s.Stop(ctx, id); err != nil {
 		return err
 	}
-	return s.Start(ctx, id)
+	if err := s.Start(ctx, id); err != nil {
+		return err
+	}
+	jobs.Logf(ctx, "lifecycle", joblogs.Info, "lifecycle restart completed instance=%s", id)
+	return nil
 }
 func (s *Service) Rebuild(ctx context.Context, id string) error {
+	jobs.Logf(ctx, "lifecycle", joblogs.Info, "container rebuild requested instance=%s", id)
 	ctx, release, err := s.lease(ctx)
 	if err != nil {
 		return err
@@ -312,6 +336,7 @@ func (s *Service) Rebuild(ctx context.Context, id string) error {
 		}
 	}
 	if instance.ContainerID != "" {
+		jobs.Logf(ctx, "lifecycle", joblogs.Info, "removing container for rebuild instance=%s container=%s", id, instance.ContainerID)
 		if err := s.engine.Remove(ctx, instance.ContainerID); err != nil {
 			return err
 		}
@@ -341,10 +366,12 @@ func (s *Service) Rebuild(ctx context.Context, id string) error {
 		return s.fault(ctx, instance, err)
 	}
 	instance.ContainerID = containerID
+	jobs.Logf(ctx, "lifecycle", joblogs.Info, "replacement container created instance=%s container=%s", id, containerID)
 	instance.DesiredState, instance.ActualState = domain.StateStopped, domain.StateStopped
 	return s.repo.UpdateInstance(ctx, instance)
 }
 func (s *Service) Delete(ctx context.Context, id string, deleteData bool) error {
+	jobs.Logf(ctx, "lifecycle", joblogs.Info, "instance deletion requested instance=%s delete_data=%t", id, deleteData)
 	ctx, release, err := s.lease(ctx)
 	if err != nil {
 		return err
@@ -367,6 +394,7 @@ func (s *Service) Delete(ctx context.Context, id string, deleteData bool) error 
 		}
 	}
 	if instance.ContainerID != "" {
+		jobs.Logf(ctx, "lifecycle", joblogs.Info, "removing instance container instance=%s container=%s", id, instance.ContainerID)
 		if err := s.engine.Remove(ctx, instance.ContainerID); err != nil {
 			return err
 		}
@@ -374,12 +402,17 @@ func (s *Service) Delete(ctx context.Context, id string, deleteData bool) error 
 	if err := s.repo.DeleteInstance(ctx, id); err != nil {
 		return err
 	}
+	jobs.Logf(ctx, "lifecycle", joblogs.Info, "instance record deleted instance=%s", id)
 	if deleteData {
 		if filepath.Base(id) != id {
 			return errors.New("invalid instance id")
 		}
-		return os.RemoveAll(filepath.Join(s.dataRoot, "instances", id))
+		if err := os.RemoveAll(filepath.Join(s.dataRoot, "instances", id)); err != nil {
+			return err
+		}
+		jobs.Logf(ctx, "lifecycle", joblogs.Info, "instance data deleted instance=%s relative_path=instances/%s", id, id)
 	}
+	jobs.Logf(ctx, "lifecycle", joblogs.Info, "instance deletion completed instance=%s delete_data=%t", id, deleteData)
 	return nil
 }
 

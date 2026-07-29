@@ -13,7 +13,29 @@ import (
 
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
+	"github.com/not0721here/l4d2-control-panel/internal/jobs"
+	"strings"
+	"sync"
 )
+
+type updateLogSink struct {
+	mu       sync.Mutex
+	messages []string
+}
+
+func (s *updateLogSink) Append(_ context.Context, _, _ string, _ joblogs.Level, message string) (joblogs.Record, error) {
+	s.mu.Lock()
+	s.messages = append(s.messages, message)
+	s.mu.Unlock()
+	return joblogs.Record{}, nil
+}
+func (*updateLogSink) Finalize(context.Context, string) error { return nil }
+func (s *updateLogSink) joined() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return strings.Join(s.messages, "\n")
+}
 
 type pipelineOverlayResetter struct{ calls [][]string }
 
@@ -32,11 +54,25 @@ func TestFullPackageUpdateResetsManagedOverlayPaths(t *testing.T) {
 	root := t.TempDir()
 	resetter := &pipelineOverlayResetter{}
 	pipeline := New(root).WithSharedOverlay(resetter, pipelineSharedState{state: domain.SharedGameState{ActiveReleaseID: "release-1", MigrationState: "ready"}})
-	if err := pipeline.Apply(context.Background(), "abc", zipFile(t, map[string]string{"cfg/plugin.cfg": "new"}), "v1", Full); err != nil {
+	archive := zipFile(t, map[string]string{"cfg/plugin.cfg": "new"})
+	sink := &updateLogSink{}
+	jobManager := jobs.NewManager(jobs.WithLogSink(sink))
+	if _, err := jobManager.Start(context.Background(), "abc", "package_update", func(ctx context.Context, _ jobs.Reporter) error {
+		return pipeline.Apply(ctx, "abc", archive, "v1", Full)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := jobManager.Wait(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if len(resetter.calls) != 1 || len(resetter.calls[0]) != 1 || resetter.calls[0][0] != "left4dead2/cfg/plugin.cfg" {
 		t.Fatalf("calls=%#v", resetter.calls)
+	}
+	logs := sink.joined()
+	for _, want := range []string{"package deployment started instance=abc", "version=v1", "mode=full", "archive=", "files=1", "package deployment committed instance=abc version=v1"} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("logs=%q missing %q", logs, want)
+		}
 	}
 }
 

@@ -19,6 +19,8 @@ import (
 	archivecheck "github.com/not0721here/l4d2-control-panel/internal/archive"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
+	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/safepath"
 )
 
@@ -95,8 +97,16 @@ func (p *Pipeline) Apply(ctx context.Context, instanceID, archivePath, version s
 		return err
 	}
 	if err := transaction.Commit(); err != nil {
-		return errors.Join(err, transaction.Rollback())
+		jobs.Logf(ctx, "package", joblogs.Warn, "package deployment commit failed instance=%s version=%s; rolling back error=%q", instanceID, version, err.Error())
+		rollbackErr := transaction.Rollback()
+		if rollbackErr != nil {
+			jobs.Logf(ctx, "package", joblogs.Error, "package deployment rollback failed instance=%s version=%s error=%q", instanceID, version, rollbackErr.Error())
+		} else {
+			jobs.Logf(ctx, "package", joblogs.Warn, "package deployment rolled back instance=%s version=%s", instanceID, version)
+		}
+		return errors.Join(err, rollbackErr)
 	}
+	jobs.Logf(ctx, "package", joblogs.Info, "package deployment committed instance=%s version=%s mode=%s", instanceID, version, mode)
 	return nil
 }
 
@@ -114,6 +124,7 @@ func (p *Pipeline) Begin(ctx context.Context, instanceID, archivePath, version s
 	if instanceID == "" || filepath.Base(instanceID) != instanceID {
 		return nil, errors.New("invalid instance id")
 	}
+	jobs.Logf(ctx, "package", joblogs.Info, "package deployment started instance=%s version=%s mode=%s archive=%s files=%d expanded_size=%s", instanceID, version, mode, filepath.Base(archivePath), len(inspected.Entries), jobs.FormatBytes(int64(inspected.TotalBytes)))
 
 	base := filepath.Join(p.root, "instances", instanceID)
 	game := filepath.Join(base, "game", "left4dead2")
