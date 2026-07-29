@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
+	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"io"
 	"net/http"
 	"net/url"
@@ -25,10 +27,13 @@ type FetchResult struct {
 	Updated bool
 }
 type release struct {
-	TagName string `json:"tag_name"`
-	Assets  []struct {
+	Name        string `json:"name"`
+	TagName     string `json:"tag_name"`
+	PublishedAt string `json:"published_at"`
+	Assets      []struct {
 		Name string `json:"name"`
 		URL  string `json:"browser_download_url"`
+		Size int64  `json:"size"`
 	} `json:"assets"`
 }
 
@@ -52,6 +57,7 @@ func (c Client) FetchLatest(ctx context.Context, repository, assetPattern, token
 		base = "https://api.github.com"
 	}
 	client := c.httpClient()
+	jobs.Logf(ctx, "github", joblogs.Info, "checking latest release repository=%s asset_pattern=%q", repository, assetPattern)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/repos/"+repository+"/releases/latest", nil)
 	if err != nil {
 		return FetchResult{}, err
@@ -74,18 +80,21 @@ func (c Client) FetchLatest(ctx context.Context, repository, assetPattern, token
 		return FetchResult{}, err
 	}
 	var assetName, assetURL string
+	var assetSize int64
 	for _, asset := range found.Assets {
 		if pattern.MatchString(asset.Name) {
-			assetName, assetURL = asset.Name, asset.URL
+			assetName, assetURL, assetSize = asset.Name, asset.URL, asset.Size
 			break
 		}
 	}
 	if assetURL == "" {
 		return FetchResult{}, errors.New("matching release asset not found")
 	}
+	jobs.Logf(ctx, "github", joblogs.Info, "selected release repository=%s release=%q tag=%s published=%s asset=%s advertised_size=%d (%s)", repository, found.Name, found.TagName, found.PublishedAt, assetName, assetSize, jobs.FormatBytes(assetSize))
 	if item, ok, err := packages.FindSourceVersion(repository, found.TagName, assetName); err != nil {
 		return FetchResult{}, err
 	} else if ok {
+		jobs.Logf(ctx, "github", joblogs.Info, "package reused repository=%s tag=%s asset=%s package_id=%s size=%s", repository, found.TagName, assetName, item.ID, jobs.FormatBytes(item.Size))
 		return FetchResult{Package: item}, nil
 	}
 	parsed, err := url.Parse(assetURL)
@@ -116,7 +125,11 @@ func (c Client) FetchLatest(ctx context.Context, repository, assetPattern, token
 		return FetchResult{}, err
 	}
 	defer os.Remove(temporary.Name())
-	written, err := io.Copy(temporary, io.LimitReader(assetResponse.Body, limit+1))
+	total := assetResponse.ContentLength
+	if total <= 0 {
+		total = assetSize
+	}
+	written, err := jobs.CopyWithProgress(ctx, temporary, io.LimitReader(assetResponse.Body, limit+1), jobs.TransferOptions{Source: "github", Filename: assetName, Total: total})
 	if err != nil {
 		temporary.Close()
 		return FetchResult{}, err
@@ -141,6 +154,7 @@ func (c Client) FetchLatest(ctx context.Context, repository, assetPattern, token
 	if err := packages.RemoveSourceVersionsExcept(repository, item.ID); err != nil {
 		return FetchResult{}, err
 	}
+	jobs.Logf(ctx, "github", joblogs.Info, "package downloaded repository=%s tag=%s asset=%s package_id=%s size=%s", repository, found.TagName, assetName, item.ID, jobs.FormatBytes(written))
 	return FetchResult{Package: item, Updated: true}, nil
 }
 func (c Client) allowedAssetHost(asset *url.URL, base string) bool {
