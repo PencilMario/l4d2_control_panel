@@ -12,6 +12,9 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
+	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 )
 
 type Manager struct{ root string }
@@ -22,6 +25,7 @@ func (m *Manager) Backup(ctx context.Context, instanceID string) (string, error)
 		return "", errors.New("invalid instance id")
 	}
 	base := filepath.Join(m.root, "instances", instanceID)
+	jobs.Logf(ctx, "backup", joblogs.Info, "backup started instance=%s scope=private,package-manifest", instanceID)
 	backupDir := filepath.Join(base, "backups")
 	if err := os.MkdirAll(backupDir, 0750); err != nil {
 		return "", err
@@ -112,6 +116,9 @@ func (m *Manager) Backup(ctx context.Context, instanceID string) (string, error)
 		return "", err
 	}
 	published = true
+	if info, err := os.Stat(target); err == nil {
+		jobs.Logf(ctx, "backup", joblogs.Info, "backup completed instance=%s archive=%s size=%s", instanceID, filepath.Base(target), jobs.FormatBytes(info.Size()))
+	}
 	return target, nil
 }
 
@@ -129,10 +136,13 @@ func syncDirectory(path string) error {
 func (m *Manager) Cleanup(ctx context.Context, retention time.Duration) (int, error) {
 	cutoff := time.Now().Add(-retention)
 	removed := 0
+	released := int64(0)
+	jobs.Logf(ctx, "cleanup", joblogs.Info, "cleanup started retention=%s cutoff=%s", retention, cutoff.UTC().Format(time.RFC3339))
 	roots := []string{filepath.Join(m.root, "instances"), filepath.Join(m.root, "packages", "uploads")}
 	for _, root := range roots {
 		_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
+				jobs.Logf(ctx, "cleanup", joblogs.Warn, "cleanup inspect failed root=%s error=%q", filepath.Base(root), err.Error())
 				return nil
 			}
 			if ctx.Err() != nil {
@@ -147,12 +157,22 @@ func (m *Manager) Cleanup(ctx context.Context, retention time.Duration) (int, er
 			}
 			info, err := entry.Info()
 			if err == nil && info.ModTime().Before(cutoff) {
-				if os.Remove(path) == nil {
+				label, relErr := filepath.Rel(m.root, path)
+				if relErr != nil {
+					return nil
+				}
+				label = filepath.ToSlash(label)
+				if removeErr := os.Remove(path); removeErr == nil {
 					removed++
+					released += info.Size()
+					jobs.Logf(ctx, "cleanup", joblogs.Info, "deleted file=%s size=%s released=%s", label, jobs.FormatBytes(info.Size()), jobs.FormatBytes(info.Size()))
+				} else {
+					jobs.Logf(ctx, "cleanup", joblogs.Error, "delete failed file=%s size=%s error=%q", label, jobs.FormatBytes(info.Size()), removeErr.Error())
 				}
 			}
 			return nil
 		})
 	}
+	jobs.Logf(ctx, "cleanup", joblogs.Info, "cleanup completed removed=%d released=%s", removed, jobs.FormatBytes(released))
 	return removed, ctx.Err()
 }

@@ -159,7 +159,13 @@ func TestCleanupJobReadsCurrentRetentionAndReportsSummaryOnPartialFailure(t *tes
 		t.Fatalf("trimmed size=%d err=%v", len(trimmed), err)
 	}
 	joined := strings.Join(logs.messages, "\n")
-	for _, want := range []string{"retention=7", "maxFileSizeMB=1", "cutoff=2026-07-11T12:00:00Z", "Scanned=3", "Expired=2", "Deleted=1", "Trimmed=1", "Skipped=0", "ReleasedBytes=7", "Failures=1"} {
+	for _, want := range []string{
+		"retention=7", "maxFileSizeMB=1", "cutoff=2026-07-11T12:00:00Z",
+		"deleted file=game/old.log", "size=3 bytes", "released=3 bytes",
+		"delete failed file=game/bad.log", "trimmed file=sourcemod/oversized.log",
+		"before=1.00 MiB (1048580 bytes)", "after=1.00 MiB (1048576 bytes)", "released=4 bytes",
+		"Scanned=3", "Expired=2", "Deleted=1", "Trimmed=1", "Skipped=0", "ReleasedBytes=7", "Failures=1",
+	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("logs missing %q:\n%s", want, joined)
 		}

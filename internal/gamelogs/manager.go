@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
+	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/safepath"
 )
 
@@ -143,6 +145,7 @@ func (m *Manager) maintain(ctx context.Context, instanceID string, retentionDays
 			}
 			if info.Mode()&os.ModeSymlink != 0 || (!info.IsDir() && !info.Mode().IsRegular()) {
 				result.Skipped++
+				jobs.Logf(ctx, "cleanup", joblogs.Warn, "skipped file=%s reason=unsupported-file-type", label)
 				return nil
 			}
 			if info.IsDir() {
@@ -155,28 +158,34 @@ func (m *Manager) maintain(ctx context.Context, instanceID string, retentionDays
 				removed, err := m.removeIfSame(path, info)
 				if err != nil {
 					result.Failures = append(result.Failures, label+": delete failed")
+					jobs.Logf(ctx, "cleanup", joblogs.Error, "delete failed file=%s size=%s error=%q", label, jobs.FormatBytes(info.Size()), err.Error())
 					return nil
 				}
 				if !removed {
 					result.Skipped++
+					jobs.Logf(ctx, "cleanup", joblogs.Warn, "skipped file=%s reason=file-changed-before-delete", label)
 					return nil
 				}
 				result.Deleted++
 				result.ReleasedBytes += info.Size()
+				jobs.Logf(ctx, "cleanup", joblogs.Info, "deleted file=%s size=%s released=%s", label, jobs.FormatBytes(info.Size()), jobs.FormatBytes(info.Size()))
 				return nil
 			}
 			if maxFileSizeBytes > 0 && info.Size() > maxFileSizeBytes {
 				trimmed, released, err := m.trimIfSame(path, info, maxFileSizeBytes)
 				if err != nil {
 					result.Failures = append(result.Failures, label+": trim failed")
+					jobs.Logf(ctx, "cleanup", joblogs.Error, "trim failed file=%s before=%s target=%s error=%q", label, jobs.FormatBytes(info.Size()), jobs.FormatBytes(maxFileSizeBytes), err.Error())
 					return nil
 				}
 				if !trimmed {
 					result.Skipped++
+					jobs.Logf(ctx, "cleanup", joblogs.Warn, "skipped file=%s reason=file-changed-before-trim", label)
 					return nil
 				}
 				result.Trimmed++
 				result.ReleasedBytes += released
+				jobs.Logf(ctx, "cleanup", joblogs.Info, "trimmed file=%s before=%s after=%s released=%s", label, jobs.FormatBytes(info.Size()), jobs.FormatBytes(info.Size()-released), jobs.FormatBytes(released))
 			}
 			return nil
 		})
