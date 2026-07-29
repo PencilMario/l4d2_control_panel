@@ -141,6 +141,7 @@ export type InstanceOverview = {
 type Props = {
   initialInstances?: Instance[];
   initialPackages?: PackageVersion[];
+  initialPackageSources?: GitHubSource[];
   onAction?: (id: string, action: string) => void;
 };
 type Page = "overview" | "private" | "content" | "jobs" | "joblogs" | "gamelogs" | "schedules" | "settings";
@@ -288,7 +289,7 @@ const historyPointFromOverview = (
       }
     : null;
 
-export function App({ initialInstances, initialPackages, onAction }: Props) {
+export function App({ initialInstances, initialPackages, initialPackageSources, onAction }: Props) {
   const injected = initialInstances !== undefined;
   const [auth, setAuth] = useState(injected ? "yes" : "checking");
   const [instances, setInstances] = useState<Instance[]>(
@@ -297,7 +298,9 @@ export function App({ initialInstances, initialPackages, onAction }: Props) {
   const [packages, setPackages] = useState<PackageVersion[]>(
     initialPackages || [],
   );
-  const [packageSources, setPackageSources] = useState<GitHubSource[]>([]);
+  const [packageSources, setPackageSources] = useState<GitHubSource[]>(
+    initialPackageSources || [],
+  );
   const [sharedGame, setSharedGame] = useState<SharedGameState>({});
   const [performanceHistory, setPerformanceHistory] = useState<
     Record<string, PerformanceHistoryPoint[]>
@@ -999,6 +1002,9 @@ function Overview({
   const packagesByID = new globalThis.Map(
     packages.map((item) => [item.id, item]),
   );
+  const packageSourcesByID = new globalThis.Map(
+    packageSources.map((item) => [item.id, item]),
+  );
   const totalPlayers = instances.some((instance) => instance.players === null)
     ? "--"
     : String(instances.reduce((total, instance) => total + (instance.players ?? 0), 0));
@@ -1082,6 +1088,13 @@ function Overview({
         <div className="grid instance-list">
           {instances.map((x, index) => {
             const selectedPackage = packagesByID.get(x.package_id);
+            const selectedSource = packageSourcesByID.get(x.source_id || "");
+            const appliedPackage = packagesByID.get(x.applied_package_id);
+            const packageLabel = x.source_id
+              ? `${selectedSource?.name || `GitHub 源：${x.source_id}`}${appliedPackage ? ` · ${appliedPackage.version}` : ""}`
+              : selectedPackage
+                ? `${selectedPackage.filename} · ${selectedPackage.version}`
+                : "未选择插件包";
             const packagePending =
               Boolean(x.package_id) && x.package_id !== x.applied_package_id;
             const state = displayState(x);
@@ -1111,7 +1124,7 @@ function Overview({
                       {x.plugin_ports.length ? ` · 插件 ${x.plugin_ports.join(", ")}` : ""}
                     </p>
                     <p className="instance-package">
-                      {selectedPackage ? `${selectedPackage.filename} · ${selectedPackage.version}` : "未选择插件包"}
+                      {packageLabel}
                       {packagePending ? <em>待应用</em> : null}
                     </p>
                   </div>

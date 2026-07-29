@@ -1639,6 +1639,19 @@ describe("App", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/instances/1/game-update", expect.objectContaining({ method: "POST", body: JSON.stringify({ confirm: true, reinstall_game: false, reinstall_package: true }) }));
   });
 
+  it("shows the selected GitHub source and applied release on the instance card", () => {
+    render(
+      <App
+        initialInstances={[{ ...instance, package_id: "", source_id: "source-a", applied_package_id: "release-a" }]}
+        initialPackages={[{ id: "release-a", filename: "plugins.zip", version: "v20260729", size: 4 }]}
+        initialPackageSources={[{ id: "source-a", name: "Coop GitHub 包", repository: "owner/repo", asset_pattern: "compiled.zip" }]}
+      />,
+    );
+
+    expect(screen.getByText("Coop GitHub 包 · v20260729")).toBeVisible();
+    expect(screen.queryByText("未选择插件包")).not.toBeInTheDocument();
+  });
+
   it("does not expose package-row deployment actions", async () => {
     const calls: Array<[RequestInfo | URL, RequestInit | undefined]> = [];
     vi.stubGlobal(
