@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -34,8 +35,11 @@ type Reporter interface {
 	Log(source string, level joblogs.Level, message string)
 }
 type reporter struct {
-	m  *Manager
-	id string
+	m         *Manager
+	id        string
+	kind      string
+	target    string
+	startedAt time.Time
 }
 
 type reporterContextKey struct{}
@@ -69,6 +73,22 @@ func (r reporter) Progress(stage string, percent int, message string) {
 }
 func (r reporter) Log(source string, level joblogs.Level, message string) {
 	r.m.appendLog(r.id, source, level, message)
+}
+
+func (r reporter) logStart() {
+	r.m.appendLog(r.id, "task", joblogs.Info, fmt.Sprintf("task started type=%s target=%s", r.kind, r.target))
+}
+
+func (r reporter) logFinish(err error) {
+	r.m.mu.RLock()
+	phase := r.m.jobs[r.id].Stage
+	r.m.mu.RUnlock()
+	duration := FormatDuration(time.Since(r.startedAt))
+	if err != nil {
+		r.m.appendLog(r.id, "task", joblogs.Error, fmt.Sprintf("task failed type=%s target=%s phase=%s duration=%s error=%q", r.kind, r.target, phase, duration, err.Error()))
+		return
+	}
+	r.m.appendLog(r.id, "task", joblogs.Info, fmt.Sprintf("task completed type=%s target=%s duration=%s", r.kind, r.target, duration))
 }
 
 type Manager struct {
@@ -170,8 +190,14 @@ func (m *Manager) Start(ctx context.Context, instanceID, kind string, fn func(co
 			)
 			return
 		}
-		activeReporter := reporter{m: m, id: j.ID}
+		target := instanceID
+		if target == "" {
+			target = "global"
+		}
+		activeReporter := reporter{m: m, id: j.ID, kind: kind, target: target, startedAt: time.Now()}
+		activeReporter.logStart()
 		err := fn(context.WithValue(ctx, reporterContextKey{}, Reporter(activeReporter)), activeReporter)
+		activeReporter.logFinish(err)
 		if err != nil {
 			_ = m.setStatus(j.ID, Failed, -1, err.Error())
 		} else {

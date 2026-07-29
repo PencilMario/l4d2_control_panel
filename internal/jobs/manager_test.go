@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -64,8 +65,19 @@ func TestManagerWritesTaskLifecycleAndReporterLogs(t *testing.T) {
 		{kind: "append", jobID: job.ID, source: "task", level: joblogs.Error, message: "download interrupted"},
 		{kind: "finalize", jobID: job.ID},
 	}
-	if !reflect.DeepEqual(sink.calls, wants) {
-		t.Fatalf("calls=%#v want=%#v", sink.calls, wants)
+	remaining := append([]recordedLogCall(nil), sink.calls...)
+	for _, want := range wants {
+		found := false
+		for index, call := range remaining {
+			if reflect.DeepEqual(call, want) {
+				remaining = remaining[index+1:]
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("calls=%#v missing ordered call=%#v", sink.calls, want)
+		}
 	}
 }
 
@@ -93,6 +105,60 @@ func TestLogContextUsesTaskReporter(t *testing.T) {
 	if !found {
 		t.Fatalf("calls=%#v", sink.calls)
 	}
+}
+
+func TestManagerWritesDetailedTaskSuccessSummary(t *testing.T) {
+	sink := &recordingLogSink{}
+	m := NewManager(WithLogSink(sink))
+	job, err := m.Start(context.Background(), "alpha", "delete", func(_ context.Context, reporter Reporter) error {
+		reporter.Progress("filesystem", 50, "removing managed files")
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	joined := joinedLogMessages(sink, job.ID)
+	for _, want := range []string{"task started", "type=delete", "target=alpha", "task completed", "duration="} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("logs=%q missing %q", joined, want)
+		}
+	}
+}
+
+func TestManagerWritesDetailedTaskFailureSummaryWithActivePhase(t *testing.T) {
+	sink := &recordingLogSink{}
+	m := NewManager(WithLogSink(sink))
+	job, err := m.Start(context.Background(), "alpha", "delete", func(_ context.Context, reporter Reporter) error {
+		reporter.Progress("filesystem", 50, "removing managed files")
+		return errors.New("disk unavailable")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	joined := joinedLogMessages(sink, job.ID)
+	for _, want := range []string{"task failed", "type=delete", "target=alpha", "phase=filesystem", "duration=", "error=\"disk unavailable\""} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("logs=%q missing %q", joined, want)
+		}
+	}
+}
+
+func joinedLogMessages(sink *recordingLogSink, jobID string) string {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	var messages []string
+	for _, call := range sink.calls {
+		if call.jobID == jobID && call.message != "" {
+			messages = append(messages, call.message)
+		}
+	}
+	return strings.Join(messages, "\n")
 }
 
 func TestManagerSerializesMutationPerInstance(t *testing.T) {
