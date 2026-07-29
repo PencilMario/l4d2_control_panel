@@ -1442,10 +1442,11 @@ describe("App", () => {
         if (init?.method === "PUT") {
           return Response.json({
             retention_days: 30,
+            max_file_size_mb: 20,
             enqueue: { Queued: 2, Deduplicated: 1, Failed: 0 },
           });
         }
-        return Response.json({ retention_days: 14 });
+        return Response.json({ retention_days: 14, max_file_size_mb: 10 });
       }
       if (path === "/api/settings/jobs") return Response.json({ successful_job_limit: 25 });
       return Response.json({ configured: false });
@@ -1458,6 +1459,10 @@ describe("App", () => {
     expect(input).toHaveValue(14);
     expect(input).toHaveAttribute("min", "1");
     expect(input).toHaveAttribute("max", "365");
+	const sizeInput = screen.getByRole("spinbutton", { name: "单个日志文件最大大小（MB）" });
+	expect(sizeInput).toHaveValue(10);
+	expect(sizeInput).toHaveAttribute("min", "1");
+	expect(sizeInput).toHaveAttribute("max", "1024");
 
     await userEvent.clear(input);
     await userEvent.type(input, "366");
@@ -1465,15 +1470,24 @@ describe("App", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("1 至 365");
     expect(fetchMock).not.toHaveBeenCalledWith("/api/settings/game-logs", expect.objectContaining({ method: "PUT" }));
 
+	await userEvent.clear(sizeInput);
+	await userEvent.type(sizeInput, "1025");
+	await userEvent.click(screen.getByRole("button", { name: "保存游戏日志设置" }));
+	expect(screen.getByRole("alert")).toHaveTextContent("1 至 1024");
+	expect(fetchMock).not.toHaveBeenCalledWith("/api/settings/game-logs", expect.objectContaining({ method: "PUT" }));
+
     await userEvent.clear(input);
     await userEvent.type(input, "30");
+	await userEvent.clear(sizeInput);
+	await userEvent.type(sizeInput, "20");
     await userEvent.click(screen.getByRole("button", { name: "保存游戏日志设置" }));
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/settings/game-logs",
-      expect.objectContaining({ method: "PUT", body: JSON.stringify({ retention_days: 30 }) }),
+      expect.objectContaining({ method: "PUT", body: JSON.stringify({ retention_days: 30, max_file_size_mb: 20 }) }),
     );
     expect(await screen.findByRole("status")).toHaveTextContent("已排队 2，已去重 1，失败 0");
     expect(input).toHaveValue(30);
+	expect(sizeInput).toHaveValue(20);
   });
 
   it("prevents duplicate immediate game log cleanup and reports failures", async () => {
@@ -1485,7 +1499,7 @@ describe("App", () => {
         cleanupPosts += 1;
         return cleanup.promise;
       }
-      if (path === "/api/settings/game-logs") return Response.json({ retention_days: 14 });
+      if (path === "/api/settings/game-logs") return Response.json({ retention_days: 14, max_file_size_mb: 10 });
       if (path === "/api/settings/jobs") return Response.json({ successful_job_limit: 25 });
       return Response.json({ configured: false });
     }));
@@ -1513,7 +1527,7 @@ describe("App", () => {
       const path = String(input);
       if (path === "/api/settings/game-logs") {
         if (init?.method === "PUT") return save.promise;
-        return Response.json({ retention_days: 14 });
+        return Response.json({ retention_days: 14, max_file_size_mb: 10 });
       }
       if (path === "/api/settings/jobs") return Response.json({ successful_job_limit: 25 });
       return Response.json({ configured: false });
@@ -1545,7 +1559,7 @@ describe("App", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path === "/api/settings/game-logs/cleanup" && init?.method === "POST") return cleanup.promise;
-      if (path === "/api/settings/game-logs") return Response.json({ retention_days: 14 });
+      if (path === "/api/settings/game-logs") return Response.json({ retention_days: 14, max_file_size_mb: 10 });
       if (path === "/api/settings/jobs") return Response.json({ successful_job_limit: 25 });
       return Response.json({ configured: false });
     }));

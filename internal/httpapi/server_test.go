@@ -129,19 +129,19 @@ func TestGameLogsHTTPContract(t *testing.T) {
 		t.Fatalf("auth=%d", rr.Code)
 	}
 	set := authenticatedJSON(t, s, c, http.MethodGet, "/api/settings/game-logs", "")
-	if set.Code != 200 || !strings.Contains(set.Body.String(), "14") {
+	if set.Code != 200 || !strings.Contains(set.Body.String(), `"retention_days":14`) || !strings.Contains(set.Body.String(), `"max_file_size_mb":10`) {
 		t.Fatalf("settings=%d %s", set.Code, set.Body.String())
 	}
-	put := authenticatedJSON(t, s, c, http.MethodPut, "/api/settings/game-logs", `{"retention_days":30} trailing`)
+	put := authenticatedJSON(t, s, c, http.MethodPut, "/api/settings/game-logs", `{"retention_days":30,"max_file_size_mb":10} trailing`)
 	if put.Code != 503 {
 		t.Fatalf("trailing=%d", put.Code)
 	}
-	if got := authenticatedJSON(t, s, c, http.MethodPut, "/api/settings/game-logs", `{"retention_days":30}`).Code; got != 503 {
+	if got := authenticatedJSON(t, s, c, http.MethodPut, "/api/settings/game-logs", `{"retention_days":30,"max_file_size_mb":10}`).Code; got != 503 {
 		t.Fatalf("nil scheduler=%d", got)
 	}
 }
 
-func TestPutGameLogSettingsQueuesCleanupOnlyWhenRetentionDecreases(t *testing.T) {
+func TestPutGameLogSettingsQueuesCleanupWhenPolicyBecomesStricter(t *testing.T) {
 	s, db := testServer(t)
 	defer db.Close()
 	if err := db.CreateInstance(context.Background(), domain.Instance{ID: "logs", NodeID: "local", Name: "logs", GamePort: 27015}); err != nil {
@@ -156,24 +156,31 @@ func TestPutGameLogSettingsQueuesCleanupOnlyWhenRetentionDecreases(t *testing.T)
 	for _, tc := range []struct {
 		name   string
 		days   int
+		sizeMB int
 		queued int
 	}{
-		{name: "lower", days: 7, queued: 1},
-		{name: "higher", days: 30, queued: 0},
-		{name: "equal", days: 30, queued: 0},
+		{name: "lower retention", days: 7, sizeMB: 10, queued: 1},
+		{name: "higher retention", days: 30, sizeMB: 10, queued: 0},
+		{name: "equal", days: 30, sizeMB: 10, queued: 0},
+		{name: "lower size", days: 30, sizeMB: 5, queued: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			response := authenticatedJSON(t, s, cookie, http.MethodPut, "/api/settings/game-logs", fmt.Sprintf(`{"retention_days":%d}`, tc.days))
+			response := authenticatedJSON(t, s, cookie, http.MethodPut, "/api/settings/game-logs", fmt.Sprintf(`{"retention_days":%d,"max_file_size_mb":%d}`, tc.days, tc.sizeMB))
 			var body struct {
 				RetentionDays int                    `json:"retention_days"`
+				MaxFileSizeMB int                    `json:"max_file_size_mb"`
 				Enqueue       gamelogs.EnqueueResult `json:"enqueue"`
 			}
-			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &body) != nil || body.RetentionDays != tc.days || body.Enqueue.Queued != tc.queued {
+			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &body) != nil || body.RetentionDays != tc.days || body.MaxFileSizeMB != tc.sizeMB || body.Enqueue.Queued != tc.queued {
 				t.Fatalf("response=%d %s", response.Code, response.Body.String())
 			}
 			stored, err := db.GameLogRetentionDays()
 			if err != nil || stored != tc.days {
 				t.Fatalf("stored=%d err=%v", stored, err)
+			}
+			storedSize, err := db.GameLogMaxFileSizeMB()
+			if err != nil || storedSize != tc.sizeMB {
+				t.Fatalf("stored size=%d err=%v", storedSize, err)
 			}
 		})
 	}

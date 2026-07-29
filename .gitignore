@@ -1,4 +1,5 @@
 .worktrees/
 .deploy-shared/
 .playwright-mcp/
+.gotmp-merge/
 .env

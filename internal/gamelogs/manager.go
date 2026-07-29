@@ -34,6 +34,7 @@ type CleanupResult struct {
 	Scanned       int      `json:"scanned"`
 	Expired       int      `json:"expired"`
 	Deleted       int      `json:"deleted"`
+	Trimmed       int      `json:"trimmed"`
 	Skipped       int      `json:"skipped"`
 	ReleasedBytes int64    `json:"released_bytes"`
 	Failures      []string `json:"failures"`
@@ -54,6 +55,7 @@ type Manager struct {
 	now          func() time.Time
 	remove       func(string, os.FileInfo) error
 	beforeRemove func(string)
+	beforeTrim   func(string)
 	locksMu      sync.Mutex
 	instances    map[string]*instanceLockEntry
 }
@@ -71,6 +73,17 @@ func NewManager(root string, options Options) *Manager {
 }
 
 func (m *Manager) Cleanup(ctx context.Context, instanceID string, retentionDays int) (CleanupResult, error) {
+	return m.maintain(ctx, instanceID, retentionDays, 0)
+}
+
+func (m *Manager) Maintain(ctx context.Context, instanceID string, retentionDays int, maxFileSizeBytes int64) (CleanupResult, error) {
+	if maxFileSizeBytes < 1 || maxFileSizeBytes > 1024<<20 {
+		return CleanupResult{Failures: make([]string, 0)}, errors.New("game log max file size must be between 1 byte and 1024 MiB")
+	}
+	return m.maintain(ctx, instanceID, retentionDays, maxFileSizeBytes)
+}
+
+func (m *Manager) maintain(ctx context.Context, instanceID string, retentionDays int, maxFileSizeBytes int64) (CleanupResult, error) {
 	result := CleanupResult{Failures: make([]string, 0)}
 	if err := validateInstanceID(instanceID); err != nil {
 		return result, err
@@ -137,21 +150,34 @@ func (m *Manager) Cleanup(ctx context.Context, instanceID string, retentionDays 
 				return nil
 			}
 			result.Scanned++
-			if !info.ModTime().Before(cutoff) {
+			if info.ModTime().Before(cutoff) {
+				result.Expired++
+				removed, err := m.removeIfSame(path, info)
+				if err != nil {
+					result.Failures = append(result.Failures, label+": delete failed")
+					return nil
+				}
+				if !removed {
+					result.Skipped++
+					return nil
+				}
+				result.Deleted++
+				result.ReleasedBytes += info.Size()
 				return nil
 			}
-			result.Expired++
-			removed, err := m.removeIfSame(path, info)
-			if err != nil {
-				result.Failures = append(result.Failures, label+": delete failed")
-				return nil
+			if maxFileSizeBytes > 0 && info.Size() > maxFileSizeBytes {
+				trimmed, released, err := m.trimIfSame(path, info, maxFileSizeBytes)
+				if err != nil {
+					result.Failures = append(result.Failures, label+": trim failed")
+					return nil
+				}
+				if !trimmed {
+					result.Skipped++
+					return nil
+				}
+				result.Trimmed++
+				result.ReleasedBytes += released
 			}
-			if !removed {
-				result.Skipped++
-				return nil
-			}
-			result.Deleted++
-			result.ReleasedBytes += info.Size()
 			return nil
 		})
 		if err != nil {
@@ -179,6 +205,59 @@ func (m *Manager) Cleanup(ctx context.Context, instanceID string, retentionDays 
 		return result, fmt.Errorf("game log cleanup completed with %d failure(s)", len(result.Failures))
 	}
 	return result, nil
+}
+
+func (m *Manager) trimIfSame(path string, expected os.FileInfo, limit int64) (bool, int64, error) {
+	if m.beforeTrim != nil {
+		m.beforeTrim(path)
+	}
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if os.IsNotExist(err) {
+		return false, 0, nil
+	}
+	if err != nil {
+		return false, 0, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return false, 0, err
+	}
+	current, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return false, 0, nil
+	}
+	if err != nil {
+		return false, 0, err
+	}
+	if !opened.Mode().IsRegular() || !current.Mode().IsRegular() || !os.SameFile(expected, opened) || !os.SameFile(opened, current) {
+		return false, 0, nil
+	}
+	if opened.Size() <= limit {
+		return false, 0, nil
+	}
+	start := opened.Size() - limit
+	buffer := make([]byte, 64*1024)
+	for copied := int64(0); copied < limit; {
+		chunk := int64(len(buffer))
+		if remaining := limit - copied; remaining < chunk {
+			chunk = remaining
+		}
+		if _, err := file.ReadAt(buffer[:chunk], start+copied); err != nil {
+			return false, 0, err
+		}
+		if _, err := file.WriteAt(buffer[:chunk], copied); err != nil {
+			return false, 0, err
+		}
+		copied += chunk
+	}
+	if err := file.Truncate(limit); err != nil {
+		return false, 0, err
+	}
+	if err := file.Sync(); err != nil {
+		return false, 0, err
+	}
+	return true, opened.Size() - limit, nil
 }
 
 func (m *Manager) removeIfSame(path string, expected os.FileInfo) (bool, error) {

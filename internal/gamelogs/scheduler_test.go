@@ -20,6 +20,7 @@ type schedulerRepo struct {
 	instances []domain.Instance
 	active    map[string]bool
 	days      int
+	sizeMB    int
 	fail      map[string]error
 	records   map[string]domain.JobRecord
 }
@@ -28,6 +29,12 @@ func (r *schedulerRepo) Instances(context.Context) ([]domain.Instance, error) {
 	return r.instances, nil
 }
 func (r *schedulerRepo) GameLogRetentionDays() (int, error) { return r.days, nil }
+func (r *schedulerRepo) GameLogMaxFileSizeMB() (int, error) {
+	if r.sizeMB == 0 {
+		return 10, nil
+	}
+	return r.sizeMB, nil
+}
 func (r *schedulerRepo) HasActiveJob(_ context.Context, id, kind string) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -116,12 +123,14 @@ func TestCleanupJobReadsCurrentRetentionAndReportsSummaryOnPartialFailure(t *tes
 	root := t.TempDir()
 	old := filepath.Join(root, "instances", "i", "logs", "game", "old.log")
 	bad := filepath.Join(root, "instances", "i", "logs", "game", "bad.log")
+	oversized := filepath.Join(root, "instances", "i", "logs", "sourcemod", "oversized.log")
 	writeFile(t, old, "123")
 	writeFile(t, bad, "4567")
+	writeFile(t, oversized, strings.Repeat("x", 1<<20)+"tail")
 	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
 	_ = os.Chtimes(old, now.Add(-20*24*time.Hour), now.Add(-20*24*time.Hour))
 	_ = os.Chtimes(bad, now.Add(-20*24*time.Hour), now.Add(-20*24*time.Hour))
-	repo := &schedulerRepo{instances: []domain.Instance{{ID: "i"}}, active: map[string]bool{}, days: 14}
+	repo := &schedulerRepo{instances: []domain.Instance{{ID: "i"}}, active: map[string]bool{}, days: 14, sizeMB: 1}
 	logs := &memoryLogs{}
 	jm := jobs.NewPersistentManager(repo, jobs.WithLogSink(logs))
 	cleaner := NewManager(root, Options{Now: func() time.Time { return now }, Remove: func(path string, _ os.FileInfo) error {
@@ -145,8 +154,12 @@ func TestCleanupJobReadsCurrentRetentionAndReportsSummaryOnPartialFailure(t *tes
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
 		t.Fatalf("successful deletion rolled back: %v", err)
 	}
+	trimmed, err := os.ReadFile(oversized)
+	if err != nil || len(trimmed) != 1<<20 || !strings.HasSuffix(string(trimmed), "tail") {
+		t.Fatalf("trimmed size=%d err=%v", len(trimmed), err)
+	}
 	joined := strings.Join(logs.messages, "\n")
-	for _, want := range []string{"retention=7", "cutoff=2026-07-11T12:00:00Z", "Scanned=2", "Expired=2", "Deleted=1", "Skipped=0", "ReleasedBytes=3", "Failures=1"} {
+	for _, want := range []string{"retention=7", "maxFileSizeMB=1", "cutoff=2026-07-11T12:00:00Z", "Scanned=3", "Expired=2", "Deleted=1", "Trimmed=1", "Skipped=0", "ReleasedBytes=7", "Failures=1"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("logs missing %q:\n%s", want, joined)
 		}

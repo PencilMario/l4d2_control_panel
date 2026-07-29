@@ -1833,6 +1833,8 @@ function SettingsPage() {
   const [jobsNotice, setJobsNotice] = useState("");
   const [confirmedGameLogDays, setConfirmedGameLogDays] = useState(14);
   const [draftGameLogDays, setDraftGameLogDays] = useState("14");
+  const [confirmedGameLogMaxFileSizeMB, setConfirmedGameLogMaxFileSizeMB] = useState(10);
+  const [draftGameLogMaxFileSizeMB, setDraftGameLogMaxFileSizeMB] = useState("10");
   const [gameLogSettingsReady, setGameLogSettingsReady] = useState(false);
   const [gameLogBusy, setGameLogBusy] = useState<"save" | "cleanup" | "">("");
   const [gameLogsNotice, setGameLogsNotice] = useState("");
@@ -1856,14 +1858,16 @@ function SettingsPage() {
       })
       .catch((reason) => setSettingsError(errorMessage(reason)));
     const gameLogLoadSequence = ++gameLogRequestSequence.current;
-    api<{ retention_days: number }>("/api/settings/game-logs")
+    api<{ retention_days: number; max_file_size_mb: number }>("/api/settings/game-logs")
       .then((settings) => {
         if (gameLogLoadSequence !== gameLogRequestSequence.current) return;
-        if (!Number.isInteger(settings.retention_days) || settings.retention_days < 1 || settings.retention_days > 365) {
+        if (!Number.isInteger(settings.retention_days) || settings.retention_days < 1 || settings.retention_days > 365 || !Number.isInteger(settings.max_file_size_mb) || settings.max_file_size_mb < 1 || settings.max_file_size_mb > 1024) {
           throw new Error("游戏日志设置数据无效");
         }
         setConfirmedGameLogDays(settings.retention_days);
         setDraftGameLogDays(String(settings.retention_days));
+        setConfirmedGameLogMaxFileSizeMB(settings.max_file_size_mb);
+        setDraftGameLogMaxFileSizeMB(String(settings.max_file_size_mb));
         setGameLogSettingsReady(true);
       })
       .catch((reason) => {
@@ -1949,8 +1953,13 @@ function SettingsPage() {
     event.preventDefault();
     if (settingsActions.isLocked("game-logs")) return;
     const days = Number(draftGameLogDays);
+    const maxFileSizeMB = Number(draftGameLogMaxFileSizeMB);
     if (!Number.isInteger(days) || days < 1 || days > 365) {
       setSettingsError("游戏日志保留天数必须为 1 至 365 的整数");
+      return;
+    }
+    if (!Number.isInteger(maxFileSizeMB) || maxFileSizeMB < 1 || maxFileSizeMB > 1024) {
+      setSettingsError("单个日志文件最大大小必须为 1 至 1024 MB 的整数");
       return;
     }
     setSettingsError("");
@@ -1959,19 +1968,22 @@ function SettingsPage() {
     const sequence = ++gameLogRequestSequence.current;
     try {
       await settingsActions.run("game-logs", async () => {
-        const saved = await api<{ retention_days: number; enqueue: EnqueueStats }>(
+        const saved = await api<{ retention_days: number; max_file_size_mb: number; enqueue: EnqueueStats }>(
           "/api/settings/game-logs",
-          { method: "PUT", body: JSON.stringify({ retention_days: days }) },
+          { method: "PUT", body: JSON.stringify({ retention_days: days, max_file_size_mb: maxFileSizeMB }) },
         );
         if (sequence === gameLogRequestSequence.current) {
           setConfirmedGameLogDays(saved.retention_days);
           setDraftGameLogDays(String(saved.retention_days));
+          setConfirmedGameLogMaxFileSizeMB(saved.max_file_size_mb);
+          setDraftGameLogMaxFileSizeMB(String(saved.max_file_size_mb));
           setGameLogsNotice(`游戏日志设置已保存；${formatEnqueueStats(saved.enqueue)}`);
         }
       });
     } catch (reason) {
       if (sequence === gameLogRequestSequence.current) {
         setDraftGameLogDays(String(confirmedGameLogDays));
+        setDraftGameLogMaxFileSizeMB(String(confirmedGameLogMaxFileSizeMB));
         setSettingsError(errorMessage(reason));
       }
     } finally {
@@ -2034,8 +2046,8 @@ function SettingsPage() {
         </form>
         <section className="settings-card" aria-labelledby="game-log-settings-title">
           <div className="settings-card-title"><h3 id="game-log-settings-title"><Trash2 />游戏日志保留策略</h3></div>
-          <p>设定游戏控制台与 SourceMod 插件日志保留天数（允许范围：1 - 365 天）。</p>
-          <form className="settings-fields" onSubmit={saveGameLogSettings}><label>游戏日志保留天数<input type="number" min={1} max={365} step={1} required value={draftGameLogDays} disabled={!gameLogSettingsReady || gameLogBusy !== ""} onChange={(event) => { const value = event.target.value; setDraftGameLogDays(value); setGameLogsNotice(""); const days = Number(value); setSettingsError(value !== "" && (!Number.isInteger(days) || days < 1 || days > 365) ? "游戏日志保留天数必须为 1 至 365 的整数" : ""); }} /></label><p>当前确认值：{confirmedGameLogDays} 天</p><footer><button className="settings-cleanup" type="button" aria-label="立即清理游戏日志" disabled={!gameLogSettingsReady || gameLogBusy !== ""} aria-busy={gameLogBusy === "cleanup"} onClick={() => void cleanupGameLogs()}>{gameLogBusy === "cleanup" ? "提交中…" : "立即清理过期日志"}</button><button className="settings-save" type="submit" aria-label="保存游戏日志设置" disabled={!gameLogSettingsReady || gameLogBusy !== ""} aria-busy={gameLogBusy === "save"}>{gameLogBusy === "save" ? <RefreshCw /> : <Save />}<span>{gameLogBusy === "save" ? "保存中…" : "保存日志策略"}</span></button></footer></form>
+          <p>设定游戏控制台与 SourceMod 插件日志的保留时间和单文件上限。</p>
+          <form className="settings-fields" onSubmit={saveGameLogSettings}><label>游戏日志保留天数<input type="number" min={1} max={365} step={1} required value={draftGameLogDays} disabled={!gameLogSettingsReady || gameLogBusy !== ""} onChange={(event) => { const value = event.target.value; setDraftGameLogDays(value); setGameLogsNotice(""); const days = Number(value); setSettingsError(value !== "" && (!Number.isInteger(days) || days < 1 || days > 365) ? "游戏日志保留天数必须为 1 至 365 的整数" : ""); }} /></label><label>单个日志文件最大大小（MB）<input type="number" min={1} max={1024} step={1} required value={draftGameLogMaxFileSizeMB} disabled={!gameLogSettingsReady || gameLogBusy !== ""} onChange={(event) => { const value = event.target.value; setDraftGameLogMaxFileSizeMB(value); setGameLogsNotice(""); const size = Number(value); setSettingsError(value !== "" && (!Number.isInteger(size) || size < 1 || size > 1024) ? "单个日志文件最大大小必须为 1 至 1024 MB 的整数" : ""); }} /></label><p>当前确认值：{confirmedGameLogDays} 天 · {confirmedGameLogMaxFileSizeMB} MB</p><footer><button className="settings-cleanup" type="button" aria-label="立即清理游戏日志" disabled={!gameLogSettingsReady || gameLogBusy !== ""} aria-busy={gameLogBusy === "cleanup"} onClick={() => void cleanupGameLogs()}>{gameLogBusy === "cleanup" ? "提交中…" : "立即维护日志"}</button><button className="settings-save" type="submit" aria-label="保存游戏日志设置" disabled={!gameLogSettingsReady || gameLogBusy !== ""} aria-busy={gameLogBusy === "save"}>{gameLogBusy === "save" ? <RefreshCw /> : <Save />}<span>{gameLogBusy === "save" ? "保存中…" : "保存日志策略"}</span></button></footer></form>
           {gameLogsNotice ? <p className="settings-notice" role="status">{gameLogsNotice}</p> : null}
         </section>
       </div>

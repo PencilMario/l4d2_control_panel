@@ -19,10 +19,14 @@ const (
 	DefaultGameLogRetentionDays = 14
 	MinGameLogRetentionDays     = 1
 	MaxGameLogRetentionDays     = 365
+	DefaultGameLogMaxFileSizeMB = 10
+	MinGameLogMaxFileSizeMB     = 1
+	MaxGameLogMaxFileSizeMB     = 1024
 
 	// Keep the original key so existing installations retain their configured value.
 	completedJobLimitKey    = "successful_job_limit"
 	gameLogRetentionDaysKey = "game_log_retention_days"
+	gameLogMaxFileSizeMBKey = "game_log_max_file_size_mb"
 )
 
 type jobExecer interface {
@@ -236,6 +240,64 @@ func (s *Store) SetGameLogRetentionDays(days int) error {
 ON CONFLICT(name) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
 		gameLogRetentionDaysKey, strconv.Itoa(days), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) GameLogMaxFileSizeMB() (int, error) {
+	var raw string
+	err := s.db.QueryRow(`SELECT value FROM system_settings WHERE name=?`, gameLogMaxFileSizeMBKey).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return DefaultGameLogMaxFileSizeMB, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	size, err := strconv.Atoi(raw)
+	if err != nil || size < MinGameLogMaxFileSizeMB || size > MaxGameLogMaxFileSizeMB {
+		return 0, fmt.Errorf("invalid stored game log max file size MB %q", raw)
+	}
+	return size, nil
+}
+
+func (s *Store) SetGameLogMaxFileSizeMB(size int) error {
+	if size < MinGameLogMaxFileSizeMB || size > MaxGameLogMaxFileSizeMB {
+		return fmt.Errorf("game log max file size MB must be between %d and %d", MinGameLogMaxFileSizeMB, MaxGameLogMaxFileSizeMB)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO system_settings(name,value,updated_at) VALUES(?,?,?)
+ON CONFLICT(name) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
+		gameLogMaxFileSizeMBKey, strconv.Itoa(size), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) SetGameLogSettings(retentionDays, maxFileSizeMB int) error {
+	if retentionDays < MinGameLogRetentionDays || retentionDays > MaxGameLogRetentionDays {
+		return fmt.Errorf("game log retention days must be between %d and %d", MinGameLogRetentionDays, MaxGameLogRetentionDays)
+	}
+	if maxFileSizeMB < MinGameLogMaxFileSizeMB || maxFileSizeMB > MaxGameLogMaxFileSizeMB {
+		return fmt.Errorf("game log max file size MB must be between %d and %d", MinGameLogMaxFileSizeMB, MaxGameLogMaxFileSizeMB)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for key, value := range map[string]int{
+		gameLogRetentionDaysKey: retentionDays,
+		gameLogMaxFileSizeMBKey: maxFileSizeMB,
+	} {
+		if _, err := tx.Exec(`INSERT INTO system_settings(name,value,updated_at) VALUES(?,?,?)
+ON CONFLICT(name) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, key, strconv.Itoa(value), now); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

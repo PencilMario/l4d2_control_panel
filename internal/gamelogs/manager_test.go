@@ -80,6 +80,24 @@ func TestCleanupDeletesOnlyStrictlyExpiredFilesAndEmptySubdirectories(t *testing
 	}
 }
 
+func TestCleanupTrimsOversizedFilesToNewestBytesAndLeavesExactLimit(t *testing.T) {
+	root := t.TempDir()
+	oversized := filepath.Join(root, "instances", "i", "logs", "game", "oversized.log")
+	exact := filepath.Join(root, "instances", "i", "logs", "sourcemod", "exact.log")
+	writeFile(t, oversized, "abcdefghij")
+	writeFile(t, exact, "wxyz")
+
+	result, err := NewManager(root, Options{}).Maintain(context.Background(), "i", 14, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Scanned != 2 || result.Trimmed != 1 || result.ReleasedBytes != 6 || result.Deleted != 0 || result.Skipped != 0 {
+		t.Fatalf("result=%+v", result)
+	}
+	assertFile(t, oversized, "ghij")
+	assertFile(t, exact, "wxyz")
+}
+
 func TestCleanupSkipsSymlinksWithoutFollowingThem(t *testing.T) {
 	root := t.TempDir()
 	base := filepath.Join(root, "instances", "i", "logs")
@@ -145,6 +163,11 @@ func TestCleanupRejectsInvalidRetentionAndCancellation(t *testing.T) {
 	cancel()
 	if _, err := manager.Cleanup(ctx, "i", 14); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation error=%v", err)
+	}
+	for _, size := range []int64{0, 1024<<20 + 1} {
+		if _, err := manager.Maintain(context.Background(), "i", 14, size); err == nil {
+			t.Fatalf("max file size %d accepted", size)
+		}
 	}
 }
 
@@ -244,6 +267,28 @@ func TestCleanupSkipsFileReplacedBeforeDelete(t *testing.T) {
 
 	result, err := manager.Cleanup(context.Background(), "i", 14)
 	if err != nil || result.Expired != 1 || result.Deleted != 0 || result.ReleasedBytes != 0 || result.Skipped != 1 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	assertFile(t, path, "fresh replacement")
+}
+
+func TestMaintainSkipsFileReplacedBeforeTrim(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "instances", "i", "logs", "game", "rotating.log")
+	writeFile(t, path, "oversized")
+	manager := NewManager(root, Options{})
+	manager.beforeTrim = func(candidate string) {
+		if candidate != path {
+			return
+		}
+		if err := os.Rename(path, path+".old"); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, path, "fresh replacement")
+	}
+
+	result, err := manager.Maintain(context.Background(), "i", 14, 4)
+	if err != nil || result.Trimmed != 0 || result.ReleasedBytes != 0 || result.Skipped != 1 {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	assertFile(t, path, "fresh replacement")

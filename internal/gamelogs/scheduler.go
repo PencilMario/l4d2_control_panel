@@ -19,6 +19,7 @@ const CleanupJobType = "cleanup_game_logs"
 type SchedulerStore interface {
 	Instances(context.Context) ([]domain.Instance, error)
 	GameLogRetentionDays() (int, error)
+	GameLogMaxFileSizeMB() (int, error)
 	HasActiveJob(context.Context, string, string) (bool, error)
 }
 
@@ -68,10 +69,14 @@ func (s *Scheduler) EnqueueAll(ctx context.Context) EnqueueResult {
 			if err != nil {
 				return fmt.Errorf("read game log retention: %w", err)
 			}
+			maxFileSizeMB, err := s.store.GameLogMaxFileSizeMB()
+			if err != nil {
+				return fmt.Errorf("read game log max file size: %w", err)
+			}
 			cutoff := s.cleaner.now().UTC().Add(-time.Duration(days) * 24 * time.Hour)
-			reporter.Progress("cleanup", 10, fmt.Sprintf("retention=%d cutoff=%s", days, cutoff.Format(time.RFC3339)))
-			cleanup, cleanupErr := s.cleaner.Cleanup(runCtx, id, days)
-			summary := fmt.Sprintf("retention=%d cutoff=%s Scanned=%d Expired=%d Deleted=%d Skipped=%d ReleasedBytes=%d Failures=%d", days, cutoff.Format(time.RFC3339), cleanup.Scanned, cleanup.Expired, cleanup.Deleted, cleanup.Skipped, cleanup.ReleasedBytes, len(cleanup.Failures))
+			reporter.Progress("cleanup", 10, fmt.Sprintf("retention=%d maxFileSizeMB=%d cutoff=%s", days, maxFileSizeMB, cutoff.Format(time.RFC3339)))
+			cleanup, cleanupErr := s.cleaner.Maintain(runCtx, id, days, int64(maxFileSizeMB)<<20)
+			summary := fmt.Sprintf("retention=%d maxFileSizeMB=%d cutoff=%s Scanned=%d Expired=%d Deleted=%d Trimmed=%d Skipped=%d ReleasedBytes=%d Failures=%d", days, maxFileSizeMB, cutoff.Format(time.RFC3339), cleanup.Scanned, cleanup.Expired, cleanup.Deleted, cleanup.Trimmed, cleanup.Skipped, cleanup.ReleasedBytes, len(cleanup.Failures))
 			reporter.Log("cleanup", joblogs.Info, summary)
 			if len(cleanup.Failures) > 0 {
 				reporter.Log("cleanup", joblogs.Error, "failure summary: "+strings.Join(cleanup.Failures, "; "))

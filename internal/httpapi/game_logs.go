@@ -111,7 +111,12 @@ func (s *Server) getGameLogSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, nil)
 		return
 	}
-	writeJSON(w, 200, map[string]int{"retention_days": d})
+	size, err := s.store.GameLogMaxFileSizeMB()
+	if err != nil {
+		writeJSON(w, 500, nil)
+		return
+	}
+	writeJSON(w, 200, map[string]int{"retention_days": d, "max_file_size_mb": size})
 }
 func decodeStrict(r *http.Request, v any) error {
 	d := json.NewDecoder(r.Body)
@@ -132,8 +137,9 @@ func (s *Server) putGameLogSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	var in struct {
 		RetentionDays int `json:"retention_days"`
+		MaxFileSizeMB int `json:"max_file_size_mb"`
 	}
-	if err := decodeStrict(r, &in); err != nil || in.RetentionDays < 1 || in.RetentionDays > 365 {
+	if err := decodeStrict(r, &in); err != nil || in.RetentionDays < store.MinGameLogRetentionDays || in.RetentionDays > store.MaxGameLogRetentionDays || in.MaxFileSizeMB < store.MinGameLogMaxFileSizeMB || in.MaxFileSizeMB > store.MaxGameLogMaxFileSizeMB {
 		writeJSON(w, 422, nil)
 		return
 	}
@@ -142,15 +148,20 @@ func (s *Server) putGameLogSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, nil)
 		return
 	}
-	if err := s.store.SetGameLogRetentionDays(in.RetentionDays); err != nil {
+	oldSize, err := s.store.GameLogMaxFileSizeMB()
+	if err != nil {
+		writeJSON(w, 500, nil)
+		return
+	}
+	if err := s.store.SetGameLogSettings(in.RetentionDays, in.MaxFileSizeMB); err != nil {
 		writeJSON(w, 422, nil)
 		return
 	}
 	result := gamelogs.EnqueueResult{Errors: []string{}, JobIDs: []string{}}
-	if in.RetentionDays < oldDays {
+	if in.RetentionDays < oldDays || in.MaxFileSizeMB < oldSize {
 		result = s.gameLogScheduler.EnqueueAll(context.Background())
 	}
-	writeJSON(w, 200, map[string]any{"retention_days": in.RetentionDays, "enqueue": result})
+	writeJSON(w, 200, map[string]any{"retention_days": in.RetentionDays, "max_file_size_mb": in.MaxFileSizeMB, "enqueue": result})
 }
 func (s *Server) cleanupGameLogs(w http.ResponseWriter, r *http.Request) {
 	if s.gameLogScheduler == nil {

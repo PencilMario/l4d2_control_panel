@@ -754,6 +754,48 @@ func TestGameLogRetentionDaysRejectsInvalidWithoutChangingValue(t *testing.T) {
 	}
 }
 
+func TestGameLogMaxFileSizeMBDefaultsPersistsAndAcceptsBoundaries(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	size, err := s.GameLogMaxFileSizeMB()
+	if err != nil || size != DefaultGameLogMaxFileSizeMB {
+		t.Fatalf("default size=%d err=%v", size, err)
+	}
+	for _, want := range []int{MinGameLogMaxFileSizeMB, 23, MaxGameLogMaxFileSizeMB} {
+		if err := s.SetGameLogMaxFileSizeMB(want); err != nil {
+			t.Fatalf("SetGameLogMaxFileSizeMB(%d): %v", want, err)
+		}
+		got, err := s.GameLogMaxFileSizeMB()
+		if err != nil || got != want {
+			t.Fatalf("size=%d err=%v, want %d", got, err, want)
+		}
+	}
+}
+
+func TestGameLogMaxFileSizeMBRejectsInvalidWithoutChangingValue(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.SetGameLogMaxFileSizeMB(30); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []int{0, 1025} {
+		if err := s.SetGameLogMaxFileSizeMB(value); err == nil {
+			t.Fatalf("size %d was accepted", value)
+		}
+	}
+	size, err := s.GameLogMaxFileSizeMB()
+	if err != nil || size != 30 {
+		t.Fatalf("size=%d err=%v; want preserved value 30", size, err)
+	}
+}
+
 func TestGameLogRetentionDaysSettingIsIndependentFromCompletedJobLimit(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {
