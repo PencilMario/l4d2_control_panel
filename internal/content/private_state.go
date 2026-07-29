@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
+	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/safepath"
 )
 
@@ -579,6 +581,7 @@ func (m *PrivateManager) applyPrivate(ctx context.Context, instanceID string, re
 
 func (m *PrivateManager) applyPrivateLocked(ctx context.Context, instanceID string, rebase, prune bool, reporters ...func(string)) error {
 	report := func(stage string) {
+		jobs.Logf(ctx, "private", joblogs.Info, "private apply stage instance=%s stage=%s", instanceID, stage)
 		if len(reporters) > 0 && reporters[0] != nil {
 			reporters[0](stage)
 		}
@@ -624,6 +627,7 @@ func (m *PrivateManager) applyPrivateLocked(ctx context.Context, instanceID stri
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
+	jobs.Logf(ctx, "private", joblogs.Info, "private apply started instance=%s rebase=%t prune=%t current_entries=%d previous_entries=%d affected_paths=%d", instanceID, rebase, prune, len(current), len(old.Entries), len(paths))
 	work := filepath.Join(base, "backups", "private", "apply-"+uuid.NewString())
 	report("snapshot")
 	journal := privateApplyJournal{Version: 1, InstanceID: instanceID, Stage: "prepared"}
@@ -689,6 +693,7 @@ func (m *PrivateManager) applyPrivateLocked(ctx context.Context, instanceID stri
 		return err
 	}
 	rollback := func(cause error) error {
+		jobs.Logf(ctx, "private", joblogs.Warn, "private apply rolling back instance=%s affected_paths=%d error=%q", instanceID, len(journal.Affected), cause.Error())
 		journal.Stage = "rolling_back"
 		_ = writeJSONAtomic(filepath.Join(work, "journal.json"), journal)
 		return errors.Join(cause, rollbackPrivateApply(work, base, journal))
@@ -732,13 +737,16 @@ func (m *PrivateManager) applyPrivateLocked(ctx context.Context, instanceID stri
 	report("apply-private")
 	for _, path := range paths {
 		entry, nowPrivate := current[path]
+		action := "unchanged"
 		if nowPrivate && entry.Kind == "directory" {
 			target, _ := safepath.Join(game, path)
 			err = os.MkdirAll(target, 0750)
+			action = "apply-directory"
 		} else if nowPrivate && entry.Kind == "file" {
 			source, _ := safepath.Join(workspace, path)
 			target, _ := safepath.Join(game, path)
 			err = copyFileExact(source, target)
+			action = "apply-file"
 		} else if oldEntry, wasPrivate := old.Entries[path]; wasPrivate && oldEntry.Kind == "file" {
 			target, _ := safepath.Join(game, path)
 			if link := lower.ControlledLinks[path]; link != "" {
@@ -754,6 +762,7 @@ func (m *PrivateManager) applyPrivateLocked(ctx context.Context, instanceID stri
 			}
 			delete(lower.Entries, path)
 			delete(lower.ControlledLinks, path)
+			action = "restore-file"
 		} else if oldEntry, wasPrivate := old.Entries[path]; wasPrivate && oldEntry.Kind == "directory" {
 			if !lower.Entries[path] {
 				target, _ := safepath.Join(game, path)
@@ -763,10 +772,12 @@ func (m *PrivateManager) applyPrivateLocked(ctx context.Context, instanceID stri
 				}
 			}
 			delete(lower.Entries, path)
+			action = "restore-directory"
 		}
 		if err != nil {
 			return rollback(err)
 		}
+		jobs.Logf(ctx, "private", joblogs.Info, "private path processed instance=%s action=%s path=%s", instanceID, action, path)
 		mutations++
 		if err = runPrivateApplyFailureHook(mutations); err != nil {
 			return rollback(err)
@@ -790,6 +801,7 @@ func (m *PrivateManager) applyPrivateLocked(ctx context.Context, instanceID stri
 	if err = createPrivateSnapshot(base, workspace, next, diff.Summary, journal.SnapshotID); err != nil {
 		return rollback(err)
 	}
+	jobs.Logf(ctx, "private", joblogs.Info, "private snapshot created instance=%s snapshot=%s added=%d modified=%d deleted=%d", instanceID, journal.SnapshotID, diff.Summary.Added, diff.Summary.Modified, diff.Summary.Deleted)
 	journal.Stage = "committed"
 	if err = writeJSONAtomic(filepath.Join(work, "journal.json"), journal); err != nil {
 		return rollback(err)
@@ -798,6 +810,7 @@ func (m *PrivateManager) applyPrivateLocked(ctx context.Context, instanceID stri
 		m.cleanupPrivate(base, "prune", func() error { return prunePrivateSnapshots(base, 20) })
 	}
 	m.cleanupPrivate(base, "work", func() error { return os.RemoveAll(work) })
+	jobs.Logf(ctx, "private", joblogs.Info, "private apply completed instance=%s mutations=%d snapshot=%s", instanceID, mutations, journal.SnapshotID)
 	return nil
 }
 

@@ -945,6 +945,7 @@ func (s *Server) updateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job, ok := s.startJob(w, r, instance.ID, "reconfigure", func(ctx context.Context, reporter jobs.Reporter) error {
+		jobs.Logf(ctx, "request", joblogs.Info, "instance reconfigure requested instance=%s package_changed=%t runtime_changed=%t package_id=%s source_id=%s", instance.ID, packageNeedsApply, runtimeChanged, input.PackageID, input.PackageSourceID)
 		if packageNeedsApply {
 			reporter.Progress("package", 20, "deploying selected package")
 			if input.PackageSourceID != "" {
@@ -986,7 +987,10 @@ func (s *Server) deleteInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	job, ok := s.startJob(w, r, id, "delete", func(ctx context.Context, _ jobs.Reporter) error { return s.lifecycle.Delete(ctx, id, input.DeleteData) })
+	job, ok := s.startJob(w, r, id, "delete", func(ctx context.Context, _ jobs.Reporter) error {
+		jobs.Logf(ctx, "request", joblogs.Info, "instance deletion requested instance=%s delete_data=%t", id, input.DeleteData)
+		return s.lifecycle.Delete(ctx, id, input.DeleteData)
+	})
 	if !ok {
 		return
 	}
@@ -1134,6 +1138,7 @@ func (s *Server) updateGame(w http.ResponseWriter, r *http.Request) {
 	}
 	id := chi.URLParam(r, "id")
 	job, ok := s.startJob(w, r, id, "game_update", func(ctx context.Context, reporter jobs.Reporter) error {
+		jobs.Logf(ctx, "request", joblogs.Info, "instance package update requested instance=%s reinstall_package=%t", id, options.Package)
 		reporter.Progress("reinstall", 10, "reinstalling selected instance components")
 		return s.gameUpdates.Reinstall(ctx, id, options)
 	})
@@ -1188,6 +1193,7 @@ func (s *Server) updateSharedGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job, ok := s.startJob(w, r, "", "game_update", func(ctx context.Context, reporter jobs.Reporter) error {
+		jobs.Logf(ctx, "request", joblogs.Info, "shared game update requested online_policy=%s", input.OnlinePolicy)
 		reporter.Progress("waiting_players", 5, "checking all dependent servers")
 		return s.sharedGameUpdates.Update(ctx, input.OnlinePolicy)
 	})
@@ -1213,6 +1219,7 @@ func (s *Server) migrateSharedGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job, ok := s.startJob(w, r, "", "shared_game_migration", func(ctx context.Context, reporter jobs.Reporter) error {
+		jobs.Logf(ctx, "request", joblogs.Info, "shared game migration requested confirm=%t", input.Confirm)
 		reporter.Progress("preflight", 5, "validating stopped instances and shared storage")
 		return s.sharedGameMigration.Migrate(ctx)
 	})
@@ -1263,6 +1270,7 @@ func (s *Server) fetchRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job, ok := s.startJob(w, r, "global", "release_fetch", func(ctx context.Context, reporter jobs.Reporter) error {
+		jobs.Logf(ctx, "request", joblogs.Info, "GitHub release fetch requested repository=%s asset_pattern=%q", input.Repository, input.AssetPattern)
 		reporter.Progress("release", 10, "checking GitHub Release")
 		token := ""
 		if s.secrets != nil {
@@ -1351,6 +1359,7 @@ func (s *Server) checkGitHubSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job, ok := s.startJob(w, r, "global", "release_fetch", func(ctx context.Context, reporter jobs.Reporter) error {
+		jobs.Logf(ctx, "request", joblogs.Info, "GitHub source check requested source_id=%s source_name=%q repository=%s asset_pattern=%q", source.ID, source.Name, source.Repository, source.AssetPattern)
 		reporter.Progress("release", 10, "checking GitHub Release")
 		token := ""
 		if s.secrets != nil {
@@ -1792,6 +1801,7 @@ func (s *Server) applyPrivate(w http.ResponseWriter, r *http.Request) {
 	}
 	id := chi.URLParam(r, "id")
 	job, ok := s.startJob(w, r, id, "apply_private", func(ctx context.Context, reporter jobs.Reporter) error {
+		jobs.Logf(ctx, "request", joblogs.Info, "private file apply requested instance=%s", id)
 		percent := map[string]int{"snapshot": 10, "restore-lower": 35, "apply-private": 65, "commit": 90}
 		return s.private.ApplyChangesWithProgress(ctx, id, func(stage string) { reporter.Progress(stage, percent[stage], stage) })
 	})
@@ -1867,6 +1877,7 @@ func (s *Server) playerAction(w http.ResponseWriter, r *http.Request) {
 	}
 	id := chi.URLParam(r, "id")
 	operation := func(ctx context.Context, _ jobs.Reporter) error {
+		jobs.Logf(ctx, "request", joblogs.Info, "player action requested instance=%s action=%s user_id=%d minutes=%d", id, input.Action, userID, input.Minutes)
 		switch input.Action {
 		case "kick":
 			return s.players.Kick(ctx, id, userID)
@@ -1970,6 +1981,7 @@ func (s *Server) instanceAction(w http.ResponseWriter, r *http.Request) {
 	}
 	id := chi.URLParam(r, "id")
 	operation := func(ctx context.Context, _ jobs.Reporter) error {
+		jobs.Logf(ctx, "request", joblogs.Info, "instance action requested instance=%s action=%s confirm=%t", id, input.Action, input.Confirm)
 		switch input.Action {
 		case "start":
 			return s.lifecycle.Start(ctx, id)

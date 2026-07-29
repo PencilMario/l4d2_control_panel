@@ -5,6 +5,8 @@ import (
 	"errors"
 	"github.com/not0721here/l4d2-control-panel/internal/a2s"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
+	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"net"
 	"strconv"
 	"time"
@@ -134,6 +136,7 @@ func (s *Service) Online(ctx context.Context, id string) (Snapshot, error) {
 	return Snapshot{Map: status.Match.Map, Players: result, MaxPlayers: status.Match.MaxPlayers, Match: status.Match}, nil
 }
 func (s *Service) Kick(ctx context.Context, id string, userID int) error {
+	jobs.Logf(ctx, "players", joblogs.Info, "player kick requested instance=%s user_id=%d", id, userID)
 	instance, err := s.instances.Instance(ctx, id)
 	if err != nil {
 		return err
@@ -142,9 +145,14 @@ func (s *Service) Kick(ctx context.Context, id string, userID int) error {
 	if err != nil {
 		return err
 	}
-	return s.console.PlayerCommand(ctx, instance.ContainerID, command)
+	if err := s.console.PlayerCommand(ctx, instance.ContainerID, command); err != nil {
+		return err
+	}
+	jobs.Logf(ctx, "players", joblogs.Info, "player kick completed instance=%s user_id=%d", id, userID)
+	return nil
 }
 func (s *Service) Ban(ctx context.Context, id string, userID, minutes int) error {
+	jobs.Logf(ctx, "players", joblogs.Info, "player ban requested instance=%s user_id=%d minutes=%d", id, userID, minutes)
 	instance, err := s.instances.Instance(ctx, id)
 	if err != nil {
 		return err
@@ -153,5 +161,9 @@ func (s *Service) Ban(ctx context.Context, id string, userID, minutes int) error
 	if err != nil {
 		return err
 	}
-	return s.console.PlayerCommand(ctx, instance.ContainerID, command)
+	if err := s.console.PlayerCommand(ctx, instance.ContainerID, command); err != nil {
+		return err
+	}
+	jobs.Logf(ctx, "players", joblogs.Info, "player ban completed instance=%s user_id=%d minutes=%d", id, userID, minutes)
+	return nil
 }

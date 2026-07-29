@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/players"
 )
@@ -49,6 +50,7 @@ func active(v domain.Instance) bool {
 }
 
 func (c *Coordinator) Register(ctx context.Context, publicationID string) (int, error) {
+	jobs.Logf(ctx, "vpk-restart", joblogs.Info, "registering deferred restart publication=%s", publicationID)
 	instances, err := c.repo.Instances(ctx)
 	if err != nil {
 		return 0, err
@@ -62,6 +64,7 @@ func (c *Coordinator) Register(ctx context.Context, publicationID string) (int, 
 			return count, err
 		}
 		count++
+		jobs.Logf(ctx, "vpk-restart", joblogs.Info, "deferred restart registered instance=%s container=%s publication=%s", instance.ID, instance.ContainerID, publicationID)
 	}
 	return count, nil
 }
@@ -100,11 +103,13 @@ func (c *Coordinator) checkOne(ctx context.Context, item domain.VPKRestart) erro
 	}
 	snapshot, queryErr := c.players.Online(ctx, item.InstanceID)
 	if queryErr == nil && len(snapshot.Players) > 0 {
+		jobs.Logf(ctx, "vpk-restart", joblogs.Info, "deferred restart waiting instance=%s players=%d publication=%s", item.InstanceID, len(snapshot.Players), item.PublicationID)
 		return c.repo.UpdateVPKRestart(ctx, item.InstanceID, "waiting", 0)
 	}
 	failures := item.Failures
 	if queryErr != nil {
 		failures++
+		jobs.Logf(ctx, "vpk-restart", joblogs.Warn, "player query failed instance=%s attempt=%d error=%q", item.InstanceID, failures, queryErr.Error())
 		if failures < 3 {
 			return c.repo.UpdateVPKRestart(ctx, item.InstanceID, "waiting", failures)
 		}
@@ -114,6 +119,7 @@ func (c *Coordinator) checkOne(ctx context.Context, item domain.VPKRestart) erro
 		return err
 	}
 	_, err = c.jobs.Start(context.WithoutCancel(ctx), item.InstanceID, "shared_vpk_restart", func(run context.Context, reporter jobs.Reporter) error {
+		jobs.Logf(run, "vpk-restart", joblogs.Info, "deferred restart task started instance=%s publication=%s expected_container=%s", item.InstanceID, item.PublicationID, item.ContainerID)
 		current, loadErr := c.repo.Instance(run, item.InstanceID)
 		if loadErr != nil || !active(current) {
 			_ = c.repo.UpdateVPKRestart(run, item.InstanceID, "cancelled", failures)
@@ -129,7 +135,11 @@ func (c *Coordinator) checkOne(ctx context.Context, item domain.VPKRestart) erro
 			_ = c.repo.UpdateVPKRestart(run, item.InstanceID, "retry", failures)
 			return restartErr
 		}
-		return c.repo.UpdateVPKRestart(run, item.InstanceID, "completed", failures)
+		if err := c.repo.UpdateVPKRestart(run, item.InstanceID, "completed", failures); err != nil {
+			return err
+		}
+		jobs.Logf(run, "vpk-restart", joblogs.Info, "deferred restart completed instance=%s publication=%s", item.InstanceID, item.PublicationID)
+		return nil
 	})
 	if err != nil {
 		_ = c.repo.UpdateVPKRestart(ctx, item.InstanceID, "retry", failures)

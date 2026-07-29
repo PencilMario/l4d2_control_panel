@@ -8,6 +8,7 @@ import (
 
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/maintenance"
 	"github.com/not0721here/l4d2-control-panel/internal/players"
@@ -54,6 +55,7 @@ func (d Dispatcher) Dispatch(ctx context.Context, task domain.ScheduledTask) err
 }
 
 func (d Dispatcher) run(ctx context.Context, task domain.ScheduledTask) error {
+	jobs.Logf(ctx, "schedule", joblogs.Info, "scheduled task started schedule=%s type=%s target=%s online_policy=%s", task.ID, task.Type, task.InstanceID, task.OnlinePolicy)
 	if task.Type == "game_update" {
 		if d.SharedGameUpdate == nil {
 			return errors.New("shared game update unavailable")
@@ -81,6 +83,7 @@ func (d Dispatcher) run(ctx context.Context, task domain.ScheduledTask) error {
 			return err
 		}
 	}
+	jobs.Logf(ctx, "schedule", joblogs.Info, "scheduled parameters package_id=%s source_id=%s repository=%s asset_pattern=%q retention_days=%d", input.PackageID, input.SourceID, input.Repository, input.AssetPattern, input.RetentionDays)
 	if task.Type == "release_check" && input.SourceID != "" {
 		if d.Sources == nil {
 			return errors.New("GitHub source not found")
@@ -89,6 +92,7 @@ func (d Dispatcher) run(ctx context.Context, task domain.ScheduledTask) error {
 		if err != nil {
 			return errors.New("GitHub source not found")
 		}
+		jobs.Logf(ctx, "schedule", joblogs.Info, "resolved GitHub source source_id=%s source_name=%q repository=%s asset_pattern=%q", source.ID, source.Name, source.Repository, source.AssetPattern)
 		input.Repository, input.AssetPattern = source.Repository, source.AssetPattern
 	}
 	if err := d.waitForPlayers(ctx, task); err != nil {
@@ -124,16 +128,20 @@ func (d Dispatcher) run(ctx context.Context, task domain.ScheduledTask) error {
 
 func (d Dispatcher) waitForPlayers(ctx context.Context, task domain.ScheduledTask) error {
 	if task.OnlinePolicy == "force" || task.InstanceID == "" || d.Players == nil {
+		jobs.Logf(ctx, "schedule", joblogs.Info, "player policy allows execution target=%s policy=%s", task.InstanceID, task.OnlinePolicy)
 		return nil
 	}
 	for {
 		snapshot, err := d.Players.Online(ctx, task.InstanceID)
 		if err == nil && len(snapshot.Players) == 0 {
+			jobs.Logf(ctx, "schedule", joblogs.Info, "player check passed target=%s players=0", task.InstanceID)
 			return nil
 		}
 		if task.OnlinePolicy == "skip" {
+			jobs.Logf(ctx, "schedule", joblogs.Warn, "scheduled task skipped target=%s players=%d query_error=%t", task.InstanceID, len(snapshot.Players), err != nil)
 			return errors.New("scheduled task skipped because players are online")
 		}
+		jobs.Logf(ctx, "schedule", joblogs.Info, "waiting for players target=%s players=%d query_error=%t retry_in=1m", task.InstanceID, len(snapshot.Players), err != nil)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
