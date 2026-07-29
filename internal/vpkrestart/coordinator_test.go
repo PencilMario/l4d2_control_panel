@@ -3,10 +3,12 @@ package vpkrestart
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/players"
 )
@@ -102,6 +104,24 @@ func (j *immediateJobs) Start(ctx context.Context, id, kind string, fn func(cont
 	return jobs.Job{}, fn(ctx, nil)
 }
 
+type restartLogSink struct {
+	mu       sync.Mutex
+	messages []string
+}
+
+func (s *restartLogSink) Append(_ context.Context, _, _ string, _ joblogs.Level, message string) (joblogs.Record, error) {
+	s.mu.Lock()
+	s.messages = append(s.messages, message)
+	s.mu.Unlock()
+	return joblogs.Record{}, nil
+}
+func (*restartLogSink) Finalize(context.Context, string) error { return nil }
+func (s *restartLogSink) joined() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return strings.Join(s.messages, "\n")
+}
+
 func running(id, container string) domain.Instance {
 	return domain.Instance{ID: id, ContainerID: container, DesiredState: domain.StateRunning, ActualState: domain.StateRunning}
 }
@@ -121,13 +141,21 @@ func TestRegisterMergesRunningInstancesAndSkipsStopped(t *testing.T) {
 
 func TestCheckRestartsWhenEmpty(t *testing.T) {
 	r := &memoryRepo{instances: []domain.Instance{running("a", "c1")}, items: map[string]domain.VPKRestart{"a": {InstanceID: "a", ContainerID: "c1", Status: "waiting"}}}
-	life, queue := &fakeLife{}, &immediateJobs{}
+	life := &fakeLife{}
+	sink := &restartLogSink{}
+	queue := jobs.NewManager(jobs.WithLogSink(sink))
 	c := New(r, &fakePlayers{counts: []int{0}}, life, queue)
 	if err := c.Check(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if life.restarts != 1 || queue.starts != 1 || r.items["a"].Status != "completed" {
-		t.Fatalf("life=%d jobs=%d item=%#v", life.restarts, queue.starts, r.items["a"])
+	if err := queue.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if life.restarts != 1 || r.items["a"].Status != "completed" {
+		t.Fatalf("life=%d item=%#v", life.restarts, r.items["a"])
+	}
+	if logs := sink.joined(); !strings.Contains(logs, "restart readiness confirmed instance=a reason=no-online-players query_failures=0") {
+		t.Fatalf("logs=%q", logs)
 	}
 }
 

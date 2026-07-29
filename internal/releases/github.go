@@ -129,7 +129,7 @@ func (c Client) FetchLatest(ctx context.Context, repository, assetPattern, token
 	if total <= 0 {
 		total = assetSize
 	}
-	written, err := jobs.CopyWithProgress(ctx, temporary, io.LimitReader(assetResponse.Body, limit+1), jobs.TransferOptions{Source: "github", Filename: assetName, Total: total})
+	written, err := jobs.CopyWithProgress(ctx, temporary, io.LimitReader(assetResponse.Body, limit+1), jobs.TransferOptions{Source: "github", Filename: assetName, Total: total, MaxBytes: limit})
 	if err != nil {
 		temporary.Close()
 		return FetchResult{}, err

@@ -3,6 +3,7 @@ package gamelogs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,7 +136,7 @@ func TestCleanupJobReadsCurrentRetentionAndReportsSummaryOnPartialFailure(t *tes
 	jm := jobs.NewPersistentManager(repo, jobs.WithLogSink(logs))
 	cleaner := NewManager(root, Options{Now: func() time.Time { return now }, Remove: func(path string, _ os.FileInfo) error {
 		if strings.HasSuffix(path, "bad.log") {
-			return errors.New("denied")
+			return fmt.Errorf("blocked below %s", root)
 		}
 		return os.Remove(path)
 	}})
@@ -159,6 +160,12 @@ func TestCleanupJobReadsCurrentRetentionAndReportsSummaryOnPartialFailure(t *tes
 		t.Fatalf("trimmed size=%d err=%v", len(trimmed), err)
 	}
 	joined := strings.Join(logs.messages, "\n")
+	if strings.Contains(joined, root) {
+		t.Fatalf("logs leaked managed root %q:\n%s", root, joined)
+	}
+	if !strings.Contains(joined, "<managed-root>") {
+		t.Fatalf("logs did not sanitize managed root:\n%s", joined)
+	}
 	for _, want := range []string{
 		"retention=7", "maxFileSizeMB=1", "cutoff=2026-07-11T12:00:00Z",
 		"deleted file=game/old.log", "size=3 bytes", "released=3 bytes",

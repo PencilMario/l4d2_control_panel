@@ -3,6 +3,8 @@ package jobs
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
@@ -34,4 +36,19 @@ func FormatDuration(value time.Duration) string {
 		value = 0
 	}
 	return value.Round(time.Millisecond).String()
+}
+
+func SafeError(err error, hidden ...string) string {
+	if err == nil {
+		return ""
+	}
+	message := err.Error()
+	for _, value := range hidden {
+		if value == "" {
+			continue
+		}
+		message = strings.ReplaceAll(message, value, "<managed-root>")
+		message = strings.ReplaceAll(message, filepath.ToSlash(value), "<managed-root>")
+	}
+	return message
 }

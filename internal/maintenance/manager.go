@@ -167,7 +167,7 @@ func (m *Manager) Cleanup(ctx context.Context, retention time.Duration) (int, er
 					released += info.Size()
 					jobs.Logf(ctx, "cleanup", joblogs.Info, "deleted file=%s size=%s released=%s", label, jobs.FormatBytes(info.Size()), jobs.FormatBytes(info.Size()))
 				} else {
-					jobs.Logf(ctx, "cleanup", joblogs.Error, "delete failed file=%s size=%s error=%q", label, jobs.FormatBytes(info.Size()), removeErr.Error())
+					jobs.Logf(ctx, "cleanup", joblogs.Error, "delete failed file=%s size=%s error=%q", label, jobs.FormatBytes(info.Size()), jobs.SafeError(removeErr, path, m.root))
 				}
 			}
 			return nil

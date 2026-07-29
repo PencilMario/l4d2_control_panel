@@ -158,7 +158,7 @@ func (m *Manager) maintain(ctx context.Context, instanceID string, retentionDays
 				removed, err := m.removeIfSame(path, info)
 				if err != nil {
 					result.Failures = append(result.Failures, label+": delete failed")
-					jobs.Logf(ctx, "cleanup", joblogs.Error, "delete failed file=%s size=%s error=%q", label, jobs.FormatBytes(info.Size()), err.Error())
+					jobs.Logf(ctx, "cleanup", joblogs.Error, "delete failed file=%s size=%s error=%q", label, jobs.FormatBytes(info.Size()), jobs.SafeError(err, path, m.root))
 					return nil
 				}
 				if !removed {
@@ -175,7 +175,7 @@ func (m *Manager) maintain(ctx context.Context, instanceID string, retentionDays
 				trimmed, released, err := m.trimIfSame(path, info, maxFileSizeBytes)
 				if err != nil {
 					result.Failures = append(result.Failures, label+": trim failed")
-					jobs.Logf(ctx, "cleanup", joblogs.Error, "trim failed file=%s before=%s target=%s error=%q", label, jobs.FormatBytes(info.Size()), jobs.FormatBytes(maxFileSizeBytes), err.Error())
+					jobs.Logf(ctx, "cleanup", joblogs.Error, "trim failed file=%s before=%s target=%s error=%q", label, jobs.FormatBytes(info.Size()), jobs.FormatBytes(maxFileSizeBytes), jobs.SafeError(err, path, m.root))
 					return nil
 				}
 				if !trimmed {

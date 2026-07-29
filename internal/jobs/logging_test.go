@@ -2,6 +2,8 @@ package jobs
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,4 +41,13 @@ func TestLogfUsesTaskReporterAndNoopsWithoutOne(t *testing.T) {
 		t.Fatalf("reporter=%#v", reporter)
 	}
 	Logf(context.Background(), "download", joblogs.Info, "ignored")
+}
+
+func TestSafeErrorHidesManagedPaths(t *testing.T) {
+	root := `C:\panel\data`
+	path := root + `\instances\abc\backups\old.tar.gz`
+	got := SafeError(errors.New("remove "+path+": access denied"), path, root)
+	if strings.Contains(got, root) || strings.Contains(got, path) || !strings.Contains(got, "access denied") {
+		t.Fatalf("SafeError=%q", got)
+	}
 }

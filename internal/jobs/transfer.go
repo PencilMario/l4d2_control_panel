@@ -14,6 +14,7 @@ type TransferOptions struct {
 	Source   string
 	Filename string
 	Total    int64
+	MaxBytes int64
 	Interval time.Duration
 	Now      func() time.Time
 }
@@ -52,6 +53,9 @@ func CopyWithProgress(ctx context.Context, destination io.Writer, source io.Read
 			}
 			if count != read {
 				return written, transferError(io.ErrShortWrite, written)
+			}
+			if options.MaxBytes > 0 && written > options.MaxBytes {
+				return written, transferError(fmt.Errorf("size limit exceeded: maximum %s", FormatBytes(options.MaxBytes)), written)
 			}
 			now := options.Now()
 			if written > lastReportedBytes && now.Sub(lastReportedAt) >= options.Interval {

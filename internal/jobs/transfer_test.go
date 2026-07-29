@@ -94,6 +94,19 @@ func TestTransferErrorIncludesTransferredBytes(t *testing.T) {
 	}
 }
 
+func TestTransferOverLimitFailsWithoutCompletionLog(t *testing.T) {
+	now := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
+	reporter := &collectingReporter{}
+	reader := &advancingReader{clock: &now, step: time.Second, data: []byte("abcd"), chunk: 4}
+	written, err := CopyWithProgress(transferContext(reporter), io.Discard, reader, TransferOptions{
+		Source: "github", Filename: "plugins.zip", Total: 4, MaxBytes: 3, Now: func() time.Time { return now },
+	})
+	joined := strings.Join(reporter.messages, "\n")
+	if written != 4 || err == nil || !strings.Contains(err.Error(), "size limit") || strings.Contains(joined, "download completed") {
+		t.Fatalf("written=%d err=%v logs=%q", written, err, joined)
+	}
+}
+
 type collectingReporter struct{ messages []string }
 
 func (*collectingReporter) Progress(string, int, string) {}

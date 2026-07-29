@@ -103,13 +103,13 @@ func (c *Coordinator) checkOne(ctx context.Context, item domain.VPKRestart) erro
 	}
 	snapshot, queryErr := c.players.Online(ctx, item.InstanceID)
 	if queryErr == nil && len(snapshot.Players) > 0 {
-		jobs.Logf(ctx, "vpk-restart", joblogs.Info, "deferred restart waiting instance=%s players=%d publication=%s", item.InstanceID, len(snapshot.Players), item.PublicationID)
 		return c.repo.UpdateVPKRestart(ctx, item.InstanceID, "waiting", 0)
 	}
 	failures := item.Failures
+	readinessReason := "no-online-players"
 	if queryErr != nil {
 		failures++
-		jobs.Logf(ctx, "vpk-restart", joblogs.Warn, "player query failed instance=%s attempt=%d error=%q", item.InstanceID, failures, queryErr.Error())
+		readinessReason = "player-query-failure-threshold"
 		if failures < 3 {
 			return c.repo.UpdateVPKRestart(ctx, item.InstanceID, "waiting", failures)
 		}
@@ -119,6 +119,7 @@ func (c *Coordinator) checkOne(ctx context.Context, item domain.VPKRestart) erro
 		return err
 	}
 	_, err = c.jobs.Start(context.WithoutCancel(ctx), item.InstanceID, "shared_vpk_restart", func(run context.Context, reporter jobs.Reporter) error {
+		jobs.Logf(run, "vpk-restart", joblogs.Info, "restart readiness confirmed instance=%s reason=%s query_failures=%d publication=%s", item.InstanceID, readinessReason, failures, item.PublicationID)
 		jobs.Logf(run, "vpk-restart", joblogs.Info, "deferred restart task started instance=%s publication=%s expected_container=%s", item.InstanceID, item.PublicationID, item.ContainerID)
 		current, loadErr := c.repo.Instance(run, item.InstanceID)
 		if loadErr != nil || !active(current) {
