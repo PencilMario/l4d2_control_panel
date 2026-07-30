@@ -1,20 +1,38 @@
 package content
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"github.com/google/uuid"
-	archivecheck "github.com/not0721here/l4d2-control-panel/internal/archive"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
+	archivecheck "github.com/not0721here/l4d2-control-panel/internal/archive"
+	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
+	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 )
 
-type PackageManager struct{ directory string }
+type PackageManager struct {
+	directory string
+	remove    func(string) error
+}
+
+type PackageCleanupResult struct {
+	Scanned        int
+	KeptLatest     int
+	KeptReferenced int
+	Deleted        int
+	ReleasedBytes  int64
+	Failed         int
+}
 type PackageVersion struct {
 	ID               string               `json:"id"`
 	Filename         string               `json:"filename"`
@@ -58,18 +76,71 @@ func (m *PackageManager) LatestSourceVersion(repository string) (PackageVersion,
 	}
 	return latest, nil
 }
-func (m *PackageManager) RemoveSourceVersionsExcept(repository, keepID string) error {
-	// Package cleanup must know which versions are still referenced by instances.
-	// The package manager does not own that information, so retain old releases.
-	_, _ = repository, keepID
-	return nil
-}
 func NewPackageManager(root string) (*PackageManager, error) {
 	directory := filepath.Join(root, "packages", "releases")
 	if err := os.MkdirAll(directory, 0750); err != nil {
 		return nil, err
 	}
-	return &PackageManager{directory: directory}, nil
+	return &PackageManager{directory: directory, remove: os.Remove}, nil
+}
+
+func (m *PackageManager) CleanupUnreferencedSourceVersions(ctx context.Context, protected map[string]bool) (PackageCleanupResult, error) {
+	items, err := m.List()
+	if err != nil {
+		return PackageCleanupResult{}, err
+	}
+	result := PackageCleanupResult{Scanned: len(items)}
+	latest := make(map[string]PackageVersion)
+	for _, item := range items {
+		if item.SourceRepository == "" {
+			continue
+		}
+		current, ok := latest[item.SourceRepository]
+		if !ok || item.CreatedAt.After(current.CreatedAt) || (item.CreatedAt.Equal(current.CreatedAt) && item.ID > current.ID) {
+			latest[item.SourceRepository] = item
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
+	var cleanupErr error
+	for _, item := range items {
+		if err := ctx.Err(); err != nil {
+			return result, errors.Join(cleanupErr, err)
+		}
+		if item.SourceRepository == "" {
+			continue
+		}
+		if protected[item.ID] {
+			result.KeptReferenced++
+			continue
+		}
+		if latest[item.SourceRepository].ID == item.ID {
+			result.KeptLatest++
+			continue
+		}
+		var size int64
+		if info, statErr := os.Stat(item.ArchivePath); statErr == nil {
+			size = info.Size()
+		}
+		if err := m.remove(item.ArchivePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			result.Failed++
+			safeErr := jobs.SafeError(err, item.ArchivePath, m.directory)
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("delete package %s archive: %s", item.ID, safeErr))
+			jobs.Logf(ctx, "cleanup", joblogs.Error, "package delete failed package_id=%s repository=%s version=%s archive=%s error=%q", item.ID, item.SourceRepository, item.Version, filepath.Base(item.ArchivePath), safeErr)
+			continue
+		}
+		result.ReleasedBytes += size
+		metadata := filepath.Join(m.directory, item.ID+".json")
+		if err := m.remove(metadata); err != nil && !errors.Is(err, os.ErrNotExist) {
+			result.Failed++
+			safeErr := jobs.SafeError(err, metadata, m.directory)
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("delete package %s metadata: %s", item.ID, safeErr))
+			jobs.Logf(ctx, "cleanup", joblogs.Error, "package metadata delete failed package_id=%s repository=%s version=%s error=%q", item.ID, item.SourceRepository, item.Version, safeErr)
+			continue
+		}
+		result.Deleted++
+		jobs.Logf(ctx, "cleanup", joblogs.Info, "deleted package package_id=%s repository=%s version=%s archive=%s released=%s", item.ID, item.SourceRepository, item.Version, filepath.Base(item.ArchivePath), jobs.FormatBytes(size))
+	}
+	return result, cleanupErr
 }
 func (m *PackageManager) CreateDownloadTemp() (*os.File, error) {
 	directory := filepath.Join(filepath.Dir(m.directory), "uploads")

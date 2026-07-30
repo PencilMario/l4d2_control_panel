@@ -141,6 +141,8 @@ describe("SchedulesPage", () => {
     expect(dialog).toHaveTextContent("在线玩家策略");
     expect(dialog).toHaveTextContent("不会取消已经排队或正在执行的任务");
     expect(dialog).toHaveTextContent("保留天数");
+    expect(dialog).toHaveTextContent("未被实例引用且不是对应 GitHub 仓库最新版的历史插件包");
+    expect(dialog).toHaveTextContent("常规插件包");
 
     await user.click(within(dialog).getByRole("button", { name: "关闭任务说明" }));
     expect(screen.queryByRole("dialog", { name: "计划任务类型说明" })).not.toBeInTheDocument();

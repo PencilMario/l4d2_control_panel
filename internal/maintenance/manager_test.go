@@ -1,7 +1,12 @@
 package maintenance
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
+	"errors"
+	"github.com/not0721here/l4d2-control-panel/internal/content"
+	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"os"
@@ -11,6 +16,15 @@ import (
 	"testing"
 	"time"
 )
+
+type cleanupInstanceSource struct {
+	items []domain.Instance
+	err   error
+}
+
+func (s cleanupInstanceSource) Instances(context.Context) ([]domain.Instance, error) {
+	return s.items, s.err
+}
 
 type maintenanceLogSink struct {
 	mu       sync.Mutex
@@ -129,4 +143,112 @@ func TestBackupAndCleanupLogArchiveNamesSizesAndRemovedFiles(t *testing.T) {
 	if strings.Contains(logs, root) {
 		t.Fatalf("logs leaked root path %q: %q", root, logs)
 	}
+}
+
+func TestCleanupPackagesProtectsSelectedAppliedAndLatest(t *testing.T) {
+	root := t.TempDir()
+	packages, err := content.NewPackageManager(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := maintenancePackageZip(t)
+	created := time.Date(2026, 7, 30, 1, 0, 0, 0, time.UTC)
+	add := func(version string, at time.Time) content.PackageVersion {
+		t.Helper()
+		item, err := packages.AddUpload("plugins.zip", version, bytes.NewReader(raw), int64(len(raw)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		item.SourceRepository = "owner/repo"
+		item.CreatedAt = at
+		if err := packages.UpdateMetadata(item); err != nil {
+			t.Fatal(err)
+		}
+		return item
+	}
+	old := add("old", created)
+	selected := add("selected", created.Add(time.Hour))
+	applied := add("applied", created.Add(2*time.Hour))
+	latest := add("latest", created.Add(3*time.Hour))
+	instances := cleanupInstanceSource{items: []domain.Instance{
+		{SelectedPackageID: selected.ID},
+		{PackageVersion: applied.ID},
+	}}
+	manager := New(root, WithPackageCleanup(instances, packages))
+	sink := &maintenanceLogSink{}
+	jobManager := jobs.NewManager(jobs.WithLogSink(sink))
+	if _, err := jobManager.Start(context.Background(), "", "cleanup", func(ctx context.Context, _ jobs.Reporter) error {
+		_, err := manager.Cleanup(ctx, 30*24*time.Hour)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := jobManager.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := packages.Get(old.ID); !os.IsNotExist(err) {
+		t.Fatalf("unreferenced old package retained: %v", err)
+	}
+	for _, kept := range []content.PackageVersion{selected, applied, latest} {
+		if _, err := packages.Get(kept.ID); err != nil {
+			t.Fatalf("protected package %s removed: %v", kept.ID, err)
+		}
+	}
+	logs := sink.joined()
+	for _, want := range []string{"deleted package package_id=" + old.ID, "repository=owner/repo", "package cleanup completed scanned=4", "kept_latest=1", "kept_referenced=2", "deleted=1"} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("logs=%q missing %q", logs, want)
+		}
+	}
+	if strings.Contains(logs, root) {
+		t.Fatalf("logs leaked root path %q: %q", root, logs)
+	}
+}
+
+func TestCleanupPackagesDoesNotDeleteWhenInstanceReadFails(t *testing.T) {
+	root := t.TempDir()
+	packages, err := content.NewPackageManager(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := maintenancePackageZip(t)
+	var old content.PackageVersion
+	for index := 0; index < 2; index++ {
+		item, err := packages.AddUpload("plugins.zip", string(rune('1'+index)), bytes.NewReader(raw), int64(len(raw)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		item.SourceRepository = "owner/repo"
+		item.CreatedAt = time.Date(2026, 7, 30, index+1, 0, 0, 0, time.UTC)
+		if err := packages.UpdateMetadata(item); err != nil {
+			t.Fatal(err)
+		}
+		if index == 0 {
+			old = item
+		}
+	}
+	manager := New(root, WithPackageCleanup(cleanupInstanceSource{err: errors.New("database unavailable")}, packages))
+	if _, err := manager.Cleanup(context.Background(), 30*24*time.Hour); err == nil {
+		t.Fatal("cleanup succeeded after instance read failure")
+	}
+	if _, err := packages.Get(old.ID); err != nil {
+		t.Fatalf("package deleted after instance read failure: %v", err)
+	}
+}
+
+func maintenancePackageZip(t *testing.T) []byte {
+	t.Helper()
+	var raw bytes.Buffer
+	writer := zip.NewWriter(&raw)
+	entry, err := writer.Create("cfg/plugin.cfg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return raw.Bytes()
 }

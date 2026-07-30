@@ -151,9 +151,6 @@ func (c Client) FetchLatest(ctx context.Context, repository, assetPattern, token
 	if err := packages.UpdateMetadata(item); err != nil {
 		return FetchResult{}, err
 	}
-	if err := packages.RemoveSourceVersionsExcept(repository, item.ID); err != nil {
-		return FetchResult{}, err
-	}
 	jobs.Logf(ctx, "github", joblogs.Info, "package downloaded repository=%s tag=%s asset=%s package_id=%s size=%s", repository, found.TagName, assetName, item.ID, jobs.FormatBytes(written))
 	return FetchResult{Package: item, Updated: true}, nil
 }

@@ -134,7 +134,7 @@ const TASK_TYPES: Record<ScheduleTaskType, TaskTypeDefinition> = {
     usesPlayerPolicy: false,
     target: "Panel 管理的数据根目录；这是全局任务。",
     steps:
-      "删除保留期之前的实例 backups 文件，以及包上传目录中遗留的 .part 和 .upload 文件；当前私有工作区、内容包和数据库不在清理范围内。",
+      "删除保留期之前的实例 backups 文件、包上传目录中遗留的 .part 和 .upload 文件，以及未被实例引用且不是对应 GitHub 仓库最新版的历史插件包；常规插件包、当前私有工作区和数据库不在清理范围内。",
     interruption: "不停止或重启实例，也不检查在线玩家。",
     parameters: "需要设置保留天数；缺失或小于 1 时执行器按 30 天处理。",
     caution: "按文件修改时间判断且不可撤销；删除的备份不会进入回收站。",

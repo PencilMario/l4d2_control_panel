@@ -13,13 +13,38 @@ import (
 	"strings"
 	"time"
 
+	"github.com/not0721here/l4d2-control-panel/internal/content"
+	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 )
 
-type Manager struct{ root string }
+type instanceSource interface {
+	Instances(context.Context) ([]domain.Instance, error)
+}
 
-func New(root string) *Manager { return &Manager{root: root} }
+type Option func(*Manager)
+
+type Manager struct {
+	root      string
+	instances instanceSource
+	packages  *content.PackageManager
+}
+
+func WithPackageCleanup(instances instanceSource, packages *content.PackageManager) Option {
+	return func(manager *Manager) {
+		manager.instances = instances
+		manager.packages = packages
+	}
+}
+
+func New(root string, options ...Option) *Manager {
+	manager := &Manager{root: root}
+	for _, option := range options {
+		option(manager)
+	}
+	return manager
+}
 func (m *Manager) Backup(ctx context.Context, instanceID string) (string, error) {
 	if filepath.Base(instanceID) != instanceID || instanceID == "" {
 		return "", errors.New("invalid instance id")
@@ -172,6 +197,27 @@ func (m *Manager) Cleanup(ctx context.Context, retention time.Duration) (int, er
 			}
 			return nil
 		})
+	}
+	if m.instances != nil && m.packages != nil {
+		instances, err := m.instances.Instances(ctx)
+		if err != nil {
+			jobs.Logf(ctx, "cleanup", joblogs.Error, "package cleanup instance scan failed error=%q", err.Error())
+			return removed, err
+		}
+		protected := make(map[string]bool, len(instances)*2)
+		for _, instance := range instances {
+			if instance.SelectedPackageID != "" {
+				protected[instance.SelectedPackageID] = true
+			}
+			if instance.PackageVersion != "" {
+				protected[instance.PackageVersion] = true
+			}
+		}
+		packageResult, err := m.packages.CleanupUnreferencedSourceVersions(ctx, protected)
+		jobs.Logf(ctx, "cleanup", joblogs.Info, "package cleanup completed scanned=%d kept_latest=%d kept_referenced=%d deleted=%d released=%s failed=%d", packageResult.Scanned, packageResult.KeptLatest, packageResult.KeptReferenced, packageResult.Deleted, jobs.FormatBytes(packageResult.ReleasedBytes), packageResult.Failed)
+		if err != nil {
+			return removed, err
+		}
 	}
 	jobs.Logf(ctx, "cleanup", joblogs.Info, "cleanup completed removed=%d released=%s", removed, jobs.FormatBytes(released))
 	return removed, ctx.Err()
