@@ -14,6 +14,7 @@
 - RED content test: `go test ./internal/content -run TestCleanupUnreferencedSourceVersions -count=1` failed because `CleanupUnreferencedSourceVersions` was undefined.
 - RED maintenance test: `go test ./internal/maintenance -run TestCleanupPackages -count=1` failed because `WithPackageCleanup` was undefined.
 - Target regression: `go test ./internal/content ./internal/releases ./internal/maintenance ./internal/automation ./cmd/panel -count=1` passed after final edits.
+- Review repair regression: `go test ./internal/releases ./internal/content ./internal/maintenance ./internal/automation ./cmd/panel -count=1` passed after adding dynamic mid-pair cancellation, metadata-ID validation, scan/repository path redaction, and v1-to-v2 synchronization retention coverage.
 - Focused UI regression: `npm test -- --run src/app/SchedulesPage.test.tsx` passed 7 tests after final edits.
 - Full frontend regression: `npm test -- --run` passed 191 tests in 15 files.
 - Frontend production compile: `npm run build:web` completed successfully; Vite emitted only the existing large-chunk advisory.
@@ -29,4 +30,5 @@
 - Schedule/API payloads and retention semantics remain unchanged.
 - No regular package deletion path was added.
 - The synchronization-time no-op owner retired; scheduled maintenance is the only cleanup owner.
+- Advisory review findings were repaired: cancellation is rechecked between archive and metadata removal; malformed metadata IDs fail before deletion; scan and instance-source errors redact managed roots; release synchronization explicitly proves prior-version retention.
 - Decision: verification evidence is sufficient for the requested behavior, with the aggregate Windows suite exit retained as residual environmental risk.

@@ -87,7 +87,7 @@ func NewPackageManager(root string) (*PackageManager, error) {
 func (m *PackageManager) CleanupUnreferencedSourceVersions(ctx context.Context, protected map[string]bool) (PackageCleanupResult, error) {
 	items, err := m.List()
 	if err != nil {
-		return PackageCleanupResult{}, err
+		return PackageCleanupResult{}, errors.New(jobs.SafeError(err, m.directory))
 	}
 	result := PackageCleanupResult{Scanned: len(items)}
 	latest := make(map[string]PackageVersion)
@@ -129,6 +129,9 @@ func (m *PackageManager) CleanupUnreferencedSourceVersions(ctx context.Context, 
 			continue
 		}
 		result.ReleasedBytes += size
+		if err := ctx.Err(); err != nil {
+			return result, errors.Join(cleanupErr, err)
+		}
 		metadata := filepath.Join(m.directory, item.ID+".json")
 		if err := m.remove(metadata); err != nil && !errors.Is(err, os.ErrNotExist) {
 			result.Failed++
@@ -199,6 +202,9 @@ func (m *PackageManager) Get(id string) (PackageVersion, error) {
 	var item PackageVersion
 	if err := json.Unmarshal(raw, &item); err != nil {
 		return PackageVersion{}, err
+	}
+	if item.ID != id {
+		return PackageVersion{}, errors.New("package metadata id mismatch")
 	}
 	item.ArchivePath = filepath.Join(m.directory, id+".zip")
 	return item, nil

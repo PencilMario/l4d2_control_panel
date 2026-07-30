@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -238,5 +239,84 @@ func TestCleanupUnreferencedSourceVersionsHonorsCanceledContext(t *testing.T) {
 	}
 	if _, err := manager.Get(old.ID); err != nil {
 		t.Fatalf("canceled cleanup removed package: %v", err)
+	}
+}
+
+func TestCleanupUnreferencedSourceVersionsStopsBetweenArchiveAndMetadata(t *testing.T) {
+	manager, _ := NewPackageManager(t.TempDir())
+	raw := packageZip(t, map[string]string{"cfg/plugin.cfg": "x"})
+	var old PackageVersion
+	for index := 0; index < 2; index++ {
+		item, err := manager.AddUpload("plugins.zip", string(rune('1'+index)), bytes.NewReader(raw), int64(len(raw)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		item.SourceRepository = "owner/repo"
+		item.CreatedAt = time.Date(2026, 7, 30, index+1, 0, 0, 0, time.UTC)
+		if err := manager.UpdateMetadata(item); err != nil {
+			t.Fatal(err)
+		}
+		if index == 0 {
+			old = item
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	originalRemove := manager.remove
+	manager.remove = func(path string) error {
+		err := originalRemove(path)
+		if path == old.ArchivePath {
+			cancel()
+		}
+		return err
+	}
+	result, err := manager.CleanupUnreferencedSourceVersions(ctx, nil)
+	if !errors.Is(err, context.Canceled) || result.Deleted != 0 || result.ReleasedBytes != old.Size {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if _, err := os.Stat(filepath.Join(manager.directory, old.ID+".json")); err != nil {
+		t.Fatalf("metadata removed after cancellation: %v", err)
+	}
+}
+
+func TestCleanupUnreferencedSourceVersionsRejectsMismatchedMetadataID(t *testing.T) {
+	manager, _ := NewPackageManager(t.TempDir())
+	raw := packageZip(t, map[string]string{"cfg/plugin.cfg": "x"})
+	first, err := manager.AddUpload("plugins.zip", "v1", bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.AddUpload("plugins.zip", "v2", bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.ID = second.ID
+	encoded, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstMetadata := filepath.Join(manager.directory, strings.TrimSuffix(filepath.Base(first.ArchivePath), ".zip")+".json")
+	// first.ArchivePath still identifies the original archive even after corrupting its decoded ID.
+	if err := os.WriteFile(firstMetadata, encoded, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.CleanupUnreferencedSourceVersions(context.Background(), nil); err == nil {
+		t.Fatal("cleanup accepted metadata whose ID did not match its filename")
+	}
+	if _, err := os.Stat(second.ArchivePath); err != nil {
+		t.Fatalf("unrelated archive removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(manager.directory, second.ID+".json")); err != nil {
+		t.Fatalf("unrelated metadata removed: %v", err)
+	}
+}
+
+func TestCleanupUnreferencedSourceVersionsRedactsScanPath(t *testing.T) {
+	manager, _ := NewPackageManager(t.TempDir())
+	if err := os.RemoveAll(manager.directory); err != nil {
+		t.Fatal(err)
+	}
+	_, err := manager.CleanupUnreferencedSourceVersions(context.Background(), nil)
+	if err == nil || strings.Contains(err.Error(), manager.directory) {
+		t.Fatalf("err=%q", err)
 	}
 }

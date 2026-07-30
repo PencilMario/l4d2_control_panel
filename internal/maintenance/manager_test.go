@@ -227,9 +227,21 @@ func TestCleanupPackagesDoesNotDeleteWhenInstanceReadFails(t *testing.T) {
 			old = item
 		}
 	}
-	manager := New(root, WithPackageCleanup(cleanupInstanceSource{err: errors.New("database unavailable")}, packages))
-	if _, err := manager.Cleanup(context.Background(), 30*24*time.Hour); err == nil {
-		t.Fatal("cleanup succeeded after instance read failure")
+	manager := New(root, WithPackageCleanup(cleanupInstanceSource{err: errors.New("read " + root + ": database unavailable")}, packages))
+	sink := &maintenanceLogSink{}
+	jobManager := jobs.NewManager(jobs.WithLogSink(sink))
+	if _, err := jobManager.Start(context.Background(), "", "cleanup", func(ctx context.Context, _ jobs.Reporter) error {
+		_, err := manager.Cleanup(ctx, 30*24*time.Hour)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := jobManager.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	logs := sink.joined()
+	if !strings.Contains(logs, "database unavailable") || strings.Contains(logs, root) {
+		t.Fatalf("unsafe failure logs=%q", logs)
 	}
 	if _, err := packages.Get(old.ID); err != nil {
 		t.Fatalf("package deleted after instance read failure: %v", err)

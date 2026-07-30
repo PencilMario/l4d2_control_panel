@@ -51,6 +51,43 @@ func TestFetchLatestSelectsAssetAndStoresPackage(t *testing.T) {
 	}
 }
 
+func TestFetchLatestRetainsPreviousReleaseUntilMaintenanceCleanup(t *testing.T) {
+	raw := packageBytes()
+	tag := "v1.0"
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/releases/latest":
+			fmt.Fprintf(w, `{"tag_name":%q,"assets":[{"name":"plugins.zip","browser_download_url":%q}]}`, tag, server.URL+"/plugins.zip")
+		case "/plugins.zip":
+			w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
+			_, _ = w.Write(raw)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	manager, _ := content.NewPackageManager(t.TempDir())
+	client := Client{BaseURL: server.URL, HTTP: server.Client(), MaxBytes: 1 << 20}
+	first, err := client.FetchLatest(context.Background(), "owner/repo", `^plugins\.zip$`, "", manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tag = "v2.0"
+	second, err := client.FetchLatest(context.Background(), "owner/repo", `^plugins\.zip$`, "", manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Updated || !second.Updated || first.Package.ID == second.Package.ID {
+		t.Fatalf("first=%+v second=%+v", first, second)
+	}
+	for _, item := range []content.PackageVersion{first.Package, second.Package} {
+		if _, err := manager.Get(item.ID); err != nil {
+			t.Fatalf("synchronized package %s removed before maintenance: %v", item.ID, err)
+		}
+	}
+}
+
 func TestInterruptedReleaseDownloadUsesManagedTemporaryArtifact(t *testing.T) {
 	root := t.TempDir()
 	manager, _ := content.NewPackageManager(root)

@@ -167,7 +167,7 @@ func (m *Manager) Cleanup(ctx context.Context, retention time.Duration) (int, er
 	for _, root := range roots {
 		_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
-				jobs.Logf(ctx, "cleanup", joblogs.Warn, "cleanup inspect failed root=%s error=%q", filepath.Base(root), err.Error())
+				jobs.Logf(ctx, "cleanup", joblogs.Warn, "cleanup inspect failed root=%s error=%q", filepath.Base(root), jobs.SafeError(err, root, m.root))
 				return nil
 			}
 			if ctx.Err() != nil {
@@ -201,8 +201,9 @@ func (m *Manager) Cleanup(ctx context.Context, retention time.Duration) (int, er
 	if m.instances != nil && m.packages != nil {
 		instances, err := m.instances.Instances(ctx)
 		if err != nil {
-			jobs.Logf(ctx, "cleanup", joblogs.Error, "package cleanup instance scan failed error=%q", err.Error())
-			return removed, err
+			safeErr := jobs.SafeError(err, m.root)
+			jobs.Logf(ctx, "cleanup", joblogs.Error, "package cleanup instance scan failed error=%q", safeErr)
+			return removed, errors.New(safeErr)
 		}
 		protected := make(map[string]bool, len(instances)*2)
 		for _, instance := range instances {
