@@ -712,48 +712,6 @@ func TestCompletedJobLimitRejectsOutOfRangeValues(t *testing.T) {
 	}
 }
 
-func TestReleaseDownloadConnectionsDefaultsPersistsAndAcceptsBoundaries(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-
-	connections, err := s.ReleaseDownloadConnections()
-	if err != nil || connections != DefaultReleaseDownloadConnections {
-		t.Fatalf("default connections=%d err=%v", connections, err)
-	}
-	for _, want := range []int{MinReleaseDownloadConnections, 8, MaxReleaseDownloadConnections} {
-		if err := s.SetReleaseDownloadConnections(want); err != nil {
-			t.Fatalf("SetReleaseDownloadConnections(%d): %v", want, err)
-		}
-		got, err := s.ReleaseDownloadConnections()
-		if err != nil || got != want {
-			t.Fatalf("connections=%d err=%v, want %d", got, err, want)
-		}
-	}
-}
-
-func TestReleaseDownloadConnectionsRejectsInvalidWithoutChangingValue(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	if err := s.SetReleaseDownloadConnections(8); err != nil {
-		t.Fatal(err)
-	}
-	for _, value := range []int{0, 17} {
-		if err := s.SetReleaseDownloadConnections(value); err == nil {
-			t.Fatalf("connections %d was accepted", value)
-		}
-	}
-	connections, err := s.ReleaseDownloadConnections()
-	if err != nil || connections != 8 {
-		t.Fatalf("connections=%d err=%v; want preserved value 8", connections, err)
-	}
-}
-
 func TestGameLogRetentionDaysDefaultsPersistsAndAcceptsBoundaries(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {

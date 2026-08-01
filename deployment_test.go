@@ -101,16 +101,6 @@ func TestSocketProxyImageDoesNotExposeRetiredTCPPort(t *testing.T) {
 	}
 }
 
-func TestPanelRuntimeImageInstallsAria2(t *testing.T) {
-	raw, err := os.ReadFile("Dockerfile")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(raw), "apk add --no-cache aria2 ca-certificates tzdata") {
-		t.Fatal("Panel runtime image must install aria2 with its runtime certificates")
-	}
-}
-
 func serviceBlocks(t *testing.T, compose string) map[string]string {
 	t.Helper()
 	marker := "services:\n"

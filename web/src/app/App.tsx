@@ -1831,11 +1831,6 @@ function SettingsPage() {
   const [jobSettingsReady, setJobSettingsReady] = useState(false);
   const [savingJobs, setSavingJobs] = useState(false);
   const [jobsNotice, setJobsNotice] = useState("");
-  const [confirmedDownloadConnections, setConfirmedDownloadConnections] = useState(8);
-  const [draftDownloadConnections, setDraftDownloadConnections] = useState("8");
-  const [downloadSettingsReady, setDownloadSettingsReady] = useState(false);
-  const [savingDownloads, setSavingDownloads] = useState(false);
-  const [downloadsNotice, setDownloadsNotice] = useState("");
   const [confirmedGameLogDays, setConfirmedGameLogDays] = useState(14);
   const [draftGameLogDays, setDraftGameLogDays] = useState("14");
   const [confirmedGameLogMaxFileSizeMB, setConfirmedGameLogMaxFileSizeMB] = useState(10);
@@ -1860,16 +1855,6 @@ function SettingsPage() {
         setConfirmedJobLimit(settings.successful_job_limit);
         setDraftJobLimit(String(settings.successful_job_limit));
         setJobSettingsReady(true);
-      })
-      .catch((reason) => setSettingsError(errorMessage(reason)));
-    api<{ connections: number }>("/api/settings/downloads")
-      .then((settings) => {
-        if (!Number.isInteger(settings.connections) || settings.connections < 1 || settings.connections > 16) {
-          throw new Error("Release 下载设置数据无效");
-        }
-        setConfirmedDownloadConnections(settings.connections);
-        setDraftDownloadConnections(String(settings.connections));
-        setDownloadSettingsReady(true);
       })
       .catch((reason) => setSettingsError(errorMessage(reason)));
     const gameLogLoadSequence = ++gameLogRequestSequence.current;
@@ -1961,34 +1946,6 @@ function SettingsPage() {
       setSavingJobs(false);
     }
   };
-  const saveDownloadSettings = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (settingsActions.isLocked("downloads")) return;
-    const connections = Number(draftDownloadConnections);
-    if (!Number.isInteger(connections) || connections < 1 || connections > 16) {
-      setSettingsError("Release 下载连接数必须为 1 至 16 的整数");
-      return;
-    }
-    setSettingsError("");
-    setDownloadsNotice("");
-    setSavingDownloads(true);
-    try {
-      await settingsActions.run("downloads", async () => {
-        const saved = await api<{ connections: number }>("/api/settings/downloads", {
-          method: "PUT",
-          body: JSON.stringify({ connections }),
-        });
-        setConfirmedDownloadConnections(saved.connections);
-        setDraftDownloadConnections(String(saved.connections));
-        setDownloadsNotice("下载设置已保存");
-      });
-    } catch (reason) {
-      setDraftDownloadConnections(String(confirmedDownloadConnections));
-      setSettingsError(errorMessage(reason));
-    } finally {
-      setSavingDownloads(false);
-    }
-  };
   type EnqueueStats = { Queued: number; Deduplicated: number; Failed: number };
   const formatEnqueueStats = (stats: EnqueueStats) =>
     `已排队 ${stats.Queued}，已去重 ${stats.Deduplicated}，失败 ${stats.Failed}`;
@@ -2060,7 +2017,7 @@ function SettingsPage() {
     <div className="settings-reference-page">
       <header className="settings-reference-head">
         <h2>系统设置</h2>
-        <p>配置安装凭据、Release 下载、后台任务保留上限及日志清理策略</p>
+        <p>配置 SteamCMD 登录凭据、GitHub 访问令牌、后台任务保留上限及日志清理策略</p>
       </header>
       {settingsError && (
         <div className="error" role="alert">
@@ -2086,13 +2043,6 @@ function SettingsPage() {
           <div className="settings-fields"><label>已完成任务保留数量<input type="number" min={1} max={500} step={1} required value={draftJobLimit} disabled={!jobSettingsReady || savingJobs} onChange={(event) => { setDraftJobLimit(event.target.value); setJobsNotice(""); }} /></label></div>
           {jobsNotice ? <p className="settings-notice" role="status">{jobsNotice}</p> : null}
           <footer><small>除正在运行的任务外，所有已结束任务共用此保留上限。</small><button className="settings-save" type="submit" aria-label="保存任务记录设置" disabled={!jobSettingsReady || savingJobs} aria-busy={savingJobs}>{savingJobs ? <RefreshCw /> : <Save />}<span>{savingJobs ? "保存中…" : "保存任务保留设置"}</span></button></footer>
-        </form>
-        <form className="settings-card" onSubmit={saveDownloadSettings}>
-          <div className="settings-card-title"><h3><Download />Release 下载连接数</h3></div>
-          <p>控制 aria2 下载 GitHub Release 资源时使用的并发分段连接数。</p>
-          <div className="settings-fields"><label>Release 下载连接数<input type="number" min={1} max={16} step={1} required value={draftDownloadConnections} disabled={!downloadSettingsReady || savingDownloads} onChange={(event) => { setDraftDownloadConnections(event.target.value); setDownloadsNotice(""); }} /></label><p>当前确认值：{confirmedDownloadConnections} 个连接</p></div>
-          {downloadsNotice ? <p className="settings-notice" role="status">{downloadsNotice}</p> : null}
-          <footer><small>服务端不支持分段时，aria2 会自动使用单连接。</small><button className="settings-save" type="submit" aria-label="保存下载设置" disabled={!downloadSettingsReady || savingDownloads} aria-busy={savingDownloads}>{savingDownloads ? <RefreshCw /> : <Save />}<span>{savingDownloads ? "保存中…" : "保存下载设置"}</span></button></footer>
         </form>
         <section className="settings-card" aria-labelledby="game-log-settings-title">
           <div className="settings-card-title"><h3 id="game-log-settings-title"><Trash2 />游戏日志保留策略</h3></div>
