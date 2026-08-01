@@ -8,8 +8,10 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,6 +20,47 @@ import (
 	"testing"
 	"time"
 )
+
+type httpTestDownloader struct{ client *http.Client }
+
+func (d httpTestDownloader) Download(ctx context.Context, request DownloadRequest) (int64, error) {
+	response, err := d.client.Do(mustRequest(ctx, request.URL))
+	if err != nil {
+		return 0, err
+	}
+	defer response.Body.Close()
+	file, err := os.Create(request.Destination)
+	if err != nil {
+		return 0, err
+	}
+	written, copyErr := io.Copy(file, response.Body)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return 0, copyErr
+	}
+	return written, closeErr
+}
+
+func mustRequest(ctx context.Context, rawURL string) *http.Request {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		panic(err)
+	}
+	return request
+}
+
+type recordingDownloader struct {
+	request DownloadRequest
+	raw     []byte
+}
+
+func (d *recordingDownloader) Download(_ context.Context, request DownloadRequest) (int64, error) {
+	d.request = request
+	if err := os.WriteFile(request.Destination, d.raw, 0600); err != nil {
+		return 0, err
+	}
+	return int64(len(d.raw)), nil
+}
 
 func TestFetchLatestSelectsAssetAndStoresPackage(t *testing.T) {
 	raw := packageBytes()
@@ -37,7 +80,7 @@ func TestFetchLatestSelectsAssetAndStoresPackage(t *testing.T) {
 	}))
 	defer server.Close()
 	manager, _ := content.NewPackageManager(t.TempDir())
-	client := Client{BaseURL: server.URL, HTTP: server.Client(), MaxBytes: 1 << 20}
+	client := Client{BaseURL: server.URL, HTTP: server.Client(), MaxBytes: 1 << 20, Downloader: httpTestDownloader{client: server.Client()}}
 	result, err := client.FetchLatest(context.Background(), "owner/repo", `^plugins\.zip$`, "secret", manager)
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +111,7 @@ func TestFetchLatestRetainsPreviousReleaseUntilMaintenanceCleanup(t *testing.T) 
 	}))
 	defer server.Close()
 	manager, _ := content.NewPackageManager(t.TempDir())
-	client := Client{BaseURL: server.URL, HTTP: server.Client(), MaxBytes: 1 << 20}
+	client := Client{BaseURL: server.URL, HTTP: server.Client(), MaxBytes: 1 << 20, Downloader: httpTestDownloader{client: server.Client()}}
 	first, err := client.FetchLatest(context.Background(), "owner/repo", `^plugins\.zip$`, "", manager)
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +154,7 @@ func TestInterruptedReleaseDownloadUsesManagedTemporaryArtifact(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := (Client{BaseURL: server.URL, HTTP: server.Client(), MaxBytes: 1 << 20}).FetchLatest(ctx, "owner/repo", `^plugins\.zip$`, "", manager)
+		_, err := (Client{BaseURL: server.URL, HTTP: server.Client(), MaxBytes: 1 << 20, Downloader: httpTestDownloader{client: server.Client()}}).FetchLatest(ctx, "owner/repo", `^plugins\.zip$`, "", manager)
 		done <- err
 	}()
 	<-assetStarted
@@ -151,6 +194,26 @@ func TestDefaultClientAllowsLargeReleaseDownloads(t *testing.T) {
 	}
 }
 
+func TestClientTrustsGitHubReleaseAssetHost(t *testing.T) {
+	asset, err := url.Parse("https://release-assets.githubusercontent.com/github-production-release-asset/file.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !(Client{}).allowedAssetHost(asset, "https://api.github.com") {
+		t.Fatal("GitHub release asset host was rejected")
+	}
+}
+
+func TestClientRejectsAssetWithUnexpectedScheme(t *testing.T) {
+	asset, err := url.Parse("ftp://api.github.com/plugins.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if (Client{}).allowedAssetHost(asset, "https://api.github.com") {
+		t.Fatal("unexpected asset scheme was trusted")
+	}
+}
+
 type releaseLogSink struct {
 	mu       sync.Mutex
 	messages []string
@@ -187,7 +250,7 @@ func TestFetchLatestLogsReleaseAssetDownloadAndReuseWithoutCredentials(t *testin
 	}))
 	defer server.Close()
 	manager, _ := content.NewPackageManager(t.TempDir())
-	client := Client{BaseURL: server.URL, HTTP: server.Client(), MaxBytes: 1 << 20}
+	client := Client{BaseURL: server.URL, HTTP: server.Client(), MaxBytes: 1 << 20, Downloader: httpTestDownloader{client: server.Client()}}
 	sink := &releaseLogSink{}
 	jobManager := jobs.NewManager(jobs.WithLogSink(sink))
 
@@ -213,6 +276,36 @@ func TestFetchLatestLogsReleaseAssetDownloadAndReuseWithoutCredentials(t *testin
 		if strings.Contains(logs, secret) {
 			t.Fatalf("logs leaked %q: %q", secret, logs)
 		}
+	}
+}
+
+func TestFetchLatestExchangesTokenForTrustedAssetRedirectBeforeDownload(t *testing.T) {
+	raw := packageBytes()
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/releases/latest":
+			fmt.Fprintf(w, `{"tag_name":"v3","assets":[{"name":"plugins.zip","url":%q,"browser_download_url":%q}]}`, server.URL+"/assets/1", server.URL+"/browser")
+		case "/assets/1":
+			if r.Header.Get("Authorization") != "Bearer private-token" || r.Header.Get("Accept") != "application/octet-stream" {
+				t.Errorf("asset headers=%v", r.Header)
+			}
+			w.Header().Set("Location", server.URL+"/signed/plugins.zip?signature=secret")
+			w.WriteHeader(http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	manager, _ := content.NewPackageManager(t.TempDir())
+	downloader := &recordingDownloader{raw: raw}
+	client := Client{BaseURL: server.URL, HTTP: server.Client(), MaxBytes: 1 << 20, Downloader: downloader}
+	result, err := client.FetchLatest(context.Background(), "owner/repo", `^plugins\.zip$`, "private-token", manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Updated || downloader.request.URL != server.URL+"/signed/plugins.zip?signature=secret" {
+		t.Fatalf("result=%+v download=%+v", result, downloader.request)
 	}
 }
 

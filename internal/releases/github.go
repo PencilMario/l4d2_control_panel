@@ -18,9 +18,10 @@ import (
 )
 
 type Client struct {
-	BaseURL  string
-	HTTP     *http.Client
-	MaxBytes int64
+	BaseURL    string
+	HTTP       *http.Client
+	MaxBytes   int64
+	Downloader Downloader
 }
 type FetchResult struct {
 	Package content.PackageVersion
@@ -31,9 +32,10 @@ type release struct {
 	TagName     string `json:"tag_name"`
 	PublishedAt string `json:"published_at"`
 	Assets      []struct {
-		Name string `json:"name"`
-		URL  string `json:"browser_download_url"`
-		Size int64  `json:"size"`
+		Name   string `json:"name"`
+		APIURL string `json:"url"`
+		URL    string `json:"browser_download_url"`
+		Size   int64  `json:"size"`
 	} `json:"assets"`
 }
 
@@ -79,11 +81,11 @@ func (c Client) FetchLatest(ctx context.Context, repository, assetPattern, token
 	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&found); err != nil {
 		return FetchResult{}, err
 	}
-	var assetName, assetURL string
+	var assetName, assetURL, assetAPIURL string
 	var assetSize int64
 	for _, asset := range found.Assets {
 		if pattern.MatchString(asset.Name) {
-			assetName, assetURL, assetSize = asset.Name, asset.URL, asset.Size
+			assetName, assetURL, assetAPIURL, assetSize = asset.Name, asset.URL, asset.APIURL, asset.Size
 			break
 		}
 	}
@@ -97,51 +99,45 @@ func (c Client) FetchLatest(ctx context.Context, repository, assetPattern, token
 		jobs.Logf(ctx, "github", joblogs.Info, "package reused repository=%s tag=%s asset=%s package_id=%s size=%s", repository, found.TagName, assetName, item.ID, jobs.FormatBytes(item.Size))
 		return FetchResult{Package: item}, nil
 	}
-	parsed, err := url.Parse(assetURL)
+	resolvedURL, err := c.resolveAssetURL(ctx, client, assetURL, assetAPIURL, token, base)
+	if err != nil {
+		return FetchResult{}, err
+	}
+	parsed, err := url.Parse(resolvedURL)
 	if err != nil || !c.allowedAssetHost(parsed, base) {
 		return FetchResult{}, errors.New("untrusted release asset URL")
-	}
-	download, err := http.NewRequestWithContext(ctx, http.MethodGet, assetURL, nil)
-	if err != nil {
-		return FetchResult{}, err
-	}
-	if token != "" {
-		download.Header.Set("Authorization", "Bearer "+token)
-	}
-	assetResponse, err := client.Do(download)
-	if err != nil {
-		return FetchResult{}, err
-	}
-	defer assetResponse.Body.Close()
-	if assetResponse.StatusCode != 200 {
-		return FetchResult{}, fmt.Errorf("release download returned %s", assetResponse.Status)
 	}
 	limit := c.MaxBytes
 	if limit <= 0 {
 		limit = 2 << 30
 	}
+	if assetSize > limit {
+		return FetchResult{}, errors.New("release asset exceeds size limit")
+	}
+	if c.Downloader == nil {
+		return FetchResult{}, errors.New("release downloader unavailable")
+	}
 	temporary, err := packages.CreateDownloadTemp()
 	if err != nil {
 		return FetchResult{}, err
 	}
-	defer os.Remove(temporary.Name())
-	total := assetResponse.ContentLength
-	if total <= 0 {
-		total = assetSize
+	temporaryPath := temporary.Name()
+	if err := temporary.Close(); err != nil {
+		return FetchResult{}, err
 	}
-	written, err := jobs.CopyWithProgress(ctx, temporary, io.LimitReader(assetResponse.Body, limit+1), jobs.TransferOptions{Source: "github", Filename: assetName, Total: total, MaxBytes: limit})
+	defer os.Remove(temporaryPath)
+	written, err := c.Downloader.Download(ctx, DownloadRequest{URL: resolvedURL, Destination: temporaryPath, Filename: assetName, Total: assetSize, MaxBytes: limit})
 	if err != nil {
-		temporary.Close()
 		return FetchResult{}, err
 	}
 	if written > limit {
-		temporary.Close()
 		return FetchResult{}, errors.New("release asset exceeds size limit")
 	}
-	if _, err := temporary.Seek(0, 0); err != nil {
-		temporary.Close()
+	temporary, err = os.Open(temporaryPath)
+	if err != nil {
 		return FetchResult{}, err
 	}
+	jobs.Logf(ctx, "github", joblogs.Info, "download completed source=github file=%s bytes=%d (%s)", assetName, written, jobs.FormatBytes(written))
 	item, err := packages.AddUpload(assetName, found.TagName, temporary, written)
 	temporary.Close()
 	if err != nil {
@@ -154,11 +150,46 @@ func (c Client) FetchLatest(ctx context.Context, repository, assetPattern, token
 	jobs.Logf(ctx, "github", joblogs.Info, "package downloaded repository=%s tag=%s asset=%s package_id=%s size=%s", repository, found.TagName, assetName, item.ID, jobs.FormatBytes(written))
 	return FetchResult{Package: item, Updated: true}, nil
 }
+
+func (c Client) resolveAssetURL(ctx context.Context, client *http.Client, browserURL, apiURL, token, base string) (string, error) {
+	if token == "" || apiURL == "" {
+		return browserURL, nil
+	}
+	parsed, err := url.Parse(apiURL)
+	if err != nil || !c.allowedAssetHost(parsed, base) {
+		return "", errors.New("untrusted release asset API URL")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("Accept", "application/octet-stream")
+	request.Header.Set("Authorization", "Bearer "+token)
+	redirectClient := *client
+	redirectClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	response, err := redirectClient.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 300 || response.StatusCode > 399 {
+		return "", fmt.Errorf("GitHub asset API returned %s without a download redirect", response.Status)
+	}
+	location, err := response.Location()
+	if err != nil || !c.allowedAssetHost(location, base) {
+		return "", errors.New("untrusted release asset redirect")
+	}
+	return location.String(), nil
+}
+
 func (c Client) allowedAssetHost(asset *url.URL, base string) bool {
 	baseURL, _ := url.Parse(base)
-	if asset.Scheme != "https" && asset.Host != baseURL.Host {
+	if asset.Host == baseURL.Host {
+		return asset.Scheme == baseURL.Scheme
+	}
+	if asset.Scheme != "https" {
 		return false
 	}
-	allowed := map[string]bool{"github.com": true, "objects.githubusercontent.com": true, "github-releases.githubusercontent.com": true, baseURL.Host: true}
+	allowed := map[string]bool{"github.com": true, "objects.githubusercontent.com": true, "github-releases.githubusercontent.com": true, "release-assets.githubusercontent.com": true}
 	return allowed[asset.Host]
 }

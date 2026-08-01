@@ -1341,6 +1341,38 @@ describe("App", () => {
     );
   });
 
+  it("loads and updates the Release download connection count", async () => {
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        if (path === "/api/settings/downloads") {
+          if (init?.method === "PUT") return Response.json({ connections: 12 });
+          return Response.json({ connections: 8 });
+        }
+        if (path === "/api/settings/jobs") return Response.json({ successful_job_limit: 25 });
+        if (path === "/api/settings/game-logs") return Response.json({ retention_days: 14, max_file_size_mb: 10 });
+        return Response.json({ configured: false });
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "系统设置" }));
+    const input = await screen.findByRole("spinbutton", { name: "Release 下载连接数" });
+    expect(input).toHaveValue(8);
+    expect(input).toHaveAttribute("min", "1");
+    expect(input).toHaveAttribute("max", "16");
+
+    await userEvent.clear(input);
+    await userEvent.type(input, "12");
+    await userEvent.click(screen.getByRole("button", { name: "保存下载设置" }));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/settings/downloads",
+      expect.objectContaining({ method: "PUT", body: JSON.stringify({ connections: 12 }) }),
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent("下载设置已保存");
+  });
+
   it("disables retention settings while the save is in progress", async () => {
     const save = deferred<Response>();
     vi.stubGlobal(

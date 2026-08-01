@@ -32,6 +32,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/metrics"
 	"github.com/not0721here/l4d2-control-panel/internal/players"
+	"github.com/not0721here/l4d2-control-panel/internal/releases"
 	"github.com/not0721here/l4d2-control-panel/internal/scheduler"
 	"github.com/not0721here/l4d2-control-panel/internal/store"
 	"github.com/not0721here/l4d2-control-panel/internal/updates"
@@ -1678,6 +1679,47 @@ func TestJobSettingsRejectInvalidValuesWithoutChangingStoredLimit(t *testing.T) 
 			t.Fatalf("body=%s limit=%d err=%v", body, limit, err)
 		}
 	}
+}
+
+func TestDownloadSettingsReadUpdateAndRejectInvalidValues(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	cookie := loginCookie(t, s)
+
+	response := authenticatedJSON(t, s, cookie, http.MethodGet, "/api/settings/downloads", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"connections":8`) {
+		t.Fatalf("get settings: status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = authenticatedJSON(t, s, cookie, http.MethodPut, "/api/settings/downloads", `{"connections":12}`)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"connections":12`) {
+		t.Fatalf("put settings: status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, body := range []string{`{"connections":0}`, `{"connections":17}`, `{"connections":"many"}`, `{"connections":8} trailing`, `{"connections":8,"extra":true}`} {
+		response = authenticatedJSON(t, s, cookie, http.MethodPut, "/api/settings/downloads", body)
+		if response.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("body=%s status=%d response=%s", body, response.Code, response.Body.String())
+		}
+	}
+	connections, err := db.ReleaseDownloadConnections()
+	if err != nil || connections != 12 {
+		t.Fatalf("connections=%d err=%v", connections, err)
+	}
+}
+
+func TestWithReleaseClientUsesConfiguredDownloader(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	downloader := &recordingReleaseDownloader{}
+	s = New(db, s.auth, WithContent(nil, nil, s.packages, s.updates, nil), WithReleaseClient(releases.Client{Downloader: downloader}))
+	if s.releases.Downloader != downloader {
+		t.Fatal("configured release downloader was not retained")
+	}
+}
+
+type recordingReleaseDownloader struct{}
+
+func (*recordingReleaseDownloader) Download(context.Context, releases.DownloadRequest) (int64, error) {
+	return 0, nil
 }
 
 func TestStopActionRequiresConfirmation(t *testing.T) {

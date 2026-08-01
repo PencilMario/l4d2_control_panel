@@ -13,20 +13,24 @@ import (
 const (
 	jobHistoryMigrationVersion = 6
 
-	DefaultCompletedJobLimit    = 25
-	MinCompletedJobLimit        = 1
-	MaxCompletedJobLimit        = 500
-	DefaultGameLogRetentionDays = 14
-	MinGameLogRetentionDays     = 1
-	MaxGameLogRetentionDays     = 365
-	DefaultGameLogMaxFileSizeMB = 10
-	MinGameLogMaxFileSizeMB     = 1
-	MaxGameLogMaxFileSizeMB     = 1024
+	DefaultCompletedJobLimit          = 25
+	MinCompletedJobLimit              = 1
+	MaxCompletedJobLimit              = 500
+	DefaultGameLogRetentionDays       = 14
+	MinGameLogRetentionDays           = 1
+	MaxGameLogRetentionDays           = 365
+	DefaultGameLogMaxFileSizeMB       = 10
+	MinGameLogMaxFileSizeMB           = 1
+	MaxGameLogMaxFileSizeMB           = 1024
+	DefaultReleaseDownloadConnections = 8
+	MinReleaseDownloadConnections     = 1
+	MaxReleaseDownloadConnections     = 16
 
 	// Keep the original key so existing installations retain their configured value.
-	completedJobLimitKey    = "successful_job_limit"
-	gameLogRetentionDaysKey = "game_log_retention_days"
-	gameLogMaxFileSizeMBKey = "game_log_max_file_size_mb"
+	completedJobLimitKey          = "successful_job_limit"
+	gameLogRetentionDaysKey       = "game_log_retention_days"
+	gameLogMaxFileSizeMBKey       = "game_log_max_file_size_mb"
+	releaseDownloadConnectionsKey = "release_download_connections"
 )
 
 type jobExecer interface {
@@ -209,6 +213,32 @@ ON CONFLICT(name) DO UPDATE SET value=excluded.value,updated_at=excluded.updated
 	}
 	s.notifyPrunedJobs(deleted)
 	return nil
+}
+
+func (s *Store) ReleaseDownloadConnections() (int, error) {
+	var raw string
+	err := s.db.QueryRow(`SELECT value FROM system_settings WHERE name=?`, releaseDownloadConnectionsKey).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return DefaultReleaseDownloadConnections, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	connections, err := strconv.Atoi(raw)
+	if err != nil || connections < MinReleaseDownloadConnections || connections > MaxReleaseDownloadConnections {
+		return 0, fmt.Errorf("invalid stored release download connections %q", raw)
+	}
+	return connections, nil
+}
+
+func (s *Store) SetReleaseDownloadConnections(connections int) error {
+	if connections < MinReleaseDownloadConnections || connections > MaxReleaseDownloadConnections {
+		return fmt.Errorf("release download connections must be between %d and %d", MinReleaseDownloadConnections, MaxReleaseDownloadConnections)
+	}
+	_, err := s.db.Exec(`INSERT INTO system_settings(name,value,updated_at) VALUES(?,?,?)
+ON CONFLICT(name) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
+		releaseDownloadConnectionsKey, strconv.Itoa(connections), time.Now().UTC().Format(time.RFC3339Nano))
+	return err
 }
 
 func (s *Store) GameLogRetentionDays() (int, error) {

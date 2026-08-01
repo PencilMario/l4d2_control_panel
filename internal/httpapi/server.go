@@ -132,6 +132,9 @@ func WithContent(uploads *content.UploadManager, private *content.PrivateManager
 		s.releases = releases.Client{}
 	}
 }
+func WithReleaseClient(client releases.Client) Option {
+	return func(s *Server) { s.releases = client }
+}
 func WithGameUpdates(coordinator *updates.GameCoordinator) Option {
 	return func(s *Server) { s.gameUpdates = coordinator }
 }
@@ -210,6 +213,8 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Get("/api/settings/game-logs", s.getGameLogSettings)
 		r.Put("/api/settings/game-logs", s.putGameLogSettings)
 		r.Post("/api/settings/game-logs/cleanup", s.cleanupGameLogs)
+		r.Get("/api/settings/downloads", s.downloadSettings)
+		r.Put("/api/settings/downloads", s.setDownloadSettings)
 		r.Get("/api/instances/{id}/performance-history", s.instancePerformanceHistory)
 		r.Post("/api/instances", s.createInstance)
 		r.Put("/api/instances/{id}", s.updateInstance)
@@ -441,6 +446,42 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 
 type jobSettingsResponse struct {
 	CompletedJobLimit int `json:"successful_job_limit"`
+}
+
+type downloadSettingsResponse struct {
+	Connections int `json:"connections"`
+}
+
+func (s *Server) downloadSettings(w http.ResponseWriter, _ *http.Request) {
+	connections, err := s.store.ReleaseDownloadConnections()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "settings_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, downloadSettingsResponse{Connections: connections})
+}
+
+func (s *Server) setDownloadSettings(w http.ResponseWriter, r *http.Request) {
+	var input downloadSettingsResponse
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_download_settings", "connections must be an integer between 1 and 16")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_download_settings", "request body must contain exactly one download settings object")
+		return
+	}
+	if input.Connections < store.MinReleaseDownloadConnections || input.Connections > store.MaxReleaseDownloadConnections {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_download_settings", "connections must be between 1 and 16")
+		return
+	}
+	if err := s.store.SetReleaseDownloadConnections(input.Connections); err != nil {
+		writeError(w, http.StatusInternalServerError, "settings_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, input)
 }
 
 func (s *Server) jobSettings(w http.ResponseWriter, _ *http.Request) {
