@@ -145,9 +145,9 @@ func TestInterruptedReleaseDownloadUsesManagedTemporaryArtifact(t *testing.T) {
 	}
 }
 
-func TestDefaultClientAllowsLargeReleaseDownloads(t *testing.T) {
-	if timeout := (Client{}).httpClient().Timeout; timeout < 10*time.Minute {
-		t.Fatalf("timeout=%s", timeout)
+func TestDefaultClientAllowsThreeHoursForLargeReleaseDownloads(t *testing.T) {
+	if timeout := (Client{}).httpClient().Timeout; timeout != 3*time.Hour {
+		t.Fatalf("timeout=%s, want 3h", timeout)
 	}
 }
 

@@ -41,7 +41,7 @@ func (c Client) httpClient() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
 	}
-	return &http.Client{Timeout: 10 * time.Minute}
+	return &http.Client{Timeout: 3 * time.Hour}
 }
 
 func (c Client) FetchLatest(ctx context.Context, repository, assetPattern, token string, packages *content.PackageManager) (FetchResult, error) {
