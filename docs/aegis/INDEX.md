@@ -20,6 +20,7 @@
 
 ## Implementation Plans
 
+- [Self-service VPK upload](plans/2026-08-02-self-service-vpk-upload.md)
 - [Detailed background task logging](plans/2026-07-30-detailed-background-task-logging.md)
 - [Frontend motion and asynchronous action guards](plans/2026-07-16-frontend-motion-and-action-guards.md)
 - [Private files ZIP import and export](plans/2026-07-16-private-files-zip-import-export.md)
