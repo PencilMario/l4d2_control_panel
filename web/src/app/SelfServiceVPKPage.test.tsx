@@ -23,7 +23,7 @@ describe("SelfServiceVPKPage", () => {
 	let authorized = false;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const path = String(input);
-      if (path.endsWith("/status")) return Response.json({ enabled: true, password_required: true, auto_delete: true });
+      if (path.endsWith("/status")) return Response.json({ enabled: true, password_required: true, authorized: false, auto_delete: true });
       if (path.endsWith("/authorize") && init?.method === "POST") { authorized = true; return new Response(null, { status: 204 }); }
       if (path.includes("/api/self-service/vpk?")) return authorized ? Response.json({ items: [{ name: "map.vpk", size: 1024, uploaded_at: "2026-08-02T12:00:00Z", expires_at: "2026-08-09T12:00:00Z" }], total: 1, limit: 20, offset: 0, auto_delete: true }) : Response.json({ error: { message: "authorization required" } }, { status: 401 });
       return new Response(null, { status: 404 });

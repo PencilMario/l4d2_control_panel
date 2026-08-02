@@ -26,13 +26,17 @@ func (s *Server) selfServiceKey() []byte {
 	return s.selfServiceVPKKey
 }
 
-func (s *Server) selfServiceVPKStatus(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) selfServiceVPKStatus(w http.ResponseWriter, r *http.Request) {
 	settings, err := s.store.SelfServiceVPKSettings()
 	if err != nil {
 		writeError(w, 500, "settings_error", err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"enabled": settings.Enabled, "password_required": settings.PasswordSet, "auto_delete": settings.AutoDelete})
+	authorized := settings.Enabled && !settings.PasswordSet
+	if settings.Enabled && settings.PasswordSet {
+		authorized, _ = s.hasSelfServiceVPKAccess(r)
+	}
+	writeJSON(w, 200, map[string]any{"enabled": settings.Enabled, "password_required": settings.PasswordSet, "authorized": authorized, "auto_delete": settings.AutoDelete})
 }
 
 func (s *Server) authorizeSelfServiceVPK(w http.ResponseWriter, r *http.Request) {

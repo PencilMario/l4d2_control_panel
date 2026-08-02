@@ -3,7 +3,7 @@ import { Clock, LockKeyhole, MapPinned, RefreshCw, ShieldCheck, Upload } from "l
 import { VPKUploadQueue } from "./VPKUploadQueue";
 import { cancelVPKUpload, enqueueVPKUploads, retryVPKUpload, startVPKUploadQueue, type VPKUploadMode, type VPKUploadTask } from "../vpk/uploadQueue";
 
-type Status = { enabled: boolean; password_required: boolean; auto_delete: boolean };
+type Status = { enabled: boolean; password_required: boolean; authorized: boolean; auto_delete: boolean };
 type Item = { name: string; size: number; uploaded_at: string; expires_at: string };
 type Page = { items: Item[]; total: number; limit: number; offset: number; auto_delete: boolean };
 
@@ -44,9 +44,9 @@ export function SelfServiceVPKPage() {
   useEffect(() => {
     let active = true;
     void request<Status>("/api/self-service/vpk/status").then(async (next) => {
-      if (!active) return;
-      setStatus(next);
-      if (next.enabled) await loadList(0);
+		if (!active) return;
+		setStatus(next);
+		if (next.enabled && next.authorized) await loadList(0);
     }).catch((reason) => active && setError(reason instanceof Error ? reason.message : String(reason)));
     return () => { active = false; };
   }, [loadList]);

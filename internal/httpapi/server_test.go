@@ -784,6 +784,13 @@ func TestSelfServiceVPKAuthorizationSettingsListAndUpload(t *testing.T) {
 		t.Fatalf("authorize=%d %s cookies=%v", authRes.Code, authRes.Body.String(), authRes.Result().Cookies())
 	}
 	publicCookie := authRes.Result().Cookies()[0]
+	authorizedStatusReq := httptest.NewRequest(http.MethodGet, "/api/self-service/vpk/status", nil)
+	authorizedStatusReq.AddCookie(publicCookie)
+	authorizedStatus := httptest.NewRecorder()
+	s.Handler().ServeHTTP(authorizedStatus, authorizedStatusReq)
+	if authorizedStatus.Code != http.StatusOK || !strings.Contains(authorizedStatus.Body.String(), `"authorized":true`) {
+		t.Fatalf("authorized status=%d %s", authorizedStatus.Code, authorizedStatus.Body.String())
+	}
 
 	data := []byte("self-service-map")
 	digest := sha256.Sum256(data)
