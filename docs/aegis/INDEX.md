@@ -16,6 +16,7 @@
 - [One-click deployment and update](specs/2026-07-18-one-click-deploy-update-design.md)
 - [Plugin package sources and instance full updates](specs/2026-07-29-plugin-package-source-design.md)
 - [Detailed background task logging](specs/2026-07-30-detailed-background-task-logging-design.md)
+- [Self-service VPK upload](specs/2026-08-02-self-service-vpk-upload-design.md)
 
 ## Implementation Plans
 
