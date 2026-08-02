@@ -364,6 +364,7 @@ func main() {
 		httpapi.WithPlayers(fixturePlayers{}),
 		httpapi.WithContent(uploads, private, packages, pipeline, packageUpdates),
 		httpapi.WithSelfServiceVPK(selfServiceVPKManager),
+		httpapi.WithSelfServiceVPKKey(secretKey),
 		httpapi.WithPrivateUploads(privateUploads),
 		httpapi.WithGameUpdates(gameUpdates),
 		httpapi.WithScheduler(schedules),

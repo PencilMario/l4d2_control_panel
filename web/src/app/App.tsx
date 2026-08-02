@@ -64,6 +64,7 @@ import {
 import { PrivateFilesPage } from "./PrivateFilesPage";
 import { SchedulesPage } from "./SchedulesPage";
 import { VPKUploadQueue } from "./VPKUploadQueue";
+import { SelfServiceVPKSettings } from "./SelfServiceVPKSettings";
 import { cancelVPKUpload, enqueueVPKUploads, retryVPKUpload, startVPKUploadQueue, type VPKUploadMode, type VPKUploadTask } from "../vpk/uploadQueue";
 import { useConsoleFollow } from "./useConsoleFollow";
 import { appendConsoleOutput } from "./consoleBuffer";
@@ -2050,6 +2051,7 @@ function SettingsPage() {
           <form className="settings-fields" onSubmit={saveGameLogSettings}><label>游戏日志保留天数<input type="number" min={1} max={365} step={1} required value={draftGameLogDays} disabled={!gameLogSettingsReady || gameLogBusy !== ""} onChange={(event) => { const value = event.target.value; setDraftGameLogDays(value); setGameLogsNotice(""); const days = Number(value); setSettingsError(value !== "" && (!Number.isInteger(days) || days < 1 || days > 365) ? "游戏日志保留天数必须为 1 至 365 的整数" : ""); }} /></label><label>单个日志文件最大大小（MB）<input type="number" min={1} max={1024} step={1} required value={draftGameLogMaxFileSizeMB} disabled={!gameLogSettingsReady || gameLogBusy !== ""} onChange={(event) => { const value = event.target.value; setDraftGameLogMaxFileSizeMB(value); setGameLogsNotice(""); const size = Number(value); setSettingsError(value !== "" && (!Number.isInteger(size) || size < 1 || size > 1024) ? "单个日志文件最大大小必须为 1 至 1024 MB 的整数" : ""); }} /></label><p>当前确认值：{confirmedGameLogDays} 天 · {confirmedGameLogMaxFileSizeMB} MB</p><footer><button className="settings-cleanup" type="button" aria-label="立即清理游戏日志" disabled={!gameLogSettingsReady || gameLogBusy !== ""} aria-busy={gameLogBusy === "cleanup"} onClick={() => void cleanupGameLogs()}>{gameLogBusy === "cleanup" ? "提交中…" : "立即维护日志"}</button><button className="settings-save" type="submit" aria-label="保存游戏日志设置" disabled={!gameLogSettingsReady || gameLogBusy !== ""} aria-busy={gameLogBusy === "save"}>{gameLogBusy === "save" ? <RefreshCw /> : <Save />}<span>{gameLogBusy === "save" ? "保存中…" : "保存日志策略"}</span></button></footer></form>
           {gameLogsNotice ? <p className="settings-notice" role="status">{gameLogsNotice}</p> : null}
         </section>
+        <SelfServiceVPKSettings />
       </div>
     </div>
   );

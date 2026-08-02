@@ -87,6 +87,10 @@ func WithSelfServiceVPK(manager *content.SelfServiceVPKManager) Option {
 	return func(s *Server) { s.selfServiceVPK = manager }
 }
 
+func WithSelfServiceVPKKey(key []byte) Option {
+	return func(s *Server) { s.selfServiceVPKKey = append([]byte(nil), key...) }
+}
+
 type Lifecycle interface {
 	Start(context.Context, string) error
 	Stop(context.Context, string) error
