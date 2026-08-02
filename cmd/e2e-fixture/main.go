@@ -342,6 +342,12 @@ func main() {
 		log.Fatal(err)
 	}
 	defer gameLogScheduler.Stop()
+	selfServiceVPKManager := content.NewSelfServiceVPKManager(db, uploads)
+	selfServiceVPKScheduler := content.NewSelfServiceVPKScheduler(selfServiceVPKManager)
+	if err := selfServiceVPKScheduler.Start(); err != nil {
+		log.Fatal(err)
+	}
+	defer selfServiceVPKScheduler.Stop()
 	packageUpdates := &updates.Coordinator{Lifecycle: lifecycle, Deployer: pipeline, Instances: db}
 	gameUpdates := &updates.GameCoordinator{Root: root, Instances: db, Lifecycle: lifecycle, Updater: &fixtureGameUpdater{}, Private: private, Packages: packages, Deployer: pipeline}
 	schedules := scheduler.NewService(db, fixtureDispatcher{})
@@ -357,6 +363,7 @@ func main() {
 		httpapi.WithConsole(console),
 		httpapi.WithPlayers(fixturePlayers{}),
 		httpapi.WithContent(uploads, private, packages, pipeline, packageUpdates),
+		httpapi.WithSelfServiceVPK(selfServiceVPKManager),
 		httpapi.WithPrivateUploads(privateUploads),
 		httpapi.WithGameUpdates(gameUpdates),
 		httpapi.WithScheduler(schedules),
