@@ -62,6 +62,91 @@ func TestOpenEnablesWALAndMigrates(t *testing.T) {
 	}
 }
 
+func TestSelfServiceVPKSettingsAndPasswordVersion(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	settings, err := s.SelfServiceVPKSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.Enabled || settings.PasswordSet || settings.AutoDelete || settings.RetentionDays != 7 || settings.PasswordVersion != 0 {
+		t.Fatalf("unexpected defaults: %+v", settings)
+	}
+	if err := s.SetSelfServiceVPKSettings(true, strptr("secret"), true, 14); err != nil {
+		t.Fatal(err)
+	}
+	settings, err = s.SelfServiceVPKSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !settings.Enabled || !settings.PasswordSet || !settings.AutoDelete || settings.RetentionDays != 14 || settings.PasswordVersion != 1 {
+		t.Fatalf("unexpected settings: %+v", settings)
+	}
+	if ok, _, err := s.VerifySelfServiceVPKPassword("secret"); err != nil || !ok {
+		t.Fatalf("verify=%v err=%v", ok, err)
+	}
+	if ok, _, err := s.VerifySelfServiceVPKPassword("wrong"); err != nil || ok {
+		t.Fatalf("wrong verify=%v err=%v", ok, err)
+	}
+	if err := s.SetSelfServiceVPKSettings(true, nil, false, 30); err != nil {
+		t.Fatal(err)
+	}
+	unchanged, _ := s.SelfServiceVPKSettings()
+	if unchanged.PasswordVersion != 1 || !unchanged.PasswordSet {
+		t.Fatalf("nil password changed credential: %+v", unchanged)
+	}
+	if err := s.SetSelfServiceVPKSettings(true, strptr(""), false, 30); err != nil {
+		t.Fatal(err)
+	}
+	cleared, _ := s.SelfServiceVPKSettings()
+	if cleared.PasswordSet || cleared.PasswordVersion != 2 {
+		t.Fatalf("password not cleared: %+v", cleared)
+	}
+}
+
+func TestSelfServiceVPKMetadataLifecycleAndPagination(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	base := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	for i, name := range []string{"a.vpk", "b.vpk", "c.vpk"} {
+		if err := s.SaveSelfServiceVPK(SelfServiceVPK{Name: name, Size: int64(i + 1), UploadedAt: base.Add(time.Duration(i) * time.Hour), ExpiresAt: base.Add(time.Duration(i+1) * time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, total, err := s.ListSelfServiceVPKs(2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 || len(page) != 2 || page[0].Name != "c.vpk" || page[1].Name != "b.vpk" {
+		t.Fatalf("total=%d page=%+v", total, page)
+	}
+	if err := s.RenameSelfServiceVPK("b.vpk", "renamed.vpk"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateSelfServiceVPKSize("renamed.vpk", 99); err != nil {
+		t.Fatal(err)
+	}
+	expired, err := s.ExpiredSelfServiceVPKs(base.Add(90 * time.Minute))
+	if err != nil || len(expired) != 1 || expired[0].Name != "a.vpk" {
+		t.Fatalf("expired=%+v err=%v", expired, err)
+	}
+	if err := s.DeleteSelfServiceVPK("a.vpk"); err != nil {
+		t.Fatal(err)
+	}
+	_, total, _ = s.ListSelfServiceVPKs(10, 0)
+	if total != 2 {
+		t.Fatalf("total after delete=%d", total)
+	}
+}
+
+func strptr(value string) *string { return &value }
+
 func TestHasActiveJobDistinguishesPendingAndRunningFromCompleted(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {
