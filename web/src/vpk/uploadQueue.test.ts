@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cleanupStrategy, isValidSHA256, responseError } from "./uploadQueue";
+import { cleanupStrategy, isValidSHA256, responseError, selfServiceVPKUploadConfiguration } from "./uploadQueue";
 
 describe("responseError", () => {
   it("uses the API error message for failed uploads", async () => {
@@ -21,5 +21,17 @@ describe("cleanupStrategy", () => {
   it("routes large VPK files to server cleanup to avoid exhausting browser WASM memory", () => {
     expect(cleanupStrategy(256 * 1024 * 1024)).toBe("local");
     expect(cleanupStrategy(736.1 * 1024 * 1024)).toBe("server");
+  });
+});
+
+describe("selfServiceVPKUploadConfiguration", () => {
+  it("isolates persistence and targets every self-service upload endpoint", () => {
+    const config = selfServiceVPKUploadConfiguration;
+    expect(config.databaseName).toBe("l4d2-panel-self-service-vpk-uploads");
+    expect(config.endpoints.begin).toBe("/api/self-service/vpk/uploads");
+    expect(config.endpoints.session("abc")).toBe("/api/self-service/vpk/uploads/abc");
+    expect(config.endpoints.complete("abc")).toBe("/api/self-service/vpk/uploads/abc/complete");
+    expect(config.completeBody(true)).toEqual({ clean: true });
+    expect(config.cleanupAfterComplete).toBe(false);
   });
 });

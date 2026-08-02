@@ -12,19 +12,36 @@ export type VPKUploadTask = {
   serverCleanupPending?: boolean;
 };
 
-const DB_NAME = "l4d2-panel-vpk-uploads";
+export type VPKUploadConfiguration = {
+  databaseName: string;
+  endpoints: { begin: string; session: (id: string) => string; complete: (id: string) => string; clean: (name: string) => string };
+  completeBody: (serverClean: boolean) => Record<string, unknown>;
+  cleanupAfterComplete: boolean;
+};
+const adminVPKUploadConfiguration: VPKUploadConfiguration = {
+  databaseName: "l4d2-panel-vpk-uploads",
+  endpoints: { begin: "/api/content/vpk/uploads", session: (id) => `/api/content/vpk/uploads/${id}`, complete: (id) => `/api/content/vpk/uploads/${id}/complete`, clean: (name) => `/api/content/vpk/${encodeURIComponent(name)}/clean` },
+  completeBody: () => ({}), cleanupAfterComplete: true,
+};
+export const selfServiceVPKUploadConfiguration: VPKUploadConfiguration = {
+  databaseName: "l4d2-panel-self-service-vpk-uploads",
+  endpoints: { begin: "/api/self-service/vpk/uploads", session: (id) => `/api/self-service/vpk/uploads/${id}`, complete: (id) => `/api/self-service/vpk/uploads/${id}/complete`, clean: () => "" },
+  completeBody: (serverClean) => ({ clean: serverClean }), cleanupAfterComplete: false,
+};
+let configuration = adminVPKUploadConfiguration;
 const STORE = "tasks";
 const CHUNK = 8 * 1024 * 1024;
 const LOCAL_CLEANUP_MAX_SIZE = 256 * 1024 * 1024;
 let running = false;
 let listener: ((tasks: VPKUploadTask[]) => void) | undefined;
 let completedListener: (() => void) | undefined;
-const memoryTasks = new Map<string, VPKUploadTask>();
+const memoryStores = new Map<string, Map<string, VPKUploadTask>>();
+let memoryTasks = new Map<string, VPKUploadTask>();
 const useMemoryStore = typeof navigator !== "undefined" && /jsdom/i.test(navigator.userAgent);
 
 function database(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1);
+    const request = indexedDB.open(configuration.databaseName, 1);
     request.onupgradeneeded = () => request.result.createObjectStore(STORE, { keyPath: "id" });
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
@@ -50,6 +67,12 @@ async function publishTransient(task: VPKUploadTask) {
 }
 export function isValidSHA256(value: unknown): value is string { return typeof value === "string" && /^[0-9a-f]{64}$/i.test(value); }
 export function cleanupStrategy(size: number): "local" | "server" { return size <= LOCAL_CLEANUP_MAX_SIZE ? "local" : "server"; }
+export function configureVPKUploadQueue(next: VPKUploadConfiguration) {
+  if (running || listener) throw new Error("VPK upload queue is already active");
+  configuration = next;
+  memoryTasks = memoryStores.get(next.databaseName) || new Map<string, VPKUploadTask>();
+  memoryStores.set(next.databaseName, memoryTasks);
+}
 
 export async function enqueueVPKUploads(files: Array<{ file: File; mode: VPKUploadMode }>) {
   for (const item of files) {
@@ -58,7 +81,7 @@ export async function enqueueVPKUploads(files: Array<{ file: File; mode: VPKUplo
   await publish(); void run();
 }
 export async function cancelVPKUpload(task: VPKUploadTask) {
-  if (task.sessionID) await fetch(`/api/content/vpk/uploads/${task.sessionID}`, { method: "DELETE", credentials: "same-origin" });
+  if (task.sessionID) await fetch(configuration.endpoints.session(task.sessionID), { method: "DELETE", credentials: "same-origin" });
   await remove(task.id); await publish();
 }
 export async function retryVPKUpload(task: VPKUploadTask) { await save({ ...task, status: "queued", error: undefined }); await publish(); void run(); }
@@ -110,12 +133,12 @@ async function processTask(task: VPKUploadTask) {
       await save(task); await publish();
     }
     if (!task.serverCleanupPending && task.sessionID) {
-      const response = await fetch(`/api/content/vpk/uploads/${task.sessionID}`, { credentials: "same-origin" });
+      const response = await fetch(configuration.endpoints.session(task.sessionID), { credentials: "same-origin" });
       if (response.ok) task.offset = Number((await response.json()).offset || 0);
       else { task.sessionID = undefined; task.offset = 0; }
     }
     if (!task.serverCleanupPending && !task.sessionID) {
-      const session = await requestJSON("/api/content/vpk/uploads", { method: "POST", body: JSON.stringify({ name: task.name, size: task.size, sha256: task.hash }) });
+      const session = await requestJSON(configuration.endpoints.begin, { method: "POST", body: JSON.stringify({ name: task.name, size: task.size, sha256: task.hash }) });
       task.sessionID = session.id ?? session.ID; task.offset = session.offset || 0;
     }
     if (!task.serverCleanupPending) {
@@ -124,7 +147,7 @@ async function processTask(task: VPKUploadTask) {
       while (task.offset < task.size) {
       const chunkStarted = performance.now();
       const previousOffset = task.offset;
-      const response = await fetch(`/api/content/vpk/uploads/${task.sessionID}`, { method: "PATCH", credentials: "same-origin", headers: { "Content-Type": "application/octet-stream", "Upload-Offset": String(task.offset) }, body: task.blob.slice(task.offset, task.offset + CHUNK) });
+      const response = await fetch(configuration.endpoints.session(task.sessionID!), { method: "PATCH", credentials: "same-origin", headers: { "Content-Type": "application/octet-stream", "Upload-Offset": String(task.offset) }, body: task.blob.slice(task.offset, task.offset + CHUNK) });
       if (!response.ok) throw await responseError(response);
       task.offset = Number(response.headers.get("Upload-Offset") || Math.min(task.offset + CHUNK, task.size));
       const seconds = Math.max((performance.now() - chunkStarted) / 1000, 0.001);
@@ -135,14 +158,14 @@ async function processTask(task: VPKUploadTask) {
       task.processedBytes = task.offset; task.processTotal = task.size;
       await save(task); await publish();
       }
-      await requestJSON(`/api/content/vpk/uploads/${task.sessionID}/complete`, { method: "POST", body: "{}" });
-      task = { ...task, sessionID: undefined, serverCleanupPending: useServerCleanup };
+      await requestJSON(configuration.endpoints.complete(task.sessionID!), { method: "POST", body: JSON.stringify(configuration.completeBody(useServerCleanup)) });
+      task = { ...task, sessionID: undefined, serverCleanupPending: useServerCleanup && configuration.cleanupAfterComplete };
       await save(task); await publish();
     }
     if (task.serverCleanupPending) {
       task = { ...task, status: "cleaning", phase: "服务器清理 VPK", processedBytes: task.size, processTotal: task.size };
       await save(task); await publish();
-      const cleaned = await requestJSON(`/api/content/vpk/${encodeURIComponent(task.name)}/clean`, { method: "POST", body: JSON.stringify({ confirm: true }) });
+      const cleaned = await requestJSON(configuration.endpoints.clean(task.name), { method: "POST", body: JSON.stringify({ confirm: true }) });
       task = { ...task, size: Number(cleaned.after_size ?? task.size), removed: Number(cleaned.removed ?? 0), serverCleanupPending: false };
     }
     task.status = "completed"; await save(task); await publish(); completedListener?.();
