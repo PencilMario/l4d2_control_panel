@@ -741,6 +741,116 @@ func loginCookie(t *testing.T, s *Server) *http.Cookie {
 	return w.Result().Cookies()[0]
 }
 
+func TestSelfServiceVPKAuthorizationSettingsListAndUpload(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	a := auth.NewService()
+	if err := a.Bootstrap("correct horse battery staple"); err != nil {
+		t.Fatal(err)
+	}
+	uploads, err := content.NewUploadManager(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := content.NewSelfServiceVPKManager(db, uploads)
+	s := New(db, a, WithContent(uploads, nil, nil, nil, nil), WithSelfServiceVPK(manager), WithSecureCookie(false))
+	admin := loginCookie(t, s)
+
+	status := httptest.NewRecorder()
+	s.Handler().ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/self-service/vpk/status", nil))
+	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"enabled":false`) {
+		t.Fatalf("status=%d %s", status.Code, status.Body.String())
+	}
+
+	settings := authenticatedJSON(t, s, admin, http.MethodPut, "/api/settings/self-service-vpk", `{"enabled":true,"password":"maps","auto_delete":true,"retention_days":14}`)
+	if settings.Code != http.StatusOK || !strings.Contains(settings.Body.String(), `"password_set":true`) {
+		t.Fatalf("settings=%d %s", settings.Code, settings.Body.String())
+	}
+
+	denied := httptest.NewRecorder()
+	s.Handler().ServeHTTP(denied, httptest.NewRequest(http.MethodGet, "/api/self-service/vpk?limit=20&offset=0", nil))
+	if denied.Code != http.StatusUnauthorized {
+		t.Fatalf("denied=%d %s", denied.Code, denied.Body.String())
+	}
+
+	authReq := httptest.NewRequest(http.MethodPost, "/api/self-service/vpk/authorize", strings.NewReader(`{"password":"maps"}`))
+	authRes := httptest.NewRecorder()
+	s.Handler().ServeHTTP(authRes, authReq)
+	if authRes.Code != http.StatusNoContent || len(authRes.Result().Cookies()) != 1 {
+		t.Fatalf("authorize=%d %s cookies=%v", authRes.Code, authRes.Body.String(), authRes.Result().Cookies())
+	}
+	publicCookie := authRes.Result().Cookies()[0]
+
+	data := []byte("self-service-map")
+	digest := sha256.Sum256(data)
+	beginReq := httptest.NewRequest(http.MethodPost, "/api/self-service/vpk/uploads", strings.NewReader(fmt.Sprintf(`{"name":"map.vpk","size":%d,"sha256":"%s"}`, len(data), hex.EncodeToString(digest[:]))))
+	beginReq.AddCookie(publicCookie)
+	beginRes := httptest.NewRecorder()
+	s.Handler().ServeHTTP(beginRes, beginReq)
+	if beginRes.Code != http.StatusCreated {
+		t.Fatalf("begin=%d %s", beginRes.Code, beginRes.Body.String())
+	}
+	var session content.UploadSession
+	if err := json.Unmarshal(beginRes.Body.Bytes(), &session); err != nil {
+		t.Fatal(err)
+	}
+	writeReq := httptest.NewRequest(http.MethodPatch, "/api/self-service/vpk/uploads/"+session.ID, bytes.NewReader(data))
+	writeReq.Header.Set("Upload-Offset", "0")
+	writeReq.AddCookie(publicCookie)
+	writeRes := httptest.NewRecorder()
+	s.Handler().ServeHTTP(writeRes, writeReq)
+	if writeRes.Code != http.StatusOK {
+		t.Fatalf("write=%d %s", writeRes.Code, writeRes.Body.String())
+	}
+	completeReq := httptest.NewRequest(http.MethodPost, "/api/self-service/vpk/uploads/"+session.ID+"/complete", strings.NewReader(`{"clean":false}`))
+	completeReq.AddCookie(publicCookie)
+	completeRes := httptest.NewRecorder()
+	s.Handler().ServeHTTP(completeRes, completeReq)
+	if completeRes.Code != http.StatusOK {
+		t.Fatalf("complete=%d %s", completeRes.Code, completeRes.Body.String())
+	}
+	listReq := httptest.NewRequest(http.MethodGet, "/api/self-service/vpk?limit=20&offset=0", nil)
+	listReq.AddCookie(publicCookie)
+	listRes := httptest.NewRecorder()
+	s.Handler().ServeHTTP(listRes, listReq)
+	if listRes.Code != http.StatusOK || !strings.Contains(listRes.Body.String(), `"name":"map.vpk"`) || !strings.Contains(listRes.Body.String(), `"total":1`) {
+		t.Fatalf("list=%d %s", listRes.Code, listRes.Body.String())
+	}
+
+	changed := authenticatedJSON(t, s, admin, http.MethodPut, "/api/settings/self-service-vpk", `{"enabled":true,"password":"new-maps","auto_delete":true,"retention_days":14}`)
+	if changed.Code != http.StatusOK {
+		t.Fatalf("changed=%d %s", changed.Code, changed.Body.String())
+	}
+	revokedReq := httptest.NewRequest(http.MethodGet, "/api/self-service/vpk", nil)
+	revokedReq.AddCookie(publicCookie)
+	revoked := httptest.NewRecorder()
+	s.Handler().ServeHTTP(revoked, revokedReq)
+	if revoked.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked=%d %s", revoked.Code, revoked.Body.String())
+	}
+}
+
+func TestSelfServiceVPKEmptyPasswordIsPublic(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	uploads, _ := content.NewUploadManager(t.TempDir())
+	s = New(db, s.auth, WithContent(uploads, nil, nil, nil, nil), WithSelfServiceVPK(content.NewSelfServiceVPKManager(db, uploads)), WithSecureCookie(false))
+	admin := loginCookie(t, s)
+	response := authenticatedJSON(t, s, admin, http.MethodPut, "/api/settings/self-service-vpk", `{"enabled":true,"password":"","auto_delete":false,"retention_days":7}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("settings=%d %s", response.Code, response.Body.String())
+	}
+	list := httptest.NewRecorder()
+	s.Handler().ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/self-service/vpk", nil))
+	if list.Code != http.StatusOK {
+		t.Fatalf("list=%d %s", list.Code, list.Body.String())
+	}
+}
+
 func TestProtectedRoutesRequireSession(t *testing.T) {
 	s, db := testServer(t)
 	defer db.Close()

@@ -51,6 +51,8 @@ type Server struct {
 	console           ConsoleAttacher
 	players           PlayerService
 	uploads           *content.UploadManager
+	selfServiceVPK    *content.SelfServiceVPKManager
+	selfServiceVPKKey []byte
 	private           *content.PrivateManager
 	privateUploads    *content.PrivateUploadManager
 	updates           *updates.Pipeline
@@ -79,6 +81,10 @@ type Server struct {
 
 func WithPrivateUploads(manager *content.PrivateUploadManager) Option {
 	return func(s *Server) { s.privateUploads = manager }
+}
+
+func WithSelfServiceVPK(manager *content.SelfServiceVPKManager) Option {
+	return func(s *Server) { s.selfServiceVPK = manager }
 }
 
 type Lifecycle interface {
@@ -187,9 +193,20 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 	for _, option := range options {
 		option(s)
 	}
+	if s.selfServiceVPK != nil {
+		s.selfServiceKey()
+	}
 	r := chi.NewRouter()
 	r.Post("/api/auth/login", s.login)
 	r.Get("/api/health", s.health)
+	r.Get("/api/self-service/vpk/status", s.selfServiceVPKStatus)
+	r.Post("/api/self-service/vpk/authorize", s.authorizeSelfServiceVPK)
+	r.Get("/api/self-service/vpk", s.listSelfServiceVPK)
+	r.Post("/api/self-service/vpk/uploads", s.beginSelfServiceVPK)
+	r.Get("/api/self-service/vpk/uploads/{id}", s.recoverSelfServiceVPKUpload)
+	r.Patch("/api/self-service/vpk/uploads/{id}", s.writeSelfServiceVPK)
+	r.Delete("/api/self-service/vpk/uploads/{id}", s.cancelSelfServiceVPKUpload)
+	r.Post("/api/self-service/vpk/uploads/{id}/complete", s.completeSelfServiceVPK)
 	r.Group(func(r chi.Router) {
 		r.Use(s.requireAuth)
 		r.Use(s.instanceMutationLease)
@@ -275,6 +292,8 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Delete("/api/settings/steam", s.deleteSteamCredentials)
 		r.Get("/api/settings/jobs", s.jobSettings)
 		r.Put("/api/settings/jobs", s.setJobSettings)
+		r.Get("/api/settings/self-service-vpk", s.getSelfServiceVPKSettings)
+		r.Put("/api/settings/self-service-vpk", s.putSelfServiceVPKSettings)
 	})
 	s.router = r
 	return s
@@ -1471,7 +1490,12 @@ func (s *Server) renameVPK(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_vpk_name", err.Error())
 		return
 	}
-	item, err := s.uploads.Rename(name, input.Name)
+	var item content.SharedVPK
+	if s.selfServiceVPK != nil {
+		item, err = s.selfServiceVPK.Rename(name, input.Name)
+	} else {
+		item, err = s.uploads.Rename(name, input.Name)
+	}
 	if err != nil {
 		writeError(w, 422, "rename_failed", err.Error())
 		return
@@ -1488,7 +1512,12 @@ func (s *Server) deleteVPK(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_vpk_name", err.Error())
 		return
 	}
-	if err := s.uploads.Delete(name); err != nil {
+	if s.selfServiceVPK != nil {
+		err = s.selfServiceVPK.Delete(name)
+	} else {
+		err = s.uploads.Delete(name)
+	}
+	if err != nil {
 		writeError(w, 422, "delete_failed", err.Error())
 		return
 	}
@@ -1510,7 +1539,12 @@ func (s *Server) cleanVPK(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid_vpk_name", err.Error())
 		return
 	}
-	result, err := s.uploads.Clean(name)
+	var result content.VPKCleanupResult
+	if s.selfServiceVPK != nil {
+		result, err = s.selfServiceVPK.Clean(name)
+	} else {
+		result, err = s.uploads.Clean(name)
+	}
 	if err != nil {
 		writeError(w, 422, "clean_failed", err.Error())
 		return
