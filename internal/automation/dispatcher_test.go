@@ -5,8 +5,10 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/not0721here/l4d2-control-panel/internal/a2s"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
+	"github.com/not0721here/l4d2-control-panel/internal/players"
 	"github.com/not0721here/l4d2-control-panel/internal/releases"
 	"github.com/not0721here/l4d2-control-panel/internal/updates"
 )
@@ -20,6 +22,16 @@ func (missingSourceRepo) GitHubSource(context.Context, string) (domain.GitHubSou
 type fakeInstanceRepo struct {
 	instance domain.Instance
 	err      error
+}
+
+type failedPlayerQuery struct{}
+
+func (failedPlayerQuery) Info(string) (a2s.Info, error) {
+	return a2s.Info{}, errors.New("instance is offline")
+}
+
+func (failedPlayerQuery) Players(string) ([]a2s.Player, error) {
+	return nil, errors.New("instance is offline")
 }
 
 func (f fakeInstanceRepo) Instance(context.Context, string) (domain.Instance, error) {
@@ -75,6 +87,30 @@ func TestScheduledGameUpdateUsesGlobalPolicy(t *testing.T) {
 	}
 	if updater.policy != "wait" {
 		t.Fatalf("policy=%q", updater.policy)
+	}
+}
+
+func TestWaitForPlayersForcesWaitPolicyAfterQueryFailure(t *testing.T) {
+	instance := domain.Instance{ID: "instance", ActualState: domain.StateRunning, ContainerID: "container", GamePort: 27015}
+	playerService := players.NewService(fakeInstanceRepo{instance: instance}, failedPlayerQuery{}, nil, "127.0.0.1")
+	d := Dispatcher{Instances: fakeInstanceRepo{instance: instance}, Players: playerService}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := d.waitForPlayers(ctx, domain.ScheduledTask{InstanceID: instance.ID, OnlinePolicy: "wait"}); err != nil {
+		t.Fatalf("query failure should force a waiting scheduled task to run: %v", err)
+	}
+}
+
+func TestWaitForPlayersAllowsStoppedInstance(t *testing.T) {
+	instance := domain.Instance{ID: "instance", ActualState: domain.StateStopped}
+	playerService := players.NewService(fakeInstanceRepo{instance: instance}, failedPlayerQuery{}, nil, "127.0.0.1")
+	d := Dispatcher{Instances: fakeInstanceRepo{instance: instance}, Players: playerService}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := d.waitForPlayers(ctx, domain.ScheduledTask{InstanceID: instance.ID, OnlinePolicy: "wait"}); err != nil {
+		t.Fatalf("stopped instance should not wait for player queries: %v", err)
 	}
 }
 

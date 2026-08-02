@@ -131,8 +131,19 @@ func (d Dispatcher) waitForPlayers(ctx context.Context, task domain.ScheduledTas
 		jobs.Logf(ctx, "schedule", joblogs.Info, "player policy allows execution target=%s policy=%s", task.InstanceID, task.OnlinePolicy)
 		return nil
 	}
+	if d.Instances != nil {
+		instance, err := d.Instances.Instance(ctx, task.InstanceID)
+		if err == nil && instance.ActualState == domain.StateStopped {
+			jobs.Logf(ctx, "schedule", joblogs.Info, "player check bypassed target=%s state=%s", task.InstanceID, instance.ActualState)
+			return nil
+		}
+	}
 	for {
 		snapshot, err := d.Players.Online(ctx, task.InstanceID)
+		if err != nil && task.OnlinePolicy == "wait" {
+			jobs.Logf(ctx, "schedule", joblogs.Warn, "player query failed; forcing scheduled execution target=%s policy=%s error=%q", task.InstanceID, task.OnlinePolicy, err.Error())
+			return nil
+		}
 		if err == nil && len(snapshot.Players) == 0 {
 			jobs.Logf(ctx, "schedule", joblogs.Info, "player check passed target=%s players=0", task.InstanceID)
 			return nil
