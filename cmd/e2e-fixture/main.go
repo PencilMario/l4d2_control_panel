@@ -311,7 +311,8 @@ func main() {
 			log.Fatal(err)
 		}
 	}
-	secretService, err := secrets.New(db, bytes.Repeat([]byte{0x2a}, 32))
+	fixtureSecretKey := bytes.Repeat([]byte{0x2a}, 32)
+	secretService, err := secrets.New(db, fixtureSecretKey)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -364,7 +365,7 @@ func main() {
 		httpapi.WithPlayers(fixturePlayers{}),
 		httpapi.WithContent(uploads, private, packages, pipeline, packageUpdates),
 		httpapi.WithSelfServiceVPK(selfServiceVPKManager),
-		httpapi.WithSelfServiceVPKKey(secretKey),
+		httpapi.WithSelfServiceVPKKey(fixtureSecretKey),
 		httpapi.WithPrivateUploads(privateUploads),
 		httpapi.WithGameUpdates(gameUpdates),
 		httpapi.WithScheduler(schedules),
