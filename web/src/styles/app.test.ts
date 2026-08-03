@@ -99,6 +99,27 @@ describe("approved control-panel shell", () => {
     expect(modes).toContain("height: 24px");
   });
 
+  it("keeps the standalone VPK workspace on the control-panel palette", () => {
+    const page = css.match(/\.self-vpk-page,\s*\.self-vpk-state\s*\{([^}]*)\}/)?.[1] ?? "";
+    const queue = css.match(/\.self-vpk-page\s+\.vpk-upload-queue\s*\{([^}]*)\}/)?.[1] ?? "";
+    const task = css.match(/\.self-vpk-page\s+\.vpk-upload-task\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(page).toContain("color: var(--text)");
+    expect(page).toContain("background: var(--canvas)");
+    expect(queue).toContain("background: var(--surface)");
+    expect(task).toContain("background: var(--surface-raised)");
+  });
+
+  it("renders self-service settings checkboxes as compact switches", () => {
+    const toggle = css.match(/\.settings-toggle\s*\{([^}]*)\}/)?.[1] ?? "";
+    const input = css.match(/\.settings-toggle input\[type="checkbox"\]\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(toggle).toContain("grid-template-columns: 34px minmax(0, 1fr)");
+    expect(input).toContain("appearance: none");
+    expect(input).toContain("width: 34px");
+    expect(css).toMatch(/\.settings-toggle input\[type="checkbox"\]:checked\s*\{[^}]*background:\s*#84cc16/);
+  });
+
   it("matches the content repository tab strip geometry from the reference", () => {
     const tabs = css.match(/\.content-tabs\s*\{([^}]*)\}/)?.[1] ?? "";
     const button = css.match(/\.content-tabs button\s*\{([^}]*)\}/)?.[1] ?? "";
