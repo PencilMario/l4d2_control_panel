@@ -46,9 +46,9 @@ type Instance struct {
 }
 
 type VPKRestart struct {
-	InstanceID, ContainerID, PublicationID, Status string
-	Failures                                       int
-	CreatedAt, UpdatedAt                           time.Time
+	InstanceID, ContainerID, PublicationID, JobID, Status string
+	Failures                                              int
+	CreatedAt, UpdatedAt                                  time.Time
 }
 
 type JobRecord struct {

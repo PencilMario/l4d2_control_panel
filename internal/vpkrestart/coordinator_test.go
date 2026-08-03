@@ -33,6 +33,9 @@ func (r *memoryRepo) UpsertVPKRestart(_ context.Context, v domain.VPKRestart) er
 	defer r.mu.Unlock()
 	if old, ok := r.items[v.InstanceID]; ok {
 		old.PublicationID = v.PublicationID
+		if old.JobID == "" {
+			old.JobID = v.JobID
+		}
 		r.items[v.InstanceID] = old
 	} else {
 		v.Status = "waiting"
@@ -99,9 +102,14 @@ func (l *fakeLife) Restart(context.Context, string) error { l.restarts++; return
 
 type immediateJobs struct{ starts int }
 
-func (j *immediateJobs) Start(ctx context.Context, id, kind string, fn func(context.Context, jobs.Reporter) error) (jobs.Job, error) {
+func (j *immediateJobs) StartWithOptions(ctx context.Context, id, kind string, options jobs.StartOptions, fn func(context.Context, jobs.Reporter) error) (jobs.Job, error) {
 	j.starts++
-	return jobs.Job{}, fn(ctx, nil)
+	if options.Preflight != nil {
+		if err := options.Preflight(ctx, nil); err != nil {
+			return jobs.Job{}, err
+		}
+	}
+	return jobs.Job{ID: "job-1"}, fn(ctx, nil)
 }
 
 type restartLogSink struct {
@@ -136,6 +144,18 @@ func TestRegisterMergesRunningInstancesAndSkipsStopped(t *testing.T) {
 	_, _ = c.Register(context.Background(), "hash-2")
 	if len(r.items) != 1 || r.items["a"].ContainerID != "c1" || r.items["a"].PublicationID != "hash-2" {
 		t.Fatalf("items=%#v", r.items)
+	}
+}
+
+func TestRegisterCreatesVisibleJobImmediately(t *testing.T) {
+	r := &memoryRepo{instances: []domain.Instance{running("a", "c1")}, items: map[string]domain.VPKRestart{}}
+	jobsStarted := &immediateJobs{}
+	c := New(r, &fakePlayers{}, &fakeLife{}, jobsStarted)
+	if count, err := c.Register(context.Background(), "hash"); err != nil || count != 1 {
+		t.Fatalf("count=%d err=%v", count, err)
+	}
+	if jobsStarted.starts != 1 || r.items["a"].JobID == "" {
+		t.Fatalf("starts=%d item=%#v", jobsStarted.starts, r.items["a"])
 	}
 }
 

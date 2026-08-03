@@ -104,7 +104,29 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = migrateVPKRestartJobIDs(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
+}
+
+func migrateVPKRestartJobIDs(db *sql.DB) error {
+	var applied int
+	if err := db.QueryRow(`SELECT count(*) FROM schema_migrations WHERE version=12`).Scan(&applied); err != nil || applied > 0 {
+		return err
+	}
+	var found int
+	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('shared_vpk_restarts') WHERE name='job_id'`).Scan(&found); err != nil {
+		return err
+	}
+	if found == 0 {
+		if _, err := db.Exec(`ALTER TABLE shared_vpk_restarts ADD COLUMN job_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	_, err := db.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(12,CURRENT_TIMESTAMP)`)
+	return err
 }
 
 func migrateJobTimeouts(db *sql.DB) error {
@@ -657,6 +679,9 @@ func (s *Store) Jobs(ctx context.Context, limit int) ([]domain.JobRecord, error)
 		return nil, err
 	}
 	for _, restart := range restarts {
+		if restart.JobID != "" {
+			continue
+		}
 		stage, message := "waiting_players", "Waiting for the server to become empty"
 		if restart.Failures > 0 {
 			message = fmt.Sprintf("Player query failed %d/3; waiting to retry", restart.Failures)
@@ -684,14 +709,14 @@ func (s *Store) UpsertVPKRestart(ctx context.Context, v domain.VPKRestart) error
 	if v.Status == "" {
 		v.Status = "waiting"
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO shared_vpk_restarts(instance_id,container_id,publication_id,status,failures,created_at,updated_at)
-VALUES(?,?,?,?,?,?,?) ON CONFLICT(instance_id) DO UPDATE SET publication_id=excluded.publication_id,updated_at=excluded.updated_at`,
-		v.InstanceID, v.ContainerID, v.PublicationID, v.Status, v.Failures, v.CreatedAt.Format(time.RFC3339Nano), v.UpdatedAt.Format(time.RFC3339Nano))
+	_, err := s.db.ExecContext(ctx, `INSERT INTO shared_vpk_restarts(instance_id,container_id,publication_id,job_id,status,failures,created_at,updated_at)
+VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(instance_id) DO UPDATE SET publication_id=excluded.publication_id,job_id=CASE WHEN shared_vpk_restarts.job_id='' THEN excluded.job_id ELSE shared_vpk_restarts.job_id END,updated_at=excluded.updated_at`,
+		v.InstanceID, v.ContainerID, v.PublicationID, v.JobID, v.Status, v.Failures, v.CreatedAt.Format(time.RFC3339Nano), v.UpdatedAt.Format(time.RFC3339Nano))
 	return err
 }
 
 func (s *Store) PendingVPKRestarts(ctx context.Context) ([]domain.VPKRestart, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT instance_id,container_id,publication_id,status,failures,created_at,updated_at FROM shared_vpk_restarts WHERE status IN ('waiting','queued','retry') ORDER BY created_at,instance_id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT instance_id,container_id,publication_id,job_id,status,failures,created_at,updated_at FROM shared_vpk_restarts WHERE status IN ('waiting','queued','retry') ORDER BY created_at,instance_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -700,7 +725,7 @@ func (s *Store) PendingVPKRestarts(ctx context.Context) ([]domain.VPKRestart, er
 	for rows.Next() {
 		var v domain.VPKRestart
 		var created, updated string
-		if err := rows.Scan(&v.InstanceID, &v.ContainerID, &v.PublicationID, &v.Status, &v.Failures, &created, &updated); err != nil {
+		if err := rows.Scan(&v.InstanceID, &v.ContainerID, &v.PublicationID, &v.JobID, &v.Status, &v.Failures, &created, &updated); err != nil {
 			return nil, err
 		}
 		v.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
