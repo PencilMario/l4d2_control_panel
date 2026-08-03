@@ -1826,6 +1826,11 @@ function PlayerSummaryItem({ icon, label, value }: { icon: ReactNode; label: str
 function SettingsPage() {
   const [steam, setSteam] = useState(false);
   const [github, setGithub] = useState(false);
+  const [confirmedReleaseAccelerator, setConfirmedReleaseAccelerator] = useState("");
+  const [draftReleaseAccelerator, setDraftReleaseAccelerator] = useState("");
+  const [releaseSettingsReady, setReleaseSettingsReady] = useState(false);
+  const [savingReleaseSettings, setSavingReleaseSettings] = useState(false);
+  const [releaseSettingsNotice, setReleaseSettingsNotice] = useState("");
   const [settingsError, setSettingsError] = useState("");
   const [confirmedJobLimit, setConfirmedJobLimit] = useState(25);
   const [draftJobLimit, setDraftJobLimit] = useState("25");
@@ -1847,6 +1852,14 @@ function SettingsPage() {
       .catch((reason) => setSettingsError(errorMessage(reason)));
     api<any>("/api/settings/github-token")
       .then((x) => setGithub(x.configured))
+      .catch((reason) => setSettingsError(errorMessage(reason)));
+    api<{ accelerator_url: string }>("/api/settings/github-releases")
+      .then((settings) => {
+        if (typeof settings.accelerator_url !== "string") throw new Error("Release 下载设置数据无效");
+        setConfirmedReleaseAccelerator(settings.accelerator_url);
+        setDraftReleaseAccelerator(settings.accelerator_url);
+        setReleaseSettingsReady(true);
+      })
       .catch((reason) => setSettingsError(errorMessage(reason)));
     api<{ successful_job_limit: number }>("/api/settings/jobs")
       .then((settings) => {
@@ -1914,6 +1927,39 @@ function SettingsPage() {
       });
     } catch (reason) {
       setSettingsError(errorMessage(reason));
+    }
+  };
+  const saveReleaseSettings = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (settingsActions.isLocked("github-releases")) return;
+    const value = draftReleaseAccelerator.trim();
+    if (value !== "") {
+      try {
+        const parsed = new URL(value);
+        if (parsed.protocol !== "https:" || parsed.search || parsed.hash) throw new Error();
+      } catch {
+        setSettingsError("Release 下载加速地址必须是无查询参数和片段的 HTTPS 地址");
+        return;
+      }
+    }
+    setSettingsError("");
+    setReleaseSettingsNotice("");
+    setSavingReleaseSettings(true);
+    try {
+      await settingsActions.run("github-releases", async () => {
+        const saved = await api<{ accelerator_url: string }>("/api/settings/github-releases", {
+          method: "PUT",
+          body: JSON.stringify({ accelerator_url: value }),
+        });
+        setConfirmedReleaseAccelerator(saved.accelerator_url);
+        setDraftReleaseAccelerator(saved.accelerator_url);
+        setReleaseSettingsNotice("Release 下载设置已保存");
+      });
+    } catch (reason) {
+      setDraftReleaseAccelerator(confirmedReleaseAccelerator);
+      setSettingsError(errorMessage(reason));
+    } finally {
+      setSavingReleaseSettings(false);
     }
   };
   const saveJobSettings = async (e: FormEvent<HTMLFormElement>) => {
@@ -2018,7 +2064,7 @@ function SettingsPage() {
     <div className="settings-reference-page">
       <header className="settings-reference-head">
         <h2>系统设置</h2>
-        <p>配置 SteamCMD 登录凭据、GitHub 访问令牌、后台任务保留上限及日志清理策略</p>
+        <p>配置 SteamCMD 登录凭据、GitHub 访问与下载、后台任务保留上限及日志清理策略</p>
       </header>
       {settingsError && (
         <div className="error" role="alert">
@@ -2037,6 +2083,13 @@ function SettingsPage() {
           <p>用于突破 GitHub REST API 速率限制并访问私有插件发布仓库。</p>
           <div className="settings-fields"><label>Personal Access Token (ghp_...)<input name="token" type="password" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" required /></label></div>
           <footer><small>未配置时公开仓库仍可受限访问</small><button className="settings-save" disabled={settingsActions.pending.has("github")} aria-busy={settingsActions.pending.has("github")}>{settingsActions.pending.has("github") ? <RefreshCw /> : <Save />}<span>{settingsActions.pending.has("github") ? "保存中…" : "更新 GitHub 令牌"}</span></button></footer>
+        </form>
+        <form className="settings-card" onSubmit={saveReleaseSettings}>
+          <div className="settings-card-title"><h3><Download />GitHub Release 下载</h3><span className={confirmedReleaseAccelerator ? "configured" : "unconfigured"}>{confirmedReleaseAccelerator ? "已启用加速" : "GitHub 直连"}</span></div>
+          <p>仅为 Release 文件下载添加加速前缀；GitHub API 查询保持直连，访问令牌不会发送给加速站。</p>
+          <div className="settings-fields"><label>Release 下载加速地址<input aria-label="Release 下载加速地址" type="url" placeholder="https://example.com/" value={draftReleaseAccelerator} disabled={!releaseSettingsReady || savingReleaseSettings} onChange={(event) => { setDraftReleaseAccelerator(event.target.value); setReleaseSettingsNotice(""); }} /></label></div>
+          {releaseSettingsNotice ? <p className="settings-notice" role="status">{releaseSettingsNotice}</p> : null}
+          <footer><small>留空并保存将恢复 GitHub 直连。</small><button className="settings-save" type="submit" aria-label="保存 Release 下载设置" disabled={!releaseSettingsReady || savingReleaseSettings} aria-busy={savingReleaseSettings}>{savingReleaseSettings ? <RefreshCw /> : <Save />}<span>{savingReleaseSettings ? "保存中…" : "保存下载设置"}</span></button></footer>
         </form>
         <form className="settings-card" onSubmit={saveJobSettings}>
           <div className="settings-card-title"><h3><Clock />后台任务记录保留上限</h3></div>

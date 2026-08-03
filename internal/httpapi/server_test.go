@@ -1769,6 +1769,35 @@ func TestJobSettingsReadUpdateAndPrune(t *testing.T) {
 	}
 }
 
+func TestGitHubReleasesAcceleratorSettings(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	cookie := loginCookie(t, s)
+
+	get := authenticatedJSON(t, s, cookie, http.MethodGet, "/api/settings/github-releases", "")
+	if get.Code != http.StatusOK || !strings.Contains(get.Body.String(), `"accelerator_url":""`) {
+		t.Fatalf("get settings: status=%d body=%s", get.Code, get.Body.String())
+	}
+	put := authenticatedJSON(t, s, cookie, http.MethodPut, "/api/settings/github-releases", `{"accelerator_url":"https://releases.example.test/"}`)
+	if put.Code != http.StatusOK || !strings.Contains(put.Body.String(), `"accelerator_url":"https://releases.example.test/"`) {
+		t.Fatalf("put settings: status=%d body=%s", put.Code, put.Body.String())
+	}
+	for _, body := range []string{
+		`{"accelerator_url":"http://releases.example.test/"}`,
+		`{"accelerator_url":"https://releases.example.test/?token=x"}`,
+		`{"accelerator_url":"https://releases.example.test/"} trailing`,
+	} {
+		response := authenticatedJSON(t, s, cookie, http.MethodPut, "/api/settings/github-releases", body)
+		if response.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("body=%s status=%d response=%s", body, response.Code, response.Body.String())
+		}
+	}
+	clear := authenticatedJSON(t, s, cookie, http.MethodPut, "/api/settings/github-releases", `{"accelerator_url":""}`)
+	if clear.Code != http.StatusOK || !strings.Contains(clear.Body.String(), `"accelerator_url":""`) {
+		t.Fatalf("clear settings: status=%d body=%s", clear.Code, clear.Body.String())
+	}
+}
+
 func TestJobSettingsRejectInvalidValuesWithoutChangingStoredLimit(t *testing.T) {
 	s, db := testServer(t)
 	defer db.Close()

@@ -142,6 +142,9 @@ func WithContent(uploads *content.UploadManager, private *content.PrivateManager
 		s.releases = releases.Client{}
 	}
 }
+func WithReleases(client releases.Client) Option {
+	return func(s *Server) { s.releases = client }
+}
 func WithGameUpdates(coordinator *updates.GameCoordinator) Option {
 	return func(s *Server) { s.gameUpdates = coordinator }
 }
@@ -291,6 +294,8 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Get("/api/settings/github-token", s.githubTokenStatus)
 		r.Put("/api/settings/github-token", s.setGithubToken)
 		r.Delete("/api/settings/github-token", s.deleteGithubToken)
+		r.Get("/api/settings/github-releases", s.githubReleasesSettings)
+		r.Put("/api/settings/github-releases", s.setGitHubReleasesSettings)
 		r.Get("/api/settings/steam", s.steamCredentialStatus)
 		r.Put("/api/settings/steam", s.setSteamCredentials)
 		r.Delete("/api/settings/steam", s.deleteSteamCredentials)
@@ -464,6 +469,38 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 
 type jobSettingsResponse struct {
 	CompletedJobLimit int `json:"successful_job_limit"`
+}
+
+type githubReleasesSettingsResponse struct {
+	AcceleratorURL string `json:"accelerator_url"`
+}
+
+func (s *Server) githubReleasesSettings(w http.ResponseWriter, _ *http.Request) {
+	value, err := s.store.GitHubReleasesAccelerator()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "settings_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, githubReleasesSettingsResponse{AcceleratorURL: value})
+}
+
+func (s *Server) setGitHubReleasesSettings(w http.ResponseWriter, r *http.Request) {
+	var input githubReleasesSettingsResponse
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_github_releases_settings", "accelerator_url must be a string")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_github_releases_settings", "request body must contain exactly one settings object")
+		return
+	}
+	if err := s.store.SetGitHubReleasesAccelerator(input.AcceleratorURL); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_github_releases_settings", err.Error())
+		return
+	}
+	s.githubReleasesSettings(w, r)
 }
 
 func (s *Server) jobSettings(w http.ResponseWriter, _ *http.Request) {

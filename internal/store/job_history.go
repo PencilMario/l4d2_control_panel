@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
@@ -24,9 +26,10 @@ const (
 	MaxGameLogMaxFileSizeMB     = 1024
 
 	// Keep the original key so existing installations retain their configured value.
-	completedJobLimitKey    = "successful_job_limit"
-	gameLogRetentionDaysKey = "game_log_retention_days"
-	gameLogMaxFileSizeMBKey = "game_log_max_file_size_mb"
+	completedJobLimitKey         = "successful_job_limit"
+	gameLogRetentionDaysKey      = "game_log_retention_days"
+	gameLogMaxFileSizeMBKey      = "game_log_max_file_size_mb"
+	githubReleasesAcceleratorKey = "github_releases_accelerator"
 )
 
 type jobExecer interface {
@@ -275,6 +278,29 @@ ON CONFLICT(name) DO UPDATE SET value=excluded.value,updated_at=excluded.updated
 		return err
 	}
 	return tx.Commit()
+}
+
+func (s *Store) GitHubReleasesAccelerator() (string, error) {
+	var value string
+	err := s.db.QueryRow(`SELECT value FROM system_settings WHERE name=?`, githubReleasesAcceleratorKey).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return value, err
+}
+
+func (s *Store) SetGitHubReleasesAccelerator(value string) error {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		parsed, err := url.Parse(value)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return fmt.Errorf("GitHub releases accelerator must be an HTTPS URL without query or fragment")
+		}
+	}
+	_, err := s.db.Exec(`INSERT INTO system_settings(name,value,updated_at) VALUES(?,?,?)
+ON CONFLICT(name) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
+		githubReleasesAcceleratorKey, value, time.Now().UTC().Format(time.RFC3339Nano))
+	return err
 }
 
 func (s *Store) SetGameLogSettings(retentionDays, maxFileSizeMB int) error {

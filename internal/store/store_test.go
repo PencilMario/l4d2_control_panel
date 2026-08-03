@@ -62,6 +62,41 @@ func TestOpenEnablesWALAndMigrates(t *testing.T) {
 	}
 }
 
+func TestGitHubReleasesAcceleratorSettings(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	value, err := s.GitHubReleasesAccelerator()
+	if err != nil || value != "" {
+		t.Fatalf("default value=%q err=%v", value, err)
+	}
+	if err := s.SetGitHubReleasesAccelerator("https://releases.example.test/"); err != nil {
+		t.Fatal(err)
+	}
+	value, err = s.GitHubReleasesAccelerator()
+	if err != nil || value != "https://releases.example.test/" {
+		t.Fatalf("saved value=%q err=%v", value, err)
+	}
+	for _, invalid := range []string{"http://example.test/", "https://", "https://example.test/?token=x", "https://example.test/#fragment"} {
+		if err := s.SetGitHubReleasesAccelerator(invalid); err == nil {
+			t.Fatalf("expected %q to be rejected", invalid)
+		}
+	}
+	value, err = s.GitHubReleasesAccelerator()
+	if err != nil || value != "https://releases.example.test/" {
+		t.Fatalf("invalid update changed value=%q err=%v", value, err)
+	}
+	if err := s.SetGitHubReleasesAccelerator(""); err != nil {
+		t.Fatal(err)
+	}
+	value, err = s.GitHubReleasesAccelerator()
+	if err != nil || value != "" {
+		t.Fatalf("cleared value=%q err=%v", value, err)
+	}
+}
+
 func TestSelfServiceVPKSettingsAndPasswordVersion(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {

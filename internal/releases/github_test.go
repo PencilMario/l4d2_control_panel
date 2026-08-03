@@ -88,6 +88,33 @@ func TestFetchLatestUsesConfiguredReleaseDownloadAccelerator(t *testing.T) {
 	}
 }
 
+func TestFetchLatestReadsReleaseDownloadAcceleratorFromProvider(t *testing.T) {
+	raw := packageBytes()
+	accelerator := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
+		_, _ = w.Write(raw)
+	}))
+	defer accelerator.Close()
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/owner/repo/releases/latest" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, "{\"tag_name\":\"v3.0\",\"assets\":[{\"name\":\"plugins.zip\",\"browser_download_url\":\"https://github.com/owner/repo/releases/download/v3.0/plugins.zip\"}]}")
+	}))
+	defer api.Close()
+	manager, _ := content.NewPackageManager(t.TempDir())
+	configured := accelerator.URL + "/"
+	client := Client{
+		BaseURL: api.URL, HTTP: accelerator.Client(), MaxBytes: 1 << 20,
+		ReleaseDownloadAcceleratorProvider: func(context.Context) (string, error) { return configured, nil },
+	}
+	result, err := client.FetchLatest(context.Background(), "owner/repo", "^plugins[.]zip$", "secret", manager)
+	if err != nil || !result.Updated {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+}
+
 func TestFetchLatestRetainsPreviousReleaseUntilMaintenanceCleanup(t *testing.T) {
 	raw := packageBytes()
 	tag := "v1.0"

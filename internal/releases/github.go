@@ -18,10 +18,11 @@ import (
 )
 
 type Client struct {
-	BaseURL                    string
-	HTTP                       *http.Client
-	MaxBytes                   int64
-	ReleaseDownloadAccelerator string
+	BaseURL                            string
+	HTTP                               *http.Client
+	MaxBytes                           int64
+	ReleaseDownloadAccelerator         string
+	ReleaseDownloadAcceleratorProvider func(context.Context) (string, error)
 }
 type FetchResult struct {
 	Package content.PackageVersion
@@ -102,7 +103,7 @@ func (c Client) FetchLatest(ctx context.Context, repository, assetPattern, token
 	if err != nil || !c.allowedAssetHost(parsed, base) {
 		return FetchResult{}, errors.New("untrusted release asset URL")
 	}
-	downloadURL, accelerated, err := c.releaseDownloadURL(assetURL)
+	downloadURL, accelerated, err := c.releaseDownloadURL(ctx, assetURL)
 	if err != nil {
 		return FetchResult{}, err
 	}
@@ -160,8 +161,16 @@ func (c Client) FetchLatest(ctx context.Context, repository, assetPattern, token
 	return FetchResult{Package: item, Updated: true}, nil
 }
 
-func (c Client) releaseDownloadURL(assetURL string) (string, bool, error) {
+func (c Client) releaseDownloadURL(ctx context.Context, assetURL string) (string, bool, error) {
 	accelerator := strings.TrimSpace(c.ReleaseDownloadAccelerator)
+	if c.ReleaseDownloadAcceleratorProvider != nil {
+		var err error
+		accelerator, err = c.ReleaseDownloadAcceleratorProvider(ctx)
+		if err != nil {
+			return "", false, err
+		}
+		accelerator = strings.TrimSpace(accelerator)
+	}
 	if accelerator == "" {
 		return assetURL, false, nil
 	}

@@ -197,7 +197,11 @@ func main() {
 		log.Printf("private upload recovery: %v", err)
 	}
 	updateCoordinator := &updates.Coordinator{Lifecycle: life, Deployer: updatePipeline, Instances: db}
-	releaseClient := releases.Client{ReleaseDownloadAccelerator: cfg.GitHubReleasesAccelerator}
+	releaseClient := releases.Client{
+		ReleaseDownloadAcceleratorProvider: func(context.Context) (string, error) {
+			return db.GitHubReleasesAccelerator()
+		},
+	}
 	sourceSynchronizer := releases.Synchronizer{Client: releaseClient, Sources: db, Packages: packageManager, Secrets: secretService}
 	gameCoordinator := &updates.GameCoordinator{Root: cfg.DataRoot, Instances: db, Lifecycle: life, Updater: engine, Private: privateManager, Packages: packageManager, Sources: sourceSynchronizer, Deployer: updatePipeline}
 	sharedPublisher := updates.FilesystemGamePublisher{Root: cfg.DataRoot}
@@ -213,7 +217,7 @@ func main() {
 			log.Fatal("L4D2_PANEL_SECURE_COOKIE must be true or false")
 		}
 	}
-	api := httpapi.New(db, sessions, httpapi.WithGameLogs(gameLogManager, gameLogScheduler), httpapi.WithOperations(life, jobManager), httpapi.WithMaintenanceGate(sharedGate), httpapi.WithJobLogs(jobLogManager), httpapi.WithConsole(engine), httpapi.WithPlayers(playerService), httpapi.WithContent(uploadManager, privateManager, packageManager, updatePipeline, updateCoordinator), httpapi.WithSelfServiceVPK(selfServiceVPKManager), httpapi.WithSelfServiceVPKKey(secretKey), httpapi.WithVPKRestartRegistrar(vpkRestartCoordinator), httpapi.WithPrivateUploads(privateUploadManager), httpapi.WithGameUpdates(gameCoordinator), httpapi.WithSharedGameUpdates(sharedGameCoordinator), httpapi.WithSharedGameMigration(sharedGameMigration), httpapi.WithSharedGamePath(cfg.GameCurrentPath), httpapi.WithScheduler(scheduleService), httpapi.WithSecrets(secretService), httpapi.WithResources(engine), httpapi.WithPerformance(performanceSampler), httpapi.WithSystem(engine), httpapi.WithSecureCookie(secureCookie))
+	api := httpapi.New(db, sessions, httpapi.WithGameLogs(gameLogManager, gameLogScheduler), httpapi.WithOperations(life, jobManager), httpapi.WithMaintenanceGate(sharedGate), httpapi.WithJobLogs(jobLogManager), httpapi.WithConsole(engine), httpapi.WithPlayers(playerService), httpapi.WithContent(uploadManager, privateManager, packageManager, updatePipeline, updateCoordinator), httpapi.WithReleases(releaseClient), httpapi.WithSelfServiceVPK(selfServiceVPKManager), httpapi.WithSelfServiceVPKKey(secretKey), httpapi.WithVPKRestartRegistrar(vpkRestartCoordinator), httpapi.WithPrivateUploads(privateUploadManager), httpapi.WithGameUpdates(gameCoordinator), httpapi.WithSharedGameUpdates(sharedGameCoordinator), httpapi.WithSharedGameMigration(sharedGameMigration), httpapi.WithSharedGamePath(cfg.GameCurrentPath), httpapi.WithScheduler(scheduleService), httpapi.WithSecrets(secretService), httpapi.WithResources(engine), httpapi.WithPerformance(performanceSampler), httpapi.WithSystem(engine), httpapi.WithSecureCookie(secureCookie))
 	stopBackground := func() {
 		vpkRestartCoordinator.Stop()
 		scheduleService.Stop()

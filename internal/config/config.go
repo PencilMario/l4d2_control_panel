@@ -7,19 +7,18 @@ import (
 )
 
 type Config struct {
-	ListenAddress             string
-	GameHost                  string
-	GitHubReleasesAccelerator string
-	DataRoot                  string
-	PanelDir                  string
-	PackagesDir               string
-	InstancesDir              string
-	SharedVPKDir              string
-	GameDir                   string
-	GameReleasesDir           string
-	GameStagingDir            string
-	GameCurrentPath           string
-	DatabasePath              string
+	ListenAddress   string
+	GameHost        string
+	DataRoot        string
+	PanelDir        string
+	PackagesDir     string
+	InstancesDir    string
+	SharedVPKDir    string
+	GameDir         string
+	GameReleasesDir string
+	GameStagingDir  string
+	GameCurrentPath string
+	DatabasePath    string
 }
 
 func (c Config) InstanceOverlayDir(instanceID string) string {
@@ -43,10 +42,9 @@ func Load() (Config, error) {
 		return Config{}, errors.New("L4D2_PANEL_GAME_HOST is required and must be an address SRCDS answers on")
 	}
 	c := Config{
-		ListenAddress:             listen,
-		GameHost:                  gameHost,
-		GitHubReleasesAccelerator: os.Getenv("L4D2_PANEL_GITHUB_RELEASES_ACCELERATOR"),
-		DataRoot:                  filepath.Clean(root),
+		ListenAddress: listen,
+		GameHost:      gameHost,
+		DataRoot:      filepath.Clean(root),
 	}
 	c.PanelDir = filepath.Join(c.DataRoot, "panel")
 	c.PackagesDir = filepath.Join(c.DataRoot, "packages")

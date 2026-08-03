@@ -1297,6 +1297,45 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
+  it("loads, saves, and clears the GitHub releases accelerator", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/settings/github-releases") {
+        if (init?.method === "PUT") {
+          return Response.json(JSON.parse(String(init.body)));
+        }
+        return Response.json({ accelerator_url: "" });
+      }
+      if (path === "/api/settings/jobs") return Response.json({ successful_job_limit: 25 });
+      if (path === "/api/settings/game-logs") return Response.json({ retention_days: 14, max_file_size_mb: 10 });
+      return Response.json({ configured: false });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "系统设置" }));
+    const input = await screen.findByRole("textbox", { name: "Release 下载加速地址" });
+    expect(input).toHaveValue("");
+
+    await userEvent.type(input, "https://releases.example.test/");
+    await userEvent.click(screen.getByRole("button", { name: "保存 Release 下载设置" }));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/settings/github-releases",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ accelerator_url: "https://releases.example.test/" }),
+      }),
+    );
+    expect(await screen.findByText("Release 下载设置已保存")).toBeVisible();
+
+    await userEvent.clear(input);
+    await userEvent.click(screen.getByRole("button", { name: "保存 Release 下载设置" }));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/settings/github-releases",
+      expect.objectContaining({ method: "PUT", body: JSON.stringify({ accelerator_url: "" }) }),
+    );
+  });
+
   it("loads and updates the completed job retention limit", async () => {
     const fetchMock = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {

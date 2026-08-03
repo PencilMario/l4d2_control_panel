@@ -10,7 +10,6 @@ func TestLoadCreatesPersistentLayout(t *testing.T) {
 	t.Setenv("L4D2_PANEL_DATA_ROOT", filepath.Join(root, "panel-data"))
 	t.Setenv("L4D2_PANEL_LISTEN", "")
 	t.Setenv("L4D2_PANEL_GAME_HOST", "192.0.2.10")
-	t.Setenv("L4D2_PANEL_GITHUB_RELEASES_ACCELERATOR", "https://releases.example.test/")
 
 	cfg, err := Load()
 	if err != nil {
@@ -26,9 +25,6 @@ func TestLoadCreatesPersistentLayout(t *testing.T) {
 	}
 	if cfg.GameCurrentPath != filepath.Join(cfg.GameDir, "current") {
 		t.Fatalf("GameCurrentPath = %q", cfg.GameCurrentPath)
-	}
-	if cfg.GitHubReleasesAccelerator != "https://releases.example.test/" {
-		t.Fatalf("GitHubReleasesAccelerator = %q", cfg.GitHubReleasesAccelerator)
 	}
 	wantOverlay := filepath.Join(cfg.InstancesDir, "abc", "overlay")
 	if got := cfg.InstanceOverlayDir("abc"); got != wantOverlay {
