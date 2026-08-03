@@ -32,17 +32,18 @@ type JobStarter interface {
 }
 
 type Coordinator struct {
-	repo      Repository
-	players   PlayerProvider
-	lifecycle Lifecycle
-	jobs      JobStarter
-	interval  time.Duration
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
+	repo        Repository
+	players     PlayerProvider
+	lifecycle   Lifecycle
+	jobs        JobStarter
+	interval    time.Duration
+	waitTimeout time.Duration
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
 }
 
 func New(repo Repository, playerProvider PlayerProvider, lifecycle Lifecycle, jobManager JobStarter) *Coordinator {
-	return &Coordinator{repo: repo, players: playerProvider, lifecycle: lifecycle, jobs: jobManager, interval: 30 * time.Second}
+	return &Coordinator{repo: repo, players: playerProvider, lifecycle: lifecycle, jobs: jobManager, interval: 30 * time.Second, waitTimeout: 24 * time.Hour}
 }
 
 func active(v domain.Instance) bool {
@@ -143,9 +144,13 @@ func (c *Coordinator) startJob(ctx context.Context, item domain.VPKRestart) (job
 }
 
 func (c *Coordinator) waitForPlayers(ctx context.Context, reporter jobs.Reporter, item domain.VPKRestart) error {
-	deadline := item.CreatedAt.Add(time.Duration(domain.DefaultJobTimeoutMinutes) * time.Minute)
+	timeout := c.waitTimeout
+	if timeout <= 0 {
+		timeout = 24 * time.Hour
+	}
+	deadline := item.CreatedAt.Add(timeout)
 	if item.CreatedAt.IsZero() {
-		deadline = time.Now().Add(time.Duration(domain.DefaultJobTimeoutMinutes) * time.Minute)
+		deadline = time.Now().Add(timeout)
 	}
 	for {
 		instance, err := c.repo.Instance(ctx, item.InstanceID)

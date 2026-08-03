@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
@@ -156,6 +157,33 @@ func TestRegisterCreatesVisibleJobImmediately(t *testing.T) {
 	}
 	if jobsStarted.starts != 1 || r.items["a"].JobID == "" {
 		t.Fatalf("starts=%d item=%#v", jobsStarted.starts, r.items["a"])
+	}
+}
+
+func TestVPKJobWaitsForPlayersThenRestarts(t *testing.T) {
+	r := &memoryRepo{instances: []domain.Instance{running("a", "c1")}, items: map[string]domain.VPKRestart{}}
+	life := &fakeLife{}
+	c := New(r, &fakePlayers{counts: []int{1, 0}}, life, &immediateJobs{})
+	c.interval = time.Millisecond
+	if _, err := c.Register(context.Background(), "hash"); err != nil {
+		t.Fatal(err)
+	}
+	if life.restarts != 1 {
+		t.Fatalf("restarts=%d players=%d", life.restarts, 2)
+	}
+}
+
+func TestVPKJobForcesRestartAfterTimeoutDespitePlayerQueryFailures(t *testing.T) {
+	r := &memoryRepo{instances: []domain.Instance{running("a", "c1")}, items: map[string]domain.VPKRestart{}}
+	life := &fakeLife{}
+	c := New(r, &fakePlayers{counts: []int{0}, errors: []error{errors.New("offline")}}, life, &immediateJobs{})
+	c.interval = time.Millisecond
+	c.waitTimeout = 5 * time.Millisecond
+	if _, err := c.Register(context.Background(), "hash"); err != nil {
+		t.Fatal(err)
+	}
+	if life.restarts != 1 {
+		t.Fatalf("restarts=%d", life.restarts)
 	}
 }
 
