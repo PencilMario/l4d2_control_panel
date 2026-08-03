@@ -39,6 +39,7 @@
 .self-vpk-mode button[aria-pressed="true"] { background: var(--accent); color: #090c0a; }
 .self-vpk-drop { min-height: 126px; display: grid; place-items: center; align-content: center; gap: 5px; border: 1px dashed var(--line-strong); border-radius: 10px; background: var(--surface); cursor: pointer; }
 .self-vpk-drop:hover { border-color: var(--accent); background: var(--surface-raised); }
+.self-vpk-drop.dragging { border-color: var(--accent); background: var(--surface-raised); }
 .self-vpk-drop svg { width: 25px; color: var(--accent); }
 .self-vpk-drop small { color: var(--muted); }
 .self-vpk-drop input { position: absolute; width: 1px; height: 1px; opacity: 0; }

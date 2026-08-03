@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SelfServiceVPKPage } from "./SelfServiceVPKPage";
@@ -36,5 +36,18 @@ describe("SelfServiceVPKPage", () => {
     const file = new File(["vpk"], "new-map.vpk", { type: "application/octet-stream" });
     await userEvent.upload(screen.getByLabelText("选择 VPK 文件"), file);
     await waitFor(() => expect(queue.enqueue).toHaveBeenCalledWith([{ file, mode: "clean" }]));
+  });
+
+  it("queues VPK files dropped onto the public upload area", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const path = String(input);
+      if (path.endsWith("/status")) return Response.json({ enabled: true, password_required: false, authorized: true, auto_delete: true });
+      if (path.includes("/api/self-service/vpk?")) return Response.json({ items: [], total: 0, limit: 20, offset: 0, auto_delete: true });
+      return new Response(null, { status: 404 });
+    });
+    render(<SelfServiceVPKPage />);
+    const file = new File(["vpk"], "dropped-map.vpk", { type: "application/octet-stream" });
+    fireEvent.drop((await screen.findByText("选择 VPK 文件")).closest("label")!, { dataTransfer: { files: [file] } });
+    await waitFor(() => expect(queue.enqueue).toHaveBeenCalledWith([{ file, mode: "direct" }]));
   });
 });
