@@ -100,7 +100,50 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = migrateJobTimeouts(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
+}
+
+func migrateJobTimeouts(db *sql.DB) error {
+	var applied int
+	if err := db.QueryRow(`SELECT count(*) FROM schema_migrations WHERE version=11`).Scan(&applied); err != nil || applied > 0 {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, table := range []string{"jobs", "scheduled_tasks"} {
+		rows, queryErr := tx.Query(`PRAGMA table_info(` + table + `)`)
+		if queryErr != nil {
+			return queryErr
+		}
+		found := false
+		for rows.Next() {
+			var cid, notNull, primaryKey int
+			var name, kind string
+			var defaultValue any
+			if scanErr := rows.Scan(&cid, &name, &kind, &notNull, &defaultValue, &primaryKey); scanErr != nil {
+				rows.Close()
+				return scanErr
+			}
+			found = found || name == "timeout_minutes"
+		}
+		rows.Close()
+		if !found {
+			if _, err := tx.Exec(`ALTER TABLE ` + table + ` ADD COLUMN timeout_minutes INTEGER NOT NULL DEFAULT 1440`); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(11,CURRENT_TIMESTAMP)`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func migratePackageSourceIDs(db *sql.DB) error {
@@ -516,7 +559,7 @@ func (s *Store) LoadJob(id string) (domain.JobRecord, bool, error) {
 	var v domain.JobRecord
 	var created, updated string
 	var started, finished sql.NullString
-	err := s.db.QueryRow(`SELECT id,instance_id,type,status,stage,percent,message,error,created_at,updated_at,started_at,finished_at FROM jobs WHERE id=?`, id).Scan(&v.ID, &v.InstanceID, &v.Type, &v.Status, &v.Stage, &v.Percent, &v.Message, &v.Error, &created, &updated, &started, &finished)
+	err := s.db.QueryRow(`SELECT id,instance_id,type,status,stage,percent,message,error,timeout_minutes,created_at,updated_at,started_at,finished_at FROM jobs WHERE id=?`, id).Scan(&v.ID, &v.InstanceID, &v.Type, &v.Status, &v.Stage, &v.Percent, &v.Message, &v.Error, &v.TimeoutMinutes, &created, &updated, &started, &finished)
 	if errors.Is(err, sql.ErrNoRows) {
 		return v, false, nil
 	}
@@ -587,7 +630,7 @@ func (s *Store) Jobs(ctx context.Context, limit int) ([]domain.JobRecord, error)
 	if limit < 1 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,instance_id,type,status,stage,percent,message,error,created_at,updated_at,started_at,finished_at FROM jobs ORDER BY created_at DESC LIMIT ?`, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,instance_id,type,status,stage,percent,message,error,timeout_minutes,created_at,updated_at,started_at,finished_at FROM jobs ORDER BY created_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -597,7 +640,7 @@ func (s *Store) Jobs(ctx context.Context, limit int) ([]domain.JobRecord, error)
 		var v domain.JobRecord
 		var created, updated string
 		var started, finished sql.NullString
-		if err := rows.Scan(&v.ID, &v.InstanceID, &v.Type, &v.Status, &v.Stage, &v.Percent, &v.Message, &v.Error, &created, &updated, &started, &finished); err != nil {
+		if err := rows.Scan(&v.ID, &v.InstanceID, &v.Type, &v.Status, &v.Stage, &v.Percent, &v.Message, &v.Error, &v.TimeoutMinutes, &created, &updated, &started, &finished); err != nil {
 			return nil, err
 		}
 		v.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
@@ -709,11 +752,12 @@ func (s *Store) AuditEvents(ctx context.Context, limit int) ([]domain.AuditRecor
 	return result, rows.Err()
 }
 func (s *Store) SaveScheduledTask(ctx context.Context, v domain.ScheduledTask) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO scheduled_tasks(id,instance_id,type,cron,timezone,online_policy,payload,enabled,last_run,next_run) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET instance_id=excluded.instance_id,type=excluded.type,cron=excluded.cron,timezone=excluded.timezone,online_policy=excluded.online_policy,payload=excluded.payload,enabled=excluded.enabled,last_run=excluded.last_run,next_run=excluded.next_run`, v.ID, v.InstanceID, v.Type, v.Cron, v.Timezone, v.OnlinePolicy, v.Payload, v.Enabled, formatOptionalTime(v.LastRun), formatOptionalTime(v.NextRun))
+	v.TimeoutMinutes = domain.NormalizeJobTimeoutMinutes(v.TimeoutMinutes)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO scheduled_tasks(id,instance_id,type,cron,timezone,online_policy,payload,enabled,timeout_minutes,last_run,next_run) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET instance_id=excluded.instance_id,type=excluded.type,cron=excluded.cron,timezone=excluded.timezone,online_policy=excluded.online_policy,payload=excluded.payload,enabled=excluded.enabled,timeout_minutes=excluded.timeout_minutes,last_run=excluded.last_run,next_run=excluded.next_run`, v.ID, v.InstanceID, v.Type, v.Cron, v.Timezone, v.OnlinePolicy, v.Payload, v.Enabled, v.TimeoutMinutes, formatOptionalTime(v.LastRun), formatOptionalTime(v.NextRun))
 	return err
 }
 func (s *Store) ScheduledTasks(ctx context.Context) ([]domain.ScheduledTask, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,instance_id,type,cron,timezone,online_policy,payload,enabled,last_run,next_run FROM scheduled_tasks ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,instance_id,type,cron,timezone,online_policy,payload,enabled,timeout_minutes,last_run,next_run FROM scheduled_tasks ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -722,7 +766,7 @@ func (s *Store) ScheduledTasks(ctx context.Context) ([]domain.ScheduledTask, err
 	for rows.Next() {
 		var v domain.ScheduledTask
 		var last, next string
-		if err := rows.Scan(&v.ID, &v.InstanceID, &v.Type, &v.Cron, &v.Timezone, &v.OnlinePolicy, &v.Payload, &v.Enabled, &last, &next); err != nil {
+		if err := rows.Scan(&v.ID, &v.InstanceID, &v.Type, &v.Cron, &v.Timezone, &v.OnlinePolicy, &v.Payload, &v.Enabled, &v.TimeoutMinutes, &last, &next); err != nil {
 			return nil, err
 		}
 		v.LastRun = parseOptionalTime(last)

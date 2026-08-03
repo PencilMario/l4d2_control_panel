@@ -381,18 +381,20 @@ RETURNING id`, limit)
 }
 
 func saveJob(exec jobExecer, v domain.JobRecord) error {
-	_, err := exec.Exec(`INSERT INTO jobs(id,instance_id,type,status,stage,percent,message,error,created_at,updated_at,started_at,finished_at)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+	v.TimeoutMinutes = domain.NormalizeJobTimeoutMinutes(v.TimeoutMinutes)
+	_, err := exec.Exec(`INSERT INTO jobs(id,instance_id,type,status,stage,percent,message,error,timeout_minutes,created_at,updated_at,started_at,finished_at)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
  status=excluded.status,
  stage=excluded.stage,
  percent=excluded.percent,
  message=excluded.message,
  error=excluded.error,
+	 timeout_minutes=excluded.timeout_minutes,
  updated_at=excluded.updated_at,
  started_at=excluded.started_at,
  finished_at=excluded.finished_at`,
-		v.ID, v.InstanceID, v.Type, v.Status, v.Stage, v.Percent, v.Message, v.Error,
+		v.ID, v.InstanceID, v.Type, v.Status, v.Stage, v.Percent, v.Message, v.Error, v.TimeoutMinutes,
 		v.CreatedAt.UTC().Format(time.RFC3339Nano), v.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		formatNullableTime(v.StartedAt), formatNullableTime(v.FinishedAt))
 	return err

@@ -966,6 +966,41 @@ func TestJobsIncludesExecutionTimes(t *testing.T) {
 	}
 }
 
+func TestJobAndScheduledTaskTimeoutMinutesPersistAndDefault(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now().UTC()
+	for _, record := range []domain.JobRecord{
+		{ID: "default-timeout", Status: "pending", CreatedAt: now, UpdatedAt: now},
+		{ID: "custom-timeout", Status: "pending", TimeoutMinutes: 90, CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := s.SaveJob(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defaultJob, _, _ := s.LoadJob("default-timeout")
+	customJob, _, _ := s.LoadJob("custom-timeout")
+	if defaultJob.TimeoutMinutes != domain.DefaultJobTimeoutMinutes || customJob.TimeoutMinutes != 90 {
+		t.Fatalf("timeouts default=%d custom=%d", defaultJob.TimeoutMinutes, customJob.TimeoutMinutes)
+	}
+	ctx := context.Background()
+	for _, task := range []domain.ScheduledTask{
+		{ID: "default", Type: "cleanup", Cron: "0 4 * * *", Timezone: "UTC", OnlinePolicy: "force"},
+		{ID: "custom", Type: "cleanup", Cron: "0 5 * * *", Timezone: "UTC", OnlinePolicy: "force", TimeoutMinutes: 75},
+	} {
+		if err := s.SaveScheduledTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tasks, err := s.ScheduledTasks(ctx)
+	if err != nil || len(tasks) != 2 || tasks[0].TimeoutMinutes != 75 || tasks[1].TimeoutMinutes != domain.DefaultJobTimeoutMinutes {
+		t.Fatalf("tasks=%#v err=%v", tasks, err)
+	}
+}
+
 func TestVPKRestartUpsertPreservesOriginalContainerAndRecovers(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "panel.db")
 	s, err := Open(path)

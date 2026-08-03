@@ -2,6 +2,19 @@ package domain
 
 import "time"
 
+const (
+	DefaultJobTimeoutMinutes = 1440
+	MinJobTimeoutMinutes     = 1
+	MaxJobTimeoutMinutes     = 10080
+)
+
+func NormalizeJobTimeoutMinutes(value int) int {
+	if value == 0 {
+		return DefaultJobTimeoutMinutes
+	}
+	return value
+}
+
 type InstanceState string
 
 const (
@@ -40,7 +53,7 @@ type VPKRestart struct {
 
 type JobRecord struct {
 	ID, InstanceID, Type, Stage, Message, Status, Error string
-	Percent                                             int
+	Percent, TimeoutMinutes                             int
 	CreatedAt, UpdatedAt                                time.Time
 	StartedAt, FinishedAt                               *time.Time
 }
@@ -63,16 +76,17 @@ type GitHubSource struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 type ScheduledTask struct {
-	ID           string    `json:"id"`
-	InstanceID   string    `json:"instance_id"`
-	Type         string    `json:"type"`
-	Cron         string    `json:"cron"`
-	Timezone     string    `json:"timezone"`
-	OnlinePolicy string    `json:"online_policy"`
-	Payload      string    `json:"payload"`
-	Enabled      bool      `json:"enabled"`
-	LastRun      time.Time `json:"last_run"`
-	NextRun      time.Time `json:"next_run"`
+	ID             string    `json:"id"`
+	InstanceID     string    `json:"instance_id"`
+	Type           string    `json:"type"`
+	Cron           string    `json:"cron"`
+	Timezone       string    `json:"timezone"`
+	OnlinePolicy   string    `json:"online_policy"`
+	TimeoutMinutes int       `json:"timeout_minutes"`
+	Payload        string    `json:"payload"`
+	Enabled        bool      `json:"enabled"`
+	LastRun        time.Time `json:"last_run"`
+	NextRun        time.Time `json:"next_run"`
 }
 
 type SharedGameState struct {
