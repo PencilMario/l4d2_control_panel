@@ -25,10 +25,14 @@ const (
 type Job struct {
 	ID, InstanceID, Type, Stage, Message string
 	Status                               Status
-	Percent                              int
+	Percent, TimeoutMinutes              int
 	Error                                string
 	CreatedAt, UpdatedAt                 time.Time
 	StartedAt, FinishedAt                *time.Time
+}
+type StartOptions struct {
+	TimeoutMinutes int
+	Preflight      func(context.Context, Reporter) error
 }
 type Reporter interface {
 	Progress(stage string, percent int, message string)
@@ -158,8 +162,16 @@ func NewPersistentManager(repo Repository, options ...Option) *Manager {
 	return m
 }
 func (m *Manager) Start(ctx context.Context, instanceID, kind string, fn func(context.Context, Reporter) error) (Job, error) {
+	return m.StartWithOptions(ctx, instanceID, kind, StartOptions{}, fn)
+}
+
+func (m *Manager) StartWithOptions(ctx context.Context, instanceID, kind string, options StartOptions, fn func(context.Context, Reporter) error) (Job, error) {
 	now := time.Now().UTC()
-	j := Job{ID: uuid.NewString(), InstanceID: instanceID, Type: kind, Status: Pending, CreatedAt: now, UpdatedAt: now}
+	timeoutMinutes := domain.NormalizeJobTimeoutMinutes(options.TimeoutMinutes)
+	if timeoutMinutes < domain.MinJobTimeoutMinutes || timeoutMinutes > domain.MaxJobTimeoutMinutes {
+		return Job{}, fmt.Errorf("job timeout must be between %d and %d minutes", domain.MinJobTimeoutMinutes, domain.MaxJobTimeoutMinutes)
+	}
+	j := Job{ID: uuid.NewString(), InstanceID: instanceID, Type: kind, Status: Pending, TimeoutMinutes: timeoutMinutes, CreatedAt: now, UpdatedAt: now}
 	event := domain.JobEvent{JobID: j.ID, Kind: "queued", Message: "Task queued", CreatedAt: now}
 	if m.repo != nil {
 		if err := m.repo.SaveJobWithEvent(toRecord(j), event); err != nil {
@@ -179,24 +191,41 @@ func (m *Manager) Start(ctx context.Context, instanceID, kind string, fn func(co
 	m.appendLog(j.ID, "task", joblogs.Info, event.Message)
 	go func() {
 		defer m.wg.Done()
-		lock.Lock()
-		defer lock.Unlock()
-		if err := m.setStatus(j.ID, Running, 0, ""); err != nil {
-			_ = m.setStatus(
-				j.ID,
-				Failed,
-				-1,
-				"Task could not start because its running state could not be persisted: "+err.Error(),
-			)
-			return
-		}
 		target := instanceID
 		if target == "" {
 			target = "global"
 		}
-		activeReporter := reporter{m: m, id: j.ID, kind: kind, target: target, startedAt: time.Now()}
-		activeReporter.logStart()
-		err := fn(context.WithValue(ctx, reporterContextKey{}, Reporter(activeReporter)), activeReporter)
+		var activeReporter reporter
+		startReporter := func() error {
+			if err := m.setStatus(j.ID, Running, 0, ""); err != nil {
+				return fmt.Errorf("task could not start because its running state could not be persisted: %w", err)
+			}
+			activeReporter = reporter{m: m, id: j.ID, kind: kind, target: target, startedAt: time.Now()}
+			activeReporter.logStart()
+			return nil
+		}
+		if options.Preflight != nil {
+			if err := startReporter(); err != nil {
+				_ = m.setStatus(j.ID, Failed, -1, err.Error())
+				return
+			}
+			if err := options.Preflight(context.WithValue(ctx, reporterContextKey{}, Reporter(activeReporter)), activeReporter); err != nil {
+				activeReporter.logFinish(err)
+				_ = m.setStatus(j.ID, Failed, -1, err.Error())
+				return
+			}
+		}
+		lock.Lock()
+		defer lock.Unlock()
+		if options.Preflight == nil {
+			if err := startReporter(); err != nil {
+				_ = m.setStatus(j.ID, Failed, -1, err.Error())
+				return
+			}
+		}
+		operationCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMinutes)*time.Minute)
+		err := fn(context.WithValue(operationCtx, reporterContextKey{}, Reporter(activeReporter)), activeReporter)
+		cancel()
 		activeReporter.logFinish(err)
 		if err != nil {
 			_ = m.setStatus(j.ID, Failed, -1, err.Error())
@@ -347,8 +376,8 @@ func (m *Manager) Details(id string) (Job, []domain.JobEvent, bool, error) {
 }
 
 func toRecord(j Job) domain.JobRecord {
-	return domain.JobRecord{ID: j.ID, InstanceID: j.InstanceID, Type: j.Type, Stage: j.Stage, Message: j.Message, Status: string(j.Status), Error: j.Error, Percent: j.Percent, CreatedAt: j.CreatedAt, UpdatedAt: j.UpdatedAt, StartedAt: j.StartedAt, FinishedAt: j.FinishedAt}
+	return domain.JobRecord{ID: j.ID, InstanceID: j.InstanceID, Type: j.Type, Stage: j.Stage, Message: j.Message, Status: string(j.Status), Error: j.Error, Percent: j.Percent, TimeoutMinutes: j.TimeoutMinutes, CreatedAt: j.CreatedAt, UpdatedAt: j.UpdatedAt, StartedAt: j.StartedAt, FinishedAt: j.FinishedAt}
 }
 func fromRecord(v domain.JobRecord) Job {
-	return Job{ID: v.ID, InstanceID: v.InstanceID, Type: v.Type, Stage: v.Stage, Message: v.Message, Status: Status(v.Status), Error: v.Error, Percent: v.Percent, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt, StartedAt: v.StartedAt, FinishedAt: v.FinishedAt}
+	return Job{ID: v.ID, InstanceID: v.InstanceID, Type: v.Type, Stage: v.Stage, Message: v.Message, Status: Status(v.Status), Error: v.Error, Percent: v.Percent, TimeoutMinutes: domain.NormalizeJobTimeoutMinutes(v.TimeoutMinutes), CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt, StartedAt: v.StartedAt, FinishedAt: v.FinishedAt}
 }

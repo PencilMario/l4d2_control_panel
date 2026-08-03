@@ -107,6 +107,72 @@ func TestLogContextUsesTaskReporter(t *testing.T) {
 	}
 }
 
+func TestStartWithOptionsPersistsTimeoutAndAddsExecutionDeadline(t *testing.T) {
+	m := NewManager()
+	deadlineSeen := make(chan time.Duration, 1)
+	job, err := m.StartWithOptions(context.Background(), "a", "install", StartOptions{TimeoutMinutes: 90}, func(ctx context.Context, _ Reporter) error {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			return errors.New("execution context has no deadline")
+		}
+		deadlineSeen <- time.Until(deadline)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.TimeoutMinutes != 90 {
+		t.Fatalf("timeout=%d", job.TimeoutMinutes)
+	}
+	if err := m.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	duration := <-deadlineSeen
+	if duration < 89*time.Minute || duration > 90*time.Minute {
+		t.Fatalf("deadline duration=%v", duration)
+	}
+}
+
+func TestPreflightRunsBeforeInstanceLock(t *testing.T) {
+	m := NewManager()
+	preflightStarted := make(chan struct{})
+	releasePreflight := make(chan struct{})
+	operationStarted := make(chan struct{})
+	_, err := m.StartWithOptions(context.Background(), "a", "shared_vpk_restart", StartOptions{
+		Preflight: func(context.Context, Reporter) error {
+			close(preflightStarted)
+			<-releasePreflight
+			return nil
+		},
+	}, func(context.Context, Reporter) error {
+		close(operationStarted)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-preflightStarted
+	otherStarted := make(chan struct{})
+	_, err = m.Start(context.Background(), "a", "backup", func(context.Context, Reporter) error {
+		close(otherStarted)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-otherStarted:
+	case <-time.After(time.Second):
+		t.Fatal("preflight held the instance lock")
+	}
+	close(releasePreflight)
+	select {
+	case <-operationStarted:
+	case <-time.After(time.Second):
+		t.Fatal("operation did not run after preflight")
+	}
+}
+
 func TestManagerWritesDetailedTaskSuccessSummary(t *testing.T) {
 	sink := &recordingLogSink{}
 	m := NewManager(WithLogSink(sink))
