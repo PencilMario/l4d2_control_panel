@@ -100,6 +100,22 @@ func TestSharedGameUpdateStopsAndSwitchesEveryInstance(t *testing.T) {
 	}
 }
 
+func TestSharedGameUpdateRecoversWhenPreviousUpdateFailed(t *testing.T) {
+	events := []string{}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "game", "releases", "old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo := &sharedGameRepo{instances: []domain.Instance{{ID: "a", ActualState: domain.StateStopped}}, state: domain.SharedGameState{ActiveReleaseID: "old", MigrationState: "failed"}}
+	coordinator := SharedGameCoordinator{Root: root, Instances: repo, Players: sharedPlayers{}, Installer: &sharedInstaller{events: &events}, Reconciler: sharedReconciler{events: &events}, Lifecycle: sharedLife{&events}, Gate: maintenance.NewGate()}
+	if err := coordinator.Update(context.Background(), "force"); err != nil {
+		t.Fatal(err)
+	}
+	if repo.state.MigrationState != "ready" {
+		t.Fatalf("migration state=%q", repo.state.MigrationState)
+	}
+}
+
 func TestSharedGameUpdateSkipBlocksWhenAnyInstanceOnline(t *testing.T) {
 	events := []string{}
 	repo := &sharedGameRepo{instances: []domain.Instance{{ID: "a", ActualState: domain.StateRunning}, {ID: "b", ActualState: domain.StateRunning}}, state: domain.SharedGameState{ActiveReleaseID: "old", MigrationState: "ready"}}

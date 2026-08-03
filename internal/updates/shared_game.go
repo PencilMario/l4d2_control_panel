@@ -90,9 +90,12 @@ func (c SharedGameCoordinator) Update(ctx context.Context, onlinePolicy string) 
 		return err
 	}
 	jobs.Logf(ctx, "update", joblogs.Info, "shared game update started operation=%s release=%s instances=%d", state.OperationID, activeRelease, len(instances))
-	if activeRelease == "" || state.MigrationState != "ready" {
+	// A failed update can leave the already-active release intact. Treat that
+	// release as usable so a later scheduled update can recover automatically.
+	if activeRelease == "" || (state.MigrationState != "ready" && state.MigrationState != "failed") {
 		return c.fail(ctx, state, errors.New("shared game release is not ready"))
 	}
+	state.MigrationState = "ready"
 	active := make([]domain.Instance, 0, len(instances))
 	for _, instance := range instances {
 		if instance.ActualState != domain.StateRunning && instance.ActualState != domain.StateStarting && instance.ActualState != domain.StateInstalling {
