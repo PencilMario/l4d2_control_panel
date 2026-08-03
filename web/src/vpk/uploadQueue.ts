@@ -31,7 +31,6 @@ export const selfServiceVPKUploadConfiguration: VPKUploadConfiguration = {
 let configuration = adminVPKUploadConfiguration;
 const STORE = "tasks";
 const CHUNK = 8 * 1024 * 1024;
-const LOCAL_CLEANUP_MAX_SIZE = 256 * 1024 * 1024;
 let running = false;
 let listener: ((tasks: VPKUploadTask[]) => void) | undefined;
 let completedListener: (() => void) | undefined;
@@ -66,7 +65,7 @@ async function publishTransient(task: VPKUploadTask) {
   listener?.(tasks.sort((a, b) => a.name.localeCompare(b.name)));
 }
 export function isValidSHA256(value: unknown): value is string { return typeof value === "string" && /^[0-9a-f]{64}$/i.test(value); }
-export function cleanupStrategy(size: number): "local" | "server" { return size <= LOCAL_CLEANUP_MAX_SIZE ? "local" : "server"; }
+export function cleanupStrategy(_size: number): "local" | "server" { return "local"; }
 export function configureVPKUploadQueue(next: VPKUploadConfiguration) {
   if (running || listener) throw new Error("VPK upload queue is already active");
   configuration = next;

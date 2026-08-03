@@ -18,9 +18,9 @@ describe("isValidSHA256", () => {
 });
 
 describe("cleanupStrategy", () => {
-  it("routes large VPK files to server cleanup to avoid exhausting browser WASM memory", () => {
-    expect(cleanupStrategy(256 * 1024 * 1024)).toBe("local");
-    expect(cleanupStrategy(736.1 * 1024 * 1024)).toBe("server");
+  it("always uses browser cleanup regardless of VPK size", () => {
+    expect(cleanupStrategy(0)).toBe("local");
+    expect(cleanupStrategy(4 * 1024 * 1024 * 1024)).toBe("local");
   });
 });
 
