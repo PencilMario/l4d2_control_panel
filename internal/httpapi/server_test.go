@@ -757,7 +757,8 @@ func TestSelfServiceVPKAuthorizationSettingsListAndUpload(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager := content.NewSelfServiceVPKManager(db, uploads)
-	s := New(db, a, WithContent(uploads, nil, nil, nil, nil), WithSelfServiceVPK(manager), WithSecureCookie(false))
+	registrar := &vpkRestartRegistrar{count: 2, err: errors.New("registration unavailable")}
+	s := New(db, a, WithContent(uploads, nil, nil, nil, nil), WithSelfServiceVPK(manager), WithVPKRestartRegistrar(registrar), WithSecureCookie(false))
 	admin := loginCookie(t, s)
 
 	status := httptest.NewRecorder()
@@ -817,8 +818,11 @@ func TestSelfServiceVPKAuthorizationSettingsListAndUpload(t *testing.T) {
 	completeReq.AddCookie(publicCookie)
 	completeRes := httptest.NewRecorder()
 	s.Handler().ServeHTTP(completeRes, completeReq)
-	if completeRes.Code != http.StatusOK {
+	if completeRes.Code != http.StatusOK || !strings.Contains(completeRes.Body.String(), `"restart_instances":2`) || !strings.Contains(completeRes.Body.String(), `"restart_warning":"registration unavailable"`) {
 		t.Fatalf("complete=%d %s", completeRes.Code, completeRes.Body.String())
+	}
+	if registrar.calls != 1 || registrar.publication != hex.EncodeToString(digest[:]) {
+		t.Fatalf("registrar=%#v", registrar)
 	}
 	listReq := httptest.NewRequest(http.MethodGet, "/api/self-service/vpk?limit=20&offset=0", nil)
 	listReq.AddCookie(publicCookie)

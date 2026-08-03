@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -236,5 +237,13 @@ func (s *Server) completeSelfServiceVPK(w http.ResponseWriter, r *http.Request) 
 		writeError(w, 422, "upload_incomplete", err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"item": item, "duplicate": false})
+	response := map[string]any{"item": item, "duplicate": false}
+	if s.vpkRestarts != nil {
+		count, registerErr := s.vpkRestarts.Register(context.WithoutCancel(r.Context()), item.Hash)
+		response["restart_instances"] = count
+		if registerErr != nil {
+			response["restart_warning"] = registerErr.Error()
+		}
+	}
+	writeJSON(w, 200, response)
 }
