@@ -197,13 +197,14 @@ func main() {
 		log.Printf("private upload recovery: %v", err)
 	}
 	updateCoordinator := &updates.Coordinator{Lifecycle: life, Deployer: updatePipeline, Instances: db}
-	sourceSynchronizer := releases.Synchronizer{Client: releases.Client{}, Sources: db, Packages: packageManager, Secrets: secretService}
+	releaseClient := releases.Client{ReleaseDownloadAccelerator: cfg.GitHubReleasesAccelerator}
+	sourceSynchronizer := releases.Synchronizer{Client: releaseClient, Sources: db, Packages: packageManager, Secrets: secretService}
 	gameCoordinator := &updates.GameCoordinator{Root: cfg.DataRoot, Instances: db, Lifecycle: life, Updater: engine, Private: privateManager, Packages: packageManager, Sources: sourceSynchronizer, Deployer: updatePipeline}
 	sharedPublisher := updates.FilesystemGamePublisher{Root: cfg.DataRoot}
 	sharedRebuilder := updates.SharedGameRebuilder{Overlay: overlayClient, Packages: packageManager, Sources: db, Deployer: updatePipeline, Private: privateManager}
 	sharedGameCoordinator := &updates.SharedGameCoordinator{Root: cfg.DataRoot, Instances: db, Players: playerService, Installer: engine, Reconciler: sharedRebuilder, Lifecycle: life, Gate: sharedGate}
 	sharedGameMigration := &sharedmigration.SharedGameService{Root: cfg.DataRoot, Instances: db, Installer: engine, Publisher: sharedPublisher, Layout: sharedmigration.FilesystemLayout{Root: cfg.DataRoot}, Reconciler: sharedRebuilder, Gate: sharedGate}
-	dispatcher := automation.Dispatcher{Jobs: jobManager, Players: playerService, Packages: packageManager, PackagesUpdate: updateCoordinator, GameUpdate: gameCoordinator, SharedGameUpdate: sharedGameCoordinator, Releases: releases.Client{}, Sources: db, Instances: db, Maintenance: maintenance.New(cfg.DataRoot, maintenance.WithPackageCleanup(db, packageManager)), Gate: sharedGate, Secrets: secretService}
+	dispatcher := automation.Dispatcher{Jobs: jobManager, Players: playerService, Packages: packageManager, PackagesUpdate: updateCoordinator, GameUpdate: gameCoordinator, SharedGameUpdate: sharedGameCoordinator, Releases: releaseClient, Sources: db, Instances: db, Maintenance: maintenance.New(cfg.DataRoot, maintenance.WithPackageCleanup(db, packageManager)), Gate: sharedGate, Secrets: secretService}
 	scheduleService := scheduler.NewService(db, dispatcher)
 	secureCookie := true
 	if configured := os.Getenv("L4D2_PANEL_SECURE_COOKIE"); configured != "" {

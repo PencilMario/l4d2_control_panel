@@ -83,11 +83,14 @@ Panel 对外发布 `0.0.0.0:${L4D2_PANEL_HTTP_PORT:-18081}`，容器内监听 `8
 | `L4D2_PANEL_HTTP_PORT` | 宿主机 HTTP 端口 | `18081` |
 | `L4D2_PANEL_GAME_HOST` | Panel 发起 A2S 查询时使用的宿主机地址 | `host.docker.internal` |
 | `L4D2_PANEL_DOWNLOAD_PROXY` | GitHub Release、SteamCMD 等下载代理 | 空 |
+| `L4D2_PANEL_GITHUB_RELEASES_ACCELERATOR` | GitHub Release 文件 URL 前缀加速；留空则直连 | 空 |
 | `L4D2_PANEL_SECURE_COOKIE` | 是否只通过 HTTPS 发送会话 Cookie | `true` |
 
 `L4D2_PANEL_GAME_HOST` 是必填项。使用仓库提供的 Compose 配置时应保留 `host.docker.internal`；Panel 通过默认桥接网络访问使用宿主机网络的 SRCDS。不要改成 `127.0.0.1`，回环地址通常无法从 Panel 容器返回正确的 A2S 数据。
 
 如需代理下载，在 `.env` 中设置 `L4D2_PANEL_DOWNLOAD_PROXY`。该值会同时作为 `HTTP_PROXY` 和 `HTTPS_PROXY` 传入 Panel 与 SteamCMD 维护容器；仅在确有额外内网地址时覆盖 `L4D2_PANEL_NO_PROXY`。
+
+如需仅加速 GitHub Release 文件下载，可设置 `L4D2_PANEL_GITHUB_RELEASES_ACCELERATOR=https://releases.0721play.top/`。GitHub API 查询仍直连配置的 API 地址；加速器只接收公开 Release 文件 URL，GitHub token 不会转发给加速器。
 
 ## HTTPS 与安全边界
 

@@ -51,6 +51,43 @@ func TestFetchLatestSelectsAssetAndStoresPackage(t *testing.T) {
 	}
 }
 
+func TestFetchLatestUsesConfiguredReleaseDownloadAccelerator(t *testing.T) {
+	raw := packageBytes()
+	var downloadedPath, authorization string
+	accelerator := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		downloadedPath = r.URL.EscapedPath()
+		authorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
+		_, _ = w.Write(raw)
+	}))
+	defer accelerator.Close()
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/owner/repo/releases/latest" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprintf(w, `{"tag_name":"v2.0","assets":[{"name":"plugins.zip","browser_download_url":"https://github.com/owner/repo/releases/download/v2.0/plugins.zip"}]}`)
+	}))
+	defer api.Close()
+	manager, _ := content.NewPackageManager(t.TempDir())
+	client := Client{BaseURL: api.URL, HTTP: accelerator.Client(), MaxBytes: 1 << 20, ReleaseDownloadAccelerator: accelerator.URL + "/"}
+
+	result, err := client.FetchLatest(context.Background(), "owner/repo", `^plugins\.zip$`, "secret", manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Updated {
+		t.Fatalf("result=%#v", result)
+	}
+	wantPath := "/https://github.com/owner/repo/releases/download/v2.0/plugins.zip"
+	if downloadedPath != wantPath {
+		t.Fatalf("downloadedPath = %q, want %q", downloadedPath, wantPath)
+	}
+	if authorization != "" {
+		t.Fatalf("Authorization header was forwarded to accelerator: %q", authorization)
+	}
+}
+
 func TestFetchLatestRetainsPreviousReleaseUntilMaintenanceCleanup(t *testing.T) {
 	raw := packageBytes()
 	tag := "v1.0"

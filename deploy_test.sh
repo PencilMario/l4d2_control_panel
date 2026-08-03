@@ -63,6 +63,7 @@ test_env_generation_and_preservation() {
   assert_contains "$original" "L4D2_PANEL_DATA_ROOT=/srv/l4d2-panel" "default data root"
   assert_contains "$original" "L4D2_PANEL_HTTP_PORT=18081" "default HTTP port"
   assert_contains "$original" "L4D2_PANEL_GAME_HOST=host.docker.internal" "default game host"
+  assert_contains "$original" "L4D2_PANEL_GITHUB_RELEASES_ACCELERATOR=https://releases.0721play.top/" "GitHub releases accelerator"
   assert_eq "600" "$mode" "environment file permissions"
 
   ensure_env_file "$env_file" "replacement-secret"

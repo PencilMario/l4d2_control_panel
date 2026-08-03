@@ -18,9 +18,10 @@ import (
 )
 
 type Client struct {
-	BaseURL  string
-	HTTP     *http.Client
-	MaxBytes int64
+	BaseURL                    string
+	HTTP                       *http.Client
+	MaxBytes                   int64
+	ReleaseDownloadAccelerator string
 }
 type FetchResult struct {
 	Package content.PackageVersion
@@ -101,11 +102,15 @@ func (c Client) FetchLatest(ctx context.Context, repository, assetPattern, token
 	if err != nil || !c.allowedAssetHost(parsed, base) {
 		return FetchResult{}, errors.New("untrusted release asset URL")
 	}
-	download, err := http.NewRequestWithContext(ctx, http.MethodGet, assetURL, nil)
+	downloadURL, accelerated, err := c.releaseDownloadURL(assetURL)
 	if err != nil {
 		return FetchResult{}, err
 	}
-	if token != "" {
+	download, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		return FetchResult{}, err
+	}
+	if token != "" && !accelerated {
 		download.Header.Set("Authorization", "Bearer "+token)
 	}
 	assetResponse, err := client.Do(download)
@@ -154,6 +159,19 @@ func (c Client) FetchLatest(ctx context.Context, repository, assetPattern, token
 	jobs.Logf(ctx, "github", joblogs.Info, "package downloaded repository=%s tag=%s asset=%s package_id=%s size=%s", repository, found.TagName, assetName, item.ID, jobs.FormatBytes(written))
 	return FetchResult{Package: item, Updated: true}, nil
 }
+
+func (c Client) releaseDownloadURL(assetURL string) (string, bool, error) {
+	accelerator := strings.TrimSpace(c.ReleaseDownloadAccelerator)
+	if accelerator == "" {
+		return assetURL, false, nil
+	}
+	base, err := url.Parse(accelerator)
+	if err != nil || base.Scheme != "https" || base.Host == "" || base.RawQuery != "" || base.Fragment != "" {
+		return "", false, errors.New("invalid GitHub release download accelerator")
+	}
+	return strings.TrimRight(accelerator, "/") + "/" + strings.TrimLeft(assetURL, "/"), true, nil
+}
+
 func (c Client) allowedAssetHost(asset *url.URL, base string) bool {
 	baseURL, _ := url.Parse(base)
 	if asset.Scheme != "https" && asset.Host != baseURL.Host {
