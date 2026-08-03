@@ -192,8 +192,9 @@ export function JobsPage({ onOpenLogs }: { onOpenLogs?: (job: Job) => void }) {
                       <i style={{ width: `${item.Percent || 0}%` }} />
                     </span>
                   ) : null}
-                  <small>{item.Error || item.Message || "等待后台执行"}</small>
-                  <small>{durationSummary(item)}</small>
+                   <small>{item.Error || item.Message || "等待后台执行"}</small>
+                   <small>超时 {item.TimeoutMinutes || 1440} 分钟</small>
+                   <small>{durationSummary(item)}</small>
                 </span>
                 <span className={`job-state ${item.Status}`}>
                   <StatusIcon aria-hidden="true" />

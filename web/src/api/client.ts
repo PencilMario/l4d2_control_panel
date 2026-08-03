@@ -5,6 +5,7 @@ export type Job = {
   Status: string;
   Stage: string;
   Percent: number;
+  TimeoutMinutes?: number;
   Message?: string;
   Error: string;
   CreatedAt?: string;

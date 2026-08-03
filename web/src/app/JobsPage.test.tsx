@@ -51,6 +51,7 @@ describe("JobsPage", () => {
       Status: "running",
       Stage: "download",
       Percent: 42,
+	  TimeoutMinutes: 90,
       CreatedAt: "2026-07-16T08:00:00Z",
     }])));
 
@@ -59,6 +60,7 @@ describe("JobsPage", () => {
     const progress = await screen.findByRole("progressbar", { name: "game_update 任务进度" });
     expect(progress).toHaveAttribute("aria-valuenow", "42");
     expect(progress.closest(".job-row")?.querySelector(".job-state")).toHaveClass("job-state", "running");
+	expect(screen.getByText("超时 90 分钟")).toBeVisible();
     expect(screen.getByRole("button", { name: /查看 game_update 任务日志/ })).toHaveTextContent("事件");
   });
 
