@@ -48,7 +48,7 @@ func (d Dispatcher) Dispatch(ctx context.Context, task domain.ScheduledTask) err
 	if d.Jobs == nil {
 		return errors.New("job manager unavailable")
 	}
-	_, err := d.Jobs.Start(context.WithoutCancel(ctx), task.InstanceID, "scheduled_"+task.Type, func(run context.Context, reporter jobs.Reporter) error {
+	_, err := d.Jobs.StartWithOptions(context.WithoutCancel(ctx), task.InstanceID, "scheduled_"+task.Type, jobs.StartOptions{TimeoutMinutes: task.TimeoutMinutes}, func(run context.Context, reporter jobs.Reporter) error {
 		return d.run(run, task)
 	})
 	return err

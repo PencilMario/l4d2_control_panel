@@ -160,6 +160,8 @@ describe("SchedulesPage", () => {
 
     await user.clear(screen.getByLabelText("Cron"));
     await user.type(screen.getByLabelText("Cron"), "30 5 * * *");
+	await user.clear(screen.getByLabelText("任务超时（分钟）"));
+	await user.type(screen.getByLabelText("任务超时（分钟）"), "90");
     await user.selectOptions(screen.getByLabelText("在线玩家策略"), "wait");
     await user.click(screen.getByLabelText("启用计划"));
     await user.click(screen.getByRole("button", { name: "保存修改" }));
@@ -177,6 +179,7 @@ describe("SchedulesPage", () => {
       cron: "30 5 * * *",
       timezone: "Asia/Hong_Kong",
       online_policy: "wait",
+	  timeout_minutes: 90,
       payload: "{}",
       enabled: false,
       last_run: "2026-07-15T20:00:00Z",

@@ -28,6 +28,7 @@ export type ScheduledTask = {
   cron: string;
   timezone: string;
   online_policy: OnlinePolicy;
+	 timeout_minutes: number;
   payload: string;
   enabled: boolean;
   last_run: string;
@@ -166,6 +167,7 @@ export const normalizeScheduledTask = (value: any): ScheduledTask => {
     cron: String(value.cron ?? value.Cron ?? ""),
     timezone: String(value.timezone ?? value.Timezone ?? "UTC"),
     online_policy: isOnlinePolicy(policyValue) ? policyValue : "skip",
+	 timeout_minutes: Number(value.timeout_minutes ?? value.TimeoutMinutes ?? 1440) || 1440,
     payload: String(value.payload ?? value.Payload ?? "{}"),
     enabled: Boolean(value.enabled ?? value.Enabled),
     last_run: String(value.last_run ?? value.LastRun ?? ""),
@@ -368,6 +370,7 @@ export function SchedulesPage({
   const [retentionDays, setRetentionDays] = useState(30);
   const [cron, setCron] = useState("0 4 * * *");
   const [policy, setPolicy] = useState<OnlinePolicy>("skip");
+	 const [timeoutMinutes, setTimeoutMinutes] = useState(1440);
   const [enabled, setEnabled] = useState(true);
   const [editing, setEditing] = useState<ScheduledTask | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ScheduledTask | null>(null);
@@ -407,6 +410,7 @@ export function SchedulesPage({
     setInstanceID(instances[0]?.id || "");
     setCron("0 4 * * *");
     setPolicy("skip");
+	 setTimeoutMinutes(1440);
     setEnabled(true);
     setRetentionDays(30);
   };
@@ -423,6 +427,7 @@ export function SchedulesPage({
     setTaskType(task.type);
     setCron(task.cron);
     setPolicy(task.online_policy);
+	 setTimeoutMinutes(task.timeout_minutes);
     setEnabled(task.enabled);
 	setInstanceID(task.type === "game_update" ? "" : task.instance_id);
     setScheduleError("");
@@ -457,6 +462,7 @@ export function SchedulesPage({
             cron,
             timezone: editing.timezone,
             online_policy: TASK_TYPES[editing.type].usesPlayerPolicy ? policy : "force",
+			 timeout_minutes: timeoutMinutes,
             payload: (editing.type === "package_full" || editing.type === "release_full") ? "{}" : editing.payload,
             enabled,
           }
@@ -466,6 +472,7 @@ export function SchedulesPage({
             cron,
             timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
             online_policy: definition.usesPlayerPolicy ? policy : "force",
+			 timeout_minutes: timeoutMinutes,
             payload: createPayload(),
             enabled,
           };
@@ -674,6 +681,10 @@ export function SchedulesPage({
               required
             />
           </label>
+		  <label>
+			任务超时（分钟）
+			<input aria-label="任务超时（分钟）" type="number" min="1" max="10080" step="1" value={timeoutMinutes} onChange={(event) => setTimeoutMinutes(Number(event.target.value))} required />
+		  </label>
           {definition.usesPlayerPolicy ? (
             <label>
               在线玩家策略

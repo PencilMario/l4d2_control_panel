@@ -39,6 +39,10 @@ func NewService(repo Repository, dispatcher Dispatcher) *Service {
 	return s
 }
 func (s *Service) Save(ctx context.Context, task domain.ScheduledTask) error {
+	task.TimeoutMinutes = domain.NormalizeJobTimeoutMinutes(task.TimeoutMinutes)
+	if task.TimeoutMinutes < domain.MinJobTimeoutMinutes || task.TimeoutMinutes > domain.MaxJobTimeoutMinutes {
+		return errors.New("timeout minutes must be between 1 and 10080")
+	}
 	if !taskTypes[task.Type] {
 		return errors.New("unsupported scheduled task type")
 	}

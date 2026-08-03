@@ -113,3 +113,27 @@ func TestServiceValidatesTaskScope(t *testing.T) {
 		t.Fatal("instance task accepted empty instance")
 	}
 }
+
+func TestServiceNormalizesAndValidatesTimeoutMinutes(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := NewService(db, &fakeDispatcher{})
+	defer service.Stop()
+	task := domain.ScheduledTask{ID: "timeout", Type: "cleanup", Cron: "0 4 * * *", Timezone: "UTC", OnlinePolicy: "force"}
+	if err := service.Save(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	tasks, _ := service.List(context.Background())
+	if len(tasks) != 1 || tasks[0].TimeoutMinutes != domain.DefaultJobTimeoutMinutes {
+		t.Fatalf("tasks=%#v", tasks)
+	}
+	for _, value := range []int{-1, domain.MaxJobTimeoutMinutes + 1} {
+		task.TimeoutMinutes = value
+		if err := service.Save(context.Background(), task); err == nil {
+			t.Fatalf("timeout %d accepted", value)
+		}
+	}
+}

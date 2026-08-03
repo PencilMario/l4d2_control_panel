@@ -1131,6 +1131,7 @@ func (s *Server) saveSchedule(w http.ResponseWriter, r *http.Request) {
 	if task.Payload == "" {
 		task.Payload = "{}"
 	}
+	task.TimeoutMinutes = domain.NormalizeJobTimeoutMinutes(task.TimeoutMinutes)
 	if !json.Valid([]byte(task.Payload)) {
 		writeError(w, 422, "invalid_payload", "payload must be JSON")
 		return
