@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -46,13 +48,14 @@ type Manager struct {
 	now      func() time.Time
 	config   Config
 	status   Status
+	readFile func(string) ([]byte, error)
 }
 
 func NewManager(executor Executor, now func() time.Time) *Manager {
 	if now == nil {
 		now = time.Now
 	}
-	return &Manager{executor: executor, now: now, status: Status{Compatible: true, PolicyVersion: PolicyVersion}}
+	return &Manager{executor: executor, now: now, readFile: os.ReadFile, status: Status{Compatible: true, PolicyVersion: PolicyVersion}}
 }
 
 func (m *Manager) Apply(ctx context.Context, input Config) (Status, error) {
@@ -115,10 +118,103 @@ func (m *Manager) Apply(ctx context.Context, input Config) (Status, error) {
 	return cloneStatus(m.status), nil
 }
 
-func (m *Manager) Status(context.Context) (Status, error) {
+func (m *Manager) Status(ctx context.Context) (Status, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := m.preflight(ctx); err != nil {
+		m.status.Compatible = false
+		m.status.LastError = err.Error()
+		return cloneStatus(m.status), err
+	}
+	m.status.Compatible = true
+	if !m.status.Enabled {
+		return cloneStatus(m.status), nil
+	}
+	save, err := m.executor.Run(ctx, iptablesSavePath, []string{"-c", "-t", "filter"}, "")
+	if err != nil {
+		return m.failedStatus(err)
+	}
+	m.status.Counters = parseCounters(save)
+	recent, err := m.readFile("/proc/net/xt_recent/" + RecentName)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return m.failedStatus(err)
+	}
+	m.status.BlacklistSize = countRecentEntries(string(recent))
 	return cloneStatus(m.status), nil
+}
+
+func (m *Manager) preflight(ctx context.Context) error {
+	if _, err := m.executor.Run(ctx, iptablesPath, []string{"--version"}, ""); err != nil {
+		return fmt.Errorf("iptables unavailable: %w", err)
+	}
+	for _, match := range []string{"u32", "hashlimit", "recent", "multiport"} {
+		if _, err := m.executor.Run(ctx, iptablesPath, []string{"-m", match, "-h"}, ""); err != nil {
+			return fmt.Errorf("iptables match %s unavailable: %w", match, err)
+		}
+	}
+	return nil
+}
+
+func parseCounters(save string) Counters {
+	var counters Counters
+	for _, line := range strings.Split(save, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || !strings.HasPrefix(fields[0], "[") {
+			continue
+		}
+		packets, ok := parsePacketCounter(fields[0])
+		if !ok {
+			continue
+		}
+		name := argumentValue(fields, "--hashlimit-name")
+		switch name {
+		case "L4D2_A2S_INFO":
+			counters.Info += packets
+		case "L4D2_A2S_PLAYER":
+			counters.Player += packets
+		case "L4D2_A2S_RULES":
+			counters.Rules += packets
+		case "L4D2_A2S_CHALLENGE":
+			counters.Challenge += packets
+		case "L4D2_A2S_OTHER69":
+			counters.Other69 += packets
+		case "L4D2_A2S_TOTAL":
+			counters.Aggregate += packets
+		}
+		if name == "" && argumentValue(fields, "--name") == RecentName && argumentValue(fields, "-j") == "DROP" {
+			counters.Blacklist += packets
+		}
+	}
+	return counters
+}
+
+func parsePacketCounter(field string) (uint64, bool) {
+	value := strings.Trim(field, "[]")
+	packets, _, found := strings.Cut(value, ":")
+	if !found {
+		return 0, false
+	}
+	parsed, err := strconv.ParseUint(packets, 10, 64)
+	return parsed, err == nil
+}
+
+func argumentValue(fields []string, name string) string {
+	for index := 0; index+1 < len(fields); index++ {
+		if fields[index] == name {
+			return fields[index+1]
+		}
+	}
+	return ""
+}
+
+func countRecentEntries(input string) int {
+	count := 0
+	for _, line := range strings.Split(input, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "src=") {
+			count++
+		}
+	}
+	return count
 }
 
 func (m *Manager) failedStatus(err error) (Status, error) {

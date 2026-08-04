@@ -18,6 +18,7 @@ type fakeExecutor struct {
 	calls  []execCall
 	save   string
 	failAt int
+	failOn string
 }
 
 func (f *fakeExecutor) Run(_ context.Context, name string, args []string, input string) (string, error) {
@@ -25,10 +26,54 @@ func (f *fakeExecutor) Run(_ context.Context, name string, args []string, input 
 	if f.failAt > 0 && len(f.calls) == f.failAt {
 		return "", errors.New("command failed")
 	}
+	if f.failOn != "" && strings.Contains(name+" "+strings.Join(args, " "), f.failOn) {
+		return "", errors.New("command failed")
+	}
 	if strings.HasSuffix(name, "iptables-save") {
 		return f.save, nil
 	}
 	return "", nil
+}
+
+func TestManagerStatusReadsLiveCountersAndRecentBlacklist(t *testing.T) {
+	executor := &fakeExecutor{save: `*filter
+[0:0] -A L4D2_A2S_CLASS_A -m hashlimit --hashlimit-name L4D2_A2S_TOTAL -j L4D2_A2S_DROP_A
+[3:180] -A L4D2_A2S_CLASS_A -m hashlimit --hashlimit-name L4D2_A2S_INFO -j L4D2_A2S_DROP_A
+[7:420] -A L4D2_A2S_CLASS_A -m hashlimit --hashlimit-name L4D2_A2S_PLAYER -j L4D2_A2S_DROP_A
+[2:120] -A L4D2_A2S_CLASS_B -m hashlimit --hashlimit-name L4D2_A2S_PLAYER -j L4D2_A2S_DROP_B
+[5:300] -A L4D2_A2S_CLASS_A -m hashlimit --hashlimit-name L4D2_A2S_RULES -j L4D2_A2S_DROP_A
+[11:660] -A L4D2_A2S_SLOT_A -m recent --name L4D2_A2S_ATTACKER -j DROP
+COMMIT
+`}
+	manager := NewManager(executor, time.Now)
+	manager.status = Status{Compatible: true, Enabled: true, Revision: 1, PolicyVersion: PolicyVersion}
+	manager.readFile = func(path string) ([]byte, error) {
+		if path != "/proc/net/xt_recent/"+RecentName {
+			t.Fatalf("path=%q", path)
+		}
+		return []byte("src=192.0.2.1 ttl: 64\nsrc=192.0.2.2 ttl: 64\n"), nil
+	}
+
+	status, err := manager.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Counters.Info != 3 || status.Counters.Player != 9 || status.Counters.Rules != 5 || status.Counters.Aggregate != 0 || status.Counters.Blacklist != 11 {
+		t.Fatalf("counters=%+v", status.Counters)
+	}
+	if status.BlacklistSize != 2 {
+		t.Fatalf("blacklist_size=%d", status.BlacklistSize)
+	}
+}
+
+func TestManagerStatusReportsIncompatibleRequiredMatch(t *testing.T) {
+	executor := &fakeExecutor{failOn: "-m u32 -h"}
+	manager := NewManager(executor, time.Now)
+
+	status, err := manager.Status(context.Background())
+	if err == nil || status.Compatible || !strings.Contains(status.LastError, "u32") {
+		t.Fatalf("status=%+v err=%v", status, err)
+	}
 }
 
 func TestManagerApplyUsesFixedCommandsAndReturnsEffectiveStatus(t *testing.T) {
