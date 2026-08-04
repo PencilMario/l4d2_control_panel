@@ -11,6 +11,8 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 )
 
+var ErrNotProtected = errors.New("A2S defense is not synchronized for instance ports")
+
 type Repository interface {
 	Instances(context.Context) ([]domain.Instance, error)
 	A2SDefenseSettings(context.Context) (domain.A2SDefenseSettings, error)
@@ -111,6 +113,28 @@ func (c *Coordinator) Actual(ctx context.Context) (Status, error) {
 	return c.firewall.Status(ctx)
 }
 
+func (c *Coordinator) EnsureProtected(ctx context.Context, instance domain.Instance) error {
+	settings, err := c.repo.A2SDefenseSettings(ctx)
+	if err != nil || !settings.Enabled {
+		return err
+	}
+	if err := c.Reconcile(ctx); err != nil {
+		return err
+	}
+	settings, err = c.repo.A2SDefenseSettings(ctx)
+	if err != nil {
+		return err
+	}
+	actual, err := c.firewall.Status(ctx)
+	if err != nil {
+		return err
+	}
+	if !actual.Enabled || actual.Revision != settings.Revision || !containsPort(actual.Ports, instance.GamePort) || instance.SourceTVPort > 0 && !containsPort(actual.Ports, instance.SourceTVPort) {
+		return ErrNotProtected
+	}
+	return nil
+}
+
 func (c *Coordinator) Start(parent context.Context) {
 	c.mu.Lock()
 	if c.cancel != nil {
@@ -181,4 +205,9 @@ func (c *Coordinator) markPending(ctx context.Context, settings domain.A2SDefens
 		return errors.Join(cause, err)
 	}
 	return cause
+}
+
+func containsPort(ports []int, target int) bool {
+	_, found := slices.BinarySearch(ports, target)
+	return found
 }

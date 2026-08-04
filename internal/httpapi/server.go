@@ -77,6 +77,15 @@ type Server struct {
 	vpkRestarts      VPKRestartRegistrar
 	maintenanceGate  *maintenance.Gate
 	sharedGamePath   string
+	a2sDefense       A2SDefenseReconciler
+}
+
+type A2SDefenseReconciler interface {
+	Reconcile(context.Context) error
+}
+
+func WithA2SDefenseMutations(reconciler A2SDefenseReconciler) Option {
+	return func(s *Server) { s.a2sDefense = reconciler }
 }
 
 func WithPrivateUploads(manager *content.PrivateUploadManager) Option {
@@ -1000,6 +1009,7 @@ func (s *Server) updateInstance(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 409, "instance_conflict", err.Error())
 		return
 	}
+	s.reconcileA2SDefense(r.Context())
 	if !requiresJob {
 		writeJSON(w, 200, next)
 		return
@@ -1049,7 +1059,11 @@ func (s *Server) deleteInstance(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	job, ok := s.startJob(w, r, id, "delete", func(ctx context.Context, _ jobs.Reporter) error {
 		jobs.Logf(ctx, "request", joblogs.Info, "instance deletion requested instance=%s delete_data=%t", id, input.DeleteData)
-		return s.lifecycle.Delete(ctx, id, input.DeleteData)
+		if err := s.lifecycle.Delete(ctx, id, input.DeleteData); err != nil {
+			return err
+		}
+		s.reconcileA2SDefense(ctx)
+		return nil
 	})
 	if !ok {
 		return
@@ -2206,11 +2220,18 @@ func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 409, "instance_conflict", err.Error())
 		return
 	}
+	s.reconcileA2SDefense(r.Context())
 	if err := s.queueSharedGameInitialization(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "shared_game_initialization_failed", err.Error())
 		return
 	}
 	writeJSON(w, 201, v)
+}
+
+func (s *Server) reconcileA2SDefense(ctx context.Context) {
+	if s.a2sDefense != nil {
+		_ = s.a2sDefense.Reconcile(ctx)
+	}
 }
 
 func (s *Server) queueSharedGameInitialization(ctx context.Context) error {

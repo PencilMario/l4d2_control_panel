@@ -127,6 +127,9 @@ type Provisioner interface {
 type LogPreparer interface {
 	Prepare(context.Context, string) error
 }
+type DefenseGate interface {
+	EnsureProtected(context.Context, domain.Instance) error
+}
 type Service struct {
 	repo                Repository
 	engine              Engine
@@ -138,6 +141,7 @@ type Service struct {
 	logPreparer         LogPreparer
 	minimumInstallBytes uint64
 	maintenanceGate     *maintenance.Gate
+	defenseGate         DefenseGate
 }
 type Option func(*Service)
 
@@ -154,6 +158,7 @@ func WithLogPreparer(preparer LogPreparer) Option {
 func WithMaintenanceGate(gate *maintenance.Gate) Option {
 	return func(s *Service) { s.maintenanceGate = gate }
 }
+func WithDefenseGate(gate DefenseGate) Option { return func(s *Service) { s.defenseGate = gate } }
 
 func New(repo Repository, engine Engine, ports PortChecker, dataRoot string, options ...Option) *Service {
 	service := &Service{repo: repo, engine: engine, ports: ports, dataRoot: dataRoot}
@@ -196,6 +201,12 @@ func (s *Service) Start(ctx context.Context, id string) error {
 			return err
 		}
 		jobs.Logf(ctx, "lifecycle", joblogs.Info, "port preflight completed instance=%s ports=%v", id, declaredPorts)
+	}
+	if s.defenseGate != nil {
+		if err := s.defenseGate.EnsureProtected(ctx, v); err != nil {
+			return err
+		}
+		jobs.Logf(ctx, "lifecycle", joblogs.Info, "A2S defense preflight completed instance=%s game_port=%d sourcetv_port=%d", id, v.GamePort, v.SourceTVPort)
 	}
 	if v.ContainerID == "" {
 		base := filepath.Join(s.dataRoot, "instances", v.ID)

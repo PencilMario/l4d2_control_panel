@@ -110,6 +110,45 @@ func (p *recordingPorts) Available(_ context.Context, _ string, ports []int) err
 	return nil
 }
 
+type fakeDefenseGate struct {
+	calls []domain.Instance
+	err   error
+}
+
+func (g *fakeDefenseGate) EnsureProtected(_ context.Context, instance domain.Instance) error {
+	g.calls = append(g.calls, instance)
+	return g.err
+}
+
+func TestStartRequiresDefenseBeforeStartingContainer(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	instance := domain.Instance{ID: "guarded", NodeID: "local", Name: "guarded", ContainerID: "container", GamePort: 27015, SourceTVPort: 27020, RuntimeImage: "runtime", ActualState: domain.StateStopped}
+	if err := db.CreateInstance(context.Background(), instance); err != nil {
+		t.Fatal(err)
+	}
+	engine := &fakeEngine{}
+	gate := &fakeDefenseGate{err: errors.New("A2S defense not synchronized")}
+	service := New(db, engine, freePorts{}, root, WithDefenseGate(gate))
+	if err := service.Start(context.Background(), instance.ID); err == nil || !strings.Contains(err.Error(), "not synchronized") {
+		t.Fatalf("err=%v", err)
+	}
+	if engine.started || len(gate.calls) != 1 || gate.calls[0].GamePort != 27015 {
+		t.Fatalf("started=%t calls=%+v", engine.started, gate.calls)
+	}
+	gate.err = nil
+	if err := service.Start(context.Background(), instance.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !engine.started || len(gate.calls) != 2 {
+		t.Fatalf("started=%t calls=%d", engine.started, len(gate.calls))
+	}
+}
+
 type fixedSpace uint64
 
 func (s fixedSpace) Available(string) (uint64, error) { return uint64(s), nil }

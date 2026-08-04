@@ -908,6 +908,41 @@ func TestCreateAndListInstance(t *testing.T) {
 	}
 }
 
+type failingDefenseReconciler struct{ calls int }
+
+func (r *failingDefenseReconciler) Reconcile(context.Context) error {
+	r.calls++
+	return errors.New("helper unavailable")
+}
+
+func TestInstanceMutationsTriggerA2SDefenseReconciliationWithoutRollingBack(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	reconciler := &failingDefenseReconciler{}
+	s = New(db, s.auth, WithContent(nil, nil, s.packages, s.updates, nil), WithA2SDefenseMutations(reconciler))
+	cookie := loginCookie(t, s)
+	packageID := defaultPackageID(t, s)
+	create := authenticatedJSON(t, s, cookie, http.MethodPost, "/api/instances", fmt.Sprintf(`{"name":"Guarded","game_port":27015,"start_map":"map","game_mode":"coop","tickrate":100,"max_players":8,"package_id":%q}`, packageID))
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create=%d %s", create.Code, create.Body.String())
+	}
+	var instance domain.Instance
+	if err := json.Unmarshal(create.Body.Bytes(), &instance); err != nil {
+		t.Fatal(err)
+	}
+	update := authenticatedJSON(t, s, cookie, http.MethodPut, "/api/instances/"+instance.ID, fmt.Sprintf(`{"name":"Guarded","game_port":27016,"start_map":"map","game_mode":"coop","tickrate":100,"max_players":8,"extra_args":"","package_id":%q}`, packageID))
+	if update.Code != http.StatusOK {
+		t.Fatalf("update=%d %s", update.Code, update.Body.String())
+	}
+	if reconciler.calls != 2 {
+		t.Fatalf("reconcile calls=%d", reconciler.calls)
+	}
+	stored, err := db.Instance(context.Background(), instance.ID)
+	if err != nil || stored.GamePort != 27016 {
+		t.Fatalf("stored=%+v err=%v", stored, err)
+	}
+}
+
 func TestInstanceOverviewUsesSamplerObservations(t *testing.T) {
 	t.Run("running", func(t *testing.T) {
 		s, db := testServer(t)
