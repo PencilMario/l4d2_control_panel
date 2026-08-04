@@ -84,6 +84,54 @@ async function closePrivateTree(page: Page, mobile: boolean) {
   if (mobile) await page.getByRole("button", { name: "关闭文件树" }).click();
 }
 
+test("administrator enables A2S defense from system settings", async ({ page }, testInfo) => {
+  let enabled = false;
+  await page.route("**/api/settings/a2s-defense", async (route) => {
+    if (route.request().method() === "PUT") {
+      enabled = (route.request().postDataJSON() as { enabled: boolean }).enabled;
+    }
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        desired_enabled: enabled,
+        effective_enabled: enabled,
+        pending: false,
+        compatible: true,
+        revision: enabled ? 8 : 7,
+        policy_version: 1,
+        protected_ports: [27015, 27020],
+        counters: { info: 3, player: 12, rules: 2, challenge: 1, other_69: 0, aggregate: 4, blacklist: 6 },
+        blacklist_size: 1,
+        applied_at: "2026-08-05T03:00:00Z",
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByLabel("管理员密码").fill("correct horse battery staple");
+  await page.getByRole("button", { name: "进入作战室" }).click();
+  await page.getByRole("button", { name: "系统设置" }).click();
+
+  const panel = page.locator(".a2s-defense-settings");
+  await expect(panel.getByText("已停用", { exact: true })).toBeVisible();
+  await expect(panel.getByLabel("受保护端口")).toContainText("27015");
+  await expect(panel.getByText("A2S_PLAYER").locator("..")).toContainText("12");
+  await panel.getByLabel("启用 A2S 查询防御").check();
+  await panel.getByRole("button", { name: "保存 A2S 防御设置" }).click();
+  await expect(panel.getByText("防护中", { exact: true })).toBeVisible();
+  await expect(panel.getByRole("status")).toContainText("防御规则已启用");
+
+  const layout = await panel.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return { left: box.left, right: box.right, scrollWidth: element.scrollWidth, clientWidth: element.clientWidth };
+  });
+  expect.soft(layout.left).toBeGreaterThanOrEqual(0);
+  expect.soft(layout.right).toBeLessThanOrEqual(page.viewportSize()!.width);
+  expect.soft(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await panel.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-a2s-defense-settings.png`) });
+});
+
 test("real HTTP administration journey survives refresh and streams recovery state", async ({
   page,
 }, testInfo) => {

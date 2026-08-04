@@ -111,6 +111,30 @@ panel.example.com {
 - 游戏实例使用宿主机网络，但以 UID/GID `10001`、非特权模式运行。
 - 游戏、私有覆盖层、备份、控制台和日志目录均持久化；共享内容按只读或受控流程挂载。
 
+## A2S 攻击防御
+
+管理员可在“系统设置 > A2S 攻击防御”中启用固定策略的 IPv4 查询限速。启用后，Panel 会自动保护全部实例的游戏端口和非零 SourceTV 端口；插件端口不在保护范围内。新增或修改实例端口后会自动对账，防御已启用但新端口尚未被 Helper 确认时，该实例不会启动。已经运行的实例不会因 Helper 暂时不可用而被自动停止。
+
+只有 `a2s-defense-helper` 容器拥有 `NET_ADMIN`，Panel 和游戏容器仍无防火墙权限。Helper 使用宿主网络命名空间，但只管理 `L4D2_A2S_*` IPv4 链和 INPUT 中指向项目链的一条跳转，不修改 INPUT 默认策略，也不清空管理员、UFW、firewalld 或 Docker 的规则。
+
+设置页会分别显示期望开关与实际生效状态、受保护端口、策略版本、各查询类型丢弃计数、黑名单数量、最近应用时间和对账错误。显示“不兼容”时，应检查宿主 iptables 1.8+ 及 `u32`、`hashlimit`、`recent`、`multiport` 扩展；Helper 不会自动安装软件或加载模块。
+
+正常停用应先在设置页关闭开关并确认实际状态为“已停用”。仅删除或停止 Helper 容器不会删除内核中已生效的规则。若 Panel/Helper 已不可用，可在宿主机执行以下窄范围紧急清理；命令只处理项目链，不要使用 `iptables -F INPUT`：
+
+```sh
+sudo iptables -w 5 -D INPUT -j L4D2_A2S_DEFENSE 2>/dev/null || true
+for chain in L4D2_A2S_DEFENSE L4D2_A2S_SLOT_A L4D2_A2S_CLASS_A L4D2_A2S_DROP_A \
+             L4D2_A2S_SLOT_B L4D2_A2S_CLASS_B L4D2_A2S_DROP_B; do
+  sudo iptables -w 5 -F "$chain" 2>/dev/null || true
+done
+for chain in L4D2_A2S_DROP_B L4D2_A2S_CLASS_B L4D2_A2S_SLOT_B \
+             L4D2_A2S_DROP_A L4D2_A2S_CLASS_A L4D2_A2S_SLOT_A L4D2_A2S_DEFENSE; do
+  sudo iptables -w 5 -X "$chain" 2>/dev/null || true
+done
+```
+
+该策略用于缓解 A2S 查询洪水，不是上游 DDoS 清洗。它不能阻止链路被打满，也不能可靠识别伪造源地址；项目不支持 IPv6，因此不会创建或修改任何 IPv6 规则。
+
 ## 首次使用
 
 1. 登录 Panel，进入“内容仓库”。
@@ -141,7 +165,7 @@ sudo docker compose --env-file .env ps
 
 # 跟踪核心服务日志
 sudo docker compose --env-file .env logs --tail=100 -f \
-  panel socket-proxy overlay-helper
+  panel socket-proxy overlay-helper a2s-defense-helper
 
 # 健康检查
 curl --fail http://127.0.0.1:18081/api/health
@@ -157,6 +181,7 @@ docker compose --env-file .env ps
 curl --fail http://127.0.0.1:${L4D2_PANEL_HTTP_PORT:-18081}/api/health
 docker compose exec panel test -S /run/l4d2-panel/proxy.sock
 docker compose exec panel test ! -e /var/run/docker.sock
+docker compose exec panel test -S /run/l4d2-panel-a2s-defense/a2s-defense.sock
 ```
 
 ## 持久数据
