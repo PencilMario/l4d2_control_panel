@@ -2,6 +2,7 @@ package deployment_test
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -16,15 +17,18 @@ func TestControlServicesUseSharedUnixProxyAndPublishOnlyPanel(t *testing.T) {
 	proxyInit := services["proxy-init"]
 	proxy := services["socket-proxy"]
 	overlayHelper := services["overlay-helper"]
+	a2sInit := services["a2s-defense-init"]
+	a2sHelper := services["a2s-defense-helper"]
 	panel := services["panel"]
-	hostNetworkServices := make([]string, 0, 1)
+	hostNetworkServices := make([]string, 0, 2)
 	for name, block := range services {
 		if strings.Contains(block, "network_mode: host") {
 			hostNetworkServices = append(hostNetworkServices, name)
 		}
 	}
-	if len(hostNetworkServices) != 1 || hostNetworkServices[0] != "socket-proxy" {
-		t.Fatalf("host networking services = %v, want [socket-proxy]", hostNetworkServices)
+	slices.Sort(hostNetworkServices)
+	if !slices.Equal(hostNetworkServices, []string{"a2s-defense-helper", "socket-proxy"}) {
+		t.Fatalf("host networking services = %v", hostNetworkServices)
 	}
 
 	assertContains(t, proxyInit, "panel-proxy-run:/run/l4d2-panel", "proxy initializer shared run volume")
@@ -68,7 +72,26 @@ func TestControlServicesUseSharedUnixProxyAndPublishOnlyPanel(t *testing.T) {
 	if strings.Contains(panel, "SYS_ADMIN") || strings.Contains(proxy, "SYS_ADMIN") {
 		t.Fatal("SYS_ADMIN must be limited to overlay-helper")
 	}
+	assertContains(t, a2sInit, "panel-a2s-defense-run:/run/l4d2-panel", "A2S defense socket initializer volume")
+	assertContains(t, a2sInit, "cap_drop: [ALL]", "A2S defense initializer cap_drop")
+	assertContains(t, a2sInit, "cap_add: [CHOWN]", "A2S defense initializer CHOWN-only capability")
+	assertContains(t, a2sHelper, "network_mode: host", "A2S defense host network namespace")
+	assertContains(t, a2sHelper, "user: \"0:10001\"", "A2S defense restricted group")
+	assertContains(t, a2sHelper, "cap_drop: [ALL]", "A2S defense cap_drop")
+	assertContains(t, a2sHelper, "cap_add: [NET_ADMIN]", "A2S defense NET_ADMIN-only capability")
+	assertContains(t, a2sHelper, "read_only: true", "A2S defense read-only root")
+	assertContains(t, a2sHelper, "security_opt: [no-new-privileges:true]", "A2S defense no-new-privileges")
+	assertContains(t, a2sHelper, "panel-a2s-defense-run:/run/l4d2-panel", "A2S defense socket volume")
+	assertContains(t, a2sHelper, "A2S_DEFENSE_HELPER_SOCKET: /run/l4d2-panel/a2s-defense.sock", "A2S defense socket path")
+	assertContains(t, a2sHelper, "XTABLES_LOCKFILE: /run/l4d2-panel/xtables.lock", "writable xtables lock path")
+	for _, forbidden := range []string{"/var/run/docker.sock", "privileged:", "SYS_ADMIN", "SYS_PTRACE", "ports:"} {
+		if strings.Contains(a2sHelper, forbidden) {
+			t.Fatalf("A2S defense helper contains forbidden privilege %q", forbidden)
+		}
+	}
 	assertContains(t, panel, "panel-overlay-run:/run/l4d2-panel-overlay", "Panel overlay helper socket volume")
+	assertContains(t, panel, "panel-a2s-defense-run:/run/l4d2-panel-a2s-defense", "Panel A2S defense socket volume")
+	assertContains(t, panel, "L4D2_PANEL_A2S_DEFENSE_SOCKET: /run/l4d2-panel-a2s-defense/a2s-defense.sock", "Panel A2S defense socket path")
 	assertContains(t, panel, "panel-proxy-run:/run/l4d2-panel", "Panel shared run volume")
 	assertContains(t, panel, "DOCKER_HOST: unix:///run/l4d2-panel/proxy.sock", "Panel Unix Docker host")
 	assertContains(t, panel, `ports:
@@ -88,6 +111,9 @@ func TestControlServicesUseSharedUnixProxyAndPublishOnlyPanel(t *testing.T) {
 	}
 	if !strings.Contains(compose, "\nvolumes:\n  panel-proxy-run:") {
 		t.Fatal("Compose must define the panel-proxy-run named volume")
+	}
+	if !strings.Contains(compose, "  panel-a2s-defense-run:") {
+		t.Fatal("Compose must define the panel-a2s-defense-run named volume")
 	}
 }
 

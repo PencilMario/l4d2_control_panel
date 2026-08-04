@@ -72,6 +72,40 @@ services:
     cap_drop: [ALL]
     cap_add: [SYS_ADMIN, DAC_OVERRIDE, FOWNER, MKNOD, CHOWN]
     security_opt: [no-new-privileges:true, apparmor:unconfined, seccomp:unconfined]
+  a2s-defense-init:
+    image: ${ALPINE_IMAGE:-alpine:3.22}
+    user: "0:0"
+    command: ["sh", "-c", "chown 0:10001 /run/l4d2-panel && chmod 0750 /run/l4d2-panel"]
+    volumes:
+      - panel-a2s-defense-run:/run/l4d2-panel
+    restart: "no"
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    security_opt: [no-new-privileges:true]
+  a2s-defense-helper:
+    image: l4d2-a2s-defense-helper:latest
+    build:
+      context: .
+      dockerfile: a2s-defense-helper/Dockerfile
+      args:
+        GO_IMAGE: ${GO_IMAGE:-golang:1.25-alpine}
+        ALPINE_IMAGE: ${ALPINE_IMAGE:-alpine:3.22}
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+    restart: unless-stopped
+    depends_on:
+      a2s-defense-init:
+        condition: service_completed_successfully
+    network_mode: host
+    read_only: true
+    user: "0:10001"
+    environment:
+      A2S_DEFENSE_HELPER_SOCKET: /run/l4d2-panel/a2s-defense.sock
+      XTABLES_LOCKFILE: /run/l4d2-panel/xtables.lock
+    volumes:
+      - panel-a2s-defense-run:/run/l4d2-panel
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    security_opt: [no-new-privileges:true]
   panel:
     build:
       context: .
@@ -89,6 +123,8 @@ services:
         condition: service_started
       overlay-helper:
         condition: service_started
+      a2s-defense-helper:
+        condition: service_started
     environment:
       L4D2_PANEL_LISTEN: 0.0.0.0:8080
       L4D2_PANEL_GAME_HOST: ${L4D2_PANEL_GAME_HOST:?set the host address SRCDS answers on}
@@ -96,6 +132,7 @@ services:
       L4D2_PANEL_ADMIN_PASSWORD: ${L4D2_PANEL_ADMIN_PASSWORD:?set admin password}
       DOCKER_HOST: unix:///run/l4d2-panel/proxy.sock
       L4D2_PANEL_OVERLAY_SOCKET: /run/l4d2-panel-overlay/overlay.sock
+      L4D2_PANEL_A2S_DEFENSE_SOCKET: /run/l4d2-panel-a2s-defense/a2s-defense.sock
       L4D2_PANEL_DOWNLOAD_PROXY: ${L4D2_PANEL_DOWNLOAD_PROXY:-}
       HTTP_PROXY: ${L4D2_PANEL_DOWNLOAD_PROXY:-}
       HTTPS_PROXY: ${L4D2_PANEL_DOWNLOAD_PROXY:-}
@@ -109,6 +146,7 @@ services:
       - ${L4D2_PANEL_DATA_ROOT:-/srv/l4d2-panel}:${L4D2_PANEL_DATA_ROOT:-/srv/l4d2-panel}:rshared
       - panel-proxy-run:/run/l4d2-panel
       - panel-overlay-run:/run/l4d2-panel-overlay
+      - panel-a2s-defense-run:/run/l4d2-panel-a2s-defense
     cap_add: [CHOWN]
     security_opt: [no-new-privileges:true]
     healthcheck:
@@ -120,3 +158,4 @@ services:
 volumes:
   panel-proxy-run:
   panel-overlay-run:
+  panel-a2s-defense-run:
