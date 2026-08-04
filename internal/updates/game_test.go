@@ -151,6 +151,24 @@ func TestGameReinstallCombinedStopsAndStartsOnce(t *testing.T) {
 	}
 }
 
+func TestGameReinstallStopsExistingContainerWhenActualStateIsFaulted(t *testing.T) {
+	events := []string{}
+	repo := &gameRepo{instance: domain.Instance{ID: "abc", ContainerID: "container-1", SelectedPackageID: "pkg", PackageVersion: "pkg", DesiredState: domain.StateRunning, ActualState: domain.StateFaulted}}
+	coordinator := GameCoordinator{
+		Instances: repo,
+		Lifecycle: orderedLife{&events},
+		Private:   privateApplier{&events},
+		Packages:  gamePackages{item: content.PackageVersion{ID: "pkg", ArchivePath: "package.zip", Version: "v1"}},
+		Deployer:  gameDeployer{events: &events},
+	}
+	if err := coordinator.Reinstall(context.Background(), "abc", ReinstallOptions{Package: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(events, ","); got != "stop,deploy:full,start,commit" {
+		t.Fatalf("events=%s", got)
+	}
+}
+
 func TestGameReinstallRollsBackCommittedPackageFailureWhileStopped(t *testing.T) {
 	events := []string{}
 	want := errors.New("commit failed")
@@ -225,7 +243,7 @@ func TestGameUpdateLeavesDesiredStoppedInstanceStopped(t *testing.T) {
 	if err := coordinator.Update(context.Background(), "abc"); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(events, ","); got != "steamcmd,private" {
+	if got := strings.Join(events, ","); got != "stop,steamcmd,private" {
 		t.Fatalf("events=%s", got)
 	}
 	if repo.instance.DesiredState != domain.StateStopped || repo.instance.ActualState != domain.StateStopped {

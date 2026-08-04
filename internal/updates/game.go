@@ -83,7 +83,7 @@ func (c GameCoordinator) Reinstall(ctx context.Context, id string, options Reins
 		}
 	}
 	resume := instance.DesiredState == domain.StateRunning
-	needsStop := instance.ActualState == domain.StateRunning || instance.ActualState == domain.StateStarting || instance.ActualState == domain.StateInstalling
+	needsStop := instance.ContainerID != "" || instance.ActualState == domain.StateRunning || instance.ActualState == domain.StateStarting || instance.ActualState == domain.StateInstalling
 	if !maintenance && needsStop {
 		jobs.Logf(ctx, "update", joblogs.Info, "stopping instance for reinstall instance=%s", id)
 		if err := c.Lifecycle.Stop(ctx, id); err != nil {
