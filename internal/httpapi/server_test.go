@@ -23,6 +23,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/not0721here/l4d2-control-panel/internal/a2sdefense"
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
@@ -940,6 +941,59 @@ func TestInstanceMutationsTriggerA2SDefenseReconciliationWithoutRollingBack(t *t
 	stored, err := db.Instance(context.Background(), instance.ID)
 	if err != nil || stored.GamePort != 27016 {
 		t.Fatalf("stored=%+v err=%v", stored, err)
+	}
+}
+
+type fakeDefenseSettingsController struct {
+	desired domain.A2SDefenseSettings
+	actual  a2sdefense.Status
+	set     []bool
+	err     error
+}
+
+func (f *fakeDefenseSettingsController) Desired(context.Context) (domain.A2SDefenseSettings, error) {
+	return f.desired, nil
+}
+func (f *fakeDefenseSettingsController) Actual(context.Context) (a2sdefense.Status, error) {
+	return f.actual, f.err
+}
+func (f *fakeDefenseSettingsController) SetEnabled(_ context.Context, enabled bool) (a2sdefense.Status, error) {
+	f.set = append(f.set, enabled)
+	if f.err != nil {
+		return a2sdefense.Status{}, f.err
+	}
+	f.desired.Enabled = enabled
+	f.desired.Revision++
+	f.actual.Enabled = enabled
+	f.actual.Revision = f.desired.Revision
+	return f.actual, nil
+}
+
+func TestA2SDefenseSettingsAPIReportsAndChangesConfirmedState(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	controller := &fakeDefenseSettingsController{
+		desired: domain.A2SDefenseSettings{Enabled: false, Revision: 3, Pending: true, LastError: "previous failure"},
+		actual:  a2sdefense.Status{Compatible: true, Enabled: false, Revision: 3, PolicyVersion: 1, Ports: []int{27015}},
+	}
+	s = New(db, s.auth, WithA2SDefenseSettings(controller))
+	cookie := loginCookie(t, s)
+	get := authenticatedJSON(t, s, cookie, http.MethodGet, "/api/settings/a2s-defense", "")
+	if get.Code != http.StatusOK || !strings.Contains(get.Body.String(), `"desired_enabled":false`) || !strings.Contains(get.Body.String(), `"pending":true`) || !strings.Contains(get.Body.String(), `"protected_ports":[27015]`) {
+		t.Fatalf("get=%d %s", get.Code, get.Body.String())
+	}
+	put := authenticatedJSON(t, s, cookie, http.MethodPut, "/api/settings/a2s-defense", `{"enabled":true}`)
+	if put.Code != http.StatusOK || len(controller.set) != 1 || !controller.set[0] || !strings.Contains(put.Body.String(), `"desired_enabled":true`) {
+		t.Fatalf("put=%d set=%v body=%s", put.Code, controller.set, put.Body.String())
+	}
+	invalid := authenticatedJSON(t, s, cookie, http.MethodPut, "/api/settings/a2s-defense", `{"enabled":true,"rate":1}`)
+	if invalid.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid=%d %s", invalid.Code, invalid.Body.String())
+	}
+	controller.err = errors.New("helper unavailable")
+	failed := authenticatedJSON(t, s, cookie, http.MethodPut, "/api/settings/a2s-defense", `{"enabled":false}`)
+	if failed.Code != http.StatusServiceUnavailable {
+		t.Fatalf("failed=%d %s", failed.Code, failed.Body.String())
 	}
 }
 

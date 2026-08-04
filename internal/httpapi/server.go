@@ -21,6 +21,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/not0721here/l4d2-control-panel/internal/a2sdefense"
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
@@ -78,6 +79,7 @@ type Server struct {
 	maintenanceGate  *maintenance.Gate
 	sharedGamePath   string
 	a2sDefense       A2SDefenseReconciler
+	a2sSettings      A2SDefenseSettingsController
 }
 
 type A2SDefenseReconciler interface {
@@ -86,6 +88,16 @@ type A2SDefenseReconciler interface {
 
 func WithA2SDefenseMutations(reconciler A2SDefenseReconciler) Option {
 	return func(s *Server) { s.a2sDefense = reconciler }
+}
+
+type A2SDefenseSettingsController interface {
+	Desired(context.Context) (domain.A2SDefenseSettings, error)
+	Actual(context.Context) (a2sdefense.Status, error)
+	SetEnabled(context.Context, bool) (a2sdefense.Status, error)
+}
+
+func WithA2SDefenseSettings(controller A2SDefenseSettingsController) Option {
+	return func(s *Server) { s.a2sSettings = controller }
 }
 
 func WithPrivateUploads(manager *content.PrivateUploadManager) Option {
@@ -243,6 +255,8 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Get("/api/settings/game-logs", s.getGameLogSettings)
 		r.Put("/api/settings/game-logs", s.putGameLogSettings)
 		r.Post("/api/settings/game-logs/cleanup", s.cleanupGameLogs)
+		r.Get("/api/settings/a2s-defense", s.getA2SDefenseSettings)
+		r.Put("/api/settings/a2s-defense", s.putA2SDefenseSettings)
 		r.Get("/api/instances/{id}/performance-history", s.instancePerformanceHistory)
 		r.Post("/api/instances", s.createInstance)
 		r.Put("/api/instances/{id}", s.updateInstance)
@@ -482,6 +496,71 @@ type jobSettingsResponse struct {
 
 type githubReleasesSettingsResponse struct {
 	AcceleratorURL string `json:"accelerator_url"`
+}
+
+type a2sDefenseSettingsResponse struct {
+	DesiredEnabled   bool                `json:"desired_enabled"`
+	EffectiveEnabled bool                `json:"effective_enabled"`
+	Pending          bool                `json:"pending"`
+	Compatible       bool                `json:"compatible"`
+	Revision         int64               `json:"revision"`
+	PolicyVersion    int                 `json:"policy_version"`
+	ProtectedPorts   []int               `json:"protected_ports"`
+	Counters         a2sdefense.Counters `json:"counters"`
+	BlacklistSize    int                 `json:"blacklist_size"`
+	AppliedAt        string              `json:"applied_at,omitempty"`
+	LastError        string              `json:"last_error,omitempty"`
+}
+
+func (s *Server) getA2SDefenseSettings(w http.ResponseWriter, r *http.Request) {
+	if s.a2sSettings == nil {
+		writeError(w, http.StatusServiceUnavailable, "a2s_defense_unavailable", "A2S defense unavailable")
+		return
+	}
+	desired, err := s.a2sSettings.Desired(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "settings_error", err.Error())
+		return
+	}
+	actual, actualErr := s.a2sSettings.Actual(r.Context())
+	lastError := desired.LastError
+	if actualErr != nil {
+		lastError = actualErr.Error()
+	}
+	ports := append([]int(nil), actual.Ports...)
+	if ports == nil {
+		ports = []int{}
+	}
+	writeJSON(w, http.StatusOK, a2sDefenseSettingsResponse{
+		DesiredEnabled: desired.Enabled, EffectiveEnabled: actual.Enabled, Pending: desired.Pending || actualErr != nil,
+		Compatible: actual.Compatible && actualErr == nil, Revision: actual.Revision, PolicyVersion: actual.PolicyVersion,
+		ProtectedPorts: ports, Counters: actual.Counters, BlacklistSize: actual.BlacklistSize, AppliedAt: actual.AppliedAt, LastError: lastError,
+	})
+}
+
+func (s *Server) putA2SDefenseSettings(w http.ResponseWriter, r *http.Request) {
+	if s.a2sSettings == nil {
+		writeError(w, http.StatusServiceUnavailable, "a2s_defense_unavailable", "A2S defense unavailable")
+		return
+	}
+	var input struct {
+		Enabled *bool `json:"enabled"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil || input.Enabled == nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_a2s_defense_settings", "enabled must be a boolean")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_a2s_defense_settings", "request body must contain exactly one settings object")
+		return
+	}
+	if _, err := s.a2sSettings.SetEnabled(r.Context(), *input.Enabled); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "a2s_defense_apply_failed", err.Error())
+		return
+	}
+	s.getA2SDefenseSettings(w, r)
 }
 
 func (s *Server) githubReleasesSettings(w http.ResponseWriter, _ *http.Request) {

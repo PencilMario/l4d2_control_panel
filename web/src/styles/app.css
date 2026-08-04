@@ -1007,6 +1007,16 @@ code, pre { font-family: var(--mono); }
 .settings-cleanup { border-color: #7f1d1d66; background: #450a0a66; color: #fca5a5; font-weight: 600; }
 .settings-cleanup:hover:not(:disabled) { border-color: #991b1b99; background: #7f1d1d99; color: #fecaca; }
 .settings-notice { margin: -6px 0 0; color: #6ee7b7 !important; font-size: 10px !important; }
+.a2s-defense-settings { min-height: 310px; }
+.a2s-defense-ports { display: flex; align-items: center; flex-wrap: wrap; min-height: 30px; gap: 6px; }
+.a2s-defense-ports code { padding: 4px 7px; border: 1px solid #2c3b33; border-radius: 4px; background: #0e1612; color: #a3e635; font: 600 11px/1 var(--mono); }
+.a2s-defense-ports > span { color: #63776b; font-size: 10px; }
+.a2s-defense-counters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); overflow: hidden; border: 1px solid #24322a; border-radius: 6px; }
+.a2s-defense-counters > div { display: grid; min-width: 0; gap: 3px; padding: 8px; border-right: 1px solid #24322a; border-bottom: 1px solid #24322a; background: #101714; }
+.a2s-defense-counters > div:nth-child(3n) { border-right: 0; }
+.a2s-defense-counters > div:nth-last-child(-n+3) { border-bottom: 0; }
+.a2s-defense-counters span { overflow: hidden; color: #6f8278; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.a2s-defense-counters b { color: #dce8e1; font: 600 13px/1.2 var(--mono); }
 
 .modal-wrap, .private-snapshot-backdrop {
   position: fixed;

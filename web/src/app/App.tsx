@@ -65,6 +65,7 @@ import { PrivateFilesPage } from "./PrivateFilesPage";
 import { SchedulesPage } from "./SchedulesPage";
 import { VPKUploadQueue } from "./VPKUploadQueue";
 import { SelfServiceVPKSettings } from "./SelfServiceVPKSettings";
+import { A2SDefenseSettings } from "./A2SDefenseSettings";
 import { cancelVPKUpload, enqueueVPKUploads, retryVPKUpload, startVPKUploadQueue, type VPKUploadMode, type VPKUploadTask } from "../vpk/uploadQueue";
 import { useConsoleFollow } from "./useConsoleFollow";
 import { appendConsoleOutput } from "./consoleBuffer";
@@ -2064,7 +2065,7 @@ function SettingsPage() {
     <div className="settings-reference-page">
       <header className="settings-reference-head">
         <h2>系统设置</h2>
-        <p>配置 SteamCMD 登录凭据、GitHub 访问与下载、后台任务保留上限及日志清理策略</p>
+        <p>配置服务器访问、后台任务、日志与网络防御策略</p>
       </header>
       {settingsError && (
         <div className="error" role="alert">
@@ -2105,6 +2106,7 @@ function SettingsPage() {
           {gameLogsNotice ? <p className="settings-notice" role="status">{gameLogsNotice}</p> : null}
         </section>
         <SelfServiceVPKSettings />
+        <A2SDefenseSettings />
       </div>
     </div>
   );
