@@ -14,9 +14,9 @@ import (
 )
 
 const (
-	iptablesPath        = "/sbin/iptables"
-	iptablesRestorePath = "/sbin/iptables-restore"
-	iptablesSavePath    = "/sbin/iptables-save"
+	iptablesPath        = "/usr/sbin/iptables"
+	iptablesRestorePath = "/usr/sbin/iptables-restore"
+	iptablesSavePath    = "/usr/sbin/iptables-save"
 )
 
 var ErrStaleRevision = errors.New("stale A2S defense revision")

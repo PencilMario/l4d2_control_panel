@@ -127,6 +127,21 @@ func TestSocketProxyImageDoesNotExposeRetiredTCPPort(t *testing.T) {
 	}
 }
 
+func TestA2SDefenseImageBuildsOnlyItsDependencyClosure(t *testing.T) {
+	raw, err := os.ReadFile("a2s-defense-helper/Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dockerfile := string(raw)
+	if strings.Contains(dockerfile, "go mod download") {
+		t.Fatal("A2S defense image must not download unrelated panel modules")
+	}
+	if strings.Contains(dockerfile, "COPY go.mod go.sum") || !strings.Contains(dockerfile, "COPY a2s-defense-helper/go.mod ./go.mod") {
+		t.Fatal("A2S defense image must use its dependency-free helper module")
+	}
+	assertContains(t, dockerfile, "go build", "A2S defense helper build")
+}
+
 func serviceBlocks(t *testing.T, compose string) map[string]string {
 	t.Helper()
 	marker := "services:\n"

@@ -66,6 +66,12 @@ COMMIT
 	}
 }
 
+func TestCommandPathsMatchAlpineIptablesPackage(t *testing.T) {
+	if iptablesPath != "/usr/sbin/iptables" || iptablesSavePath != "/usr/sbin/iptables-save" || iptablesRestorePath != "/usr/sbin/iptables-restore" {
+		t.Fatalf("command paths = %q %q %q", iptablesPath, iptablesSavePath, iptablesRestorePath)
+	}
+}
+
 func TestManagerStatusReportsIncompatibleRequiredMatch(t *testing.T) {
 	executor := &fakeExecutor{failOn: "-m u32 -h"}
 	manager := NewManager(executor, time.Now)
