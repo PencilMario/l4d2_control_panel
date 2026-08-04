@@ -114,3 +114,23 @@ func TestBuildDisableRestoreRemovesOnlyProjectChains(t *testing.T) {
 		t.Fatalf("disable rules modify INPUT ownership boundary:\n%s", rules)
 	}
 }
+
+func TestBuildEnableRestoreChunksMoreThanFifteenProtectedPorts(t *testing.T) {
+	ports := make([]int, 16)
+	for index := range ports {
+		ports[index] = 27000 + index
+	}
+	rules, err := BuildEnableRestore(Config{Version: APIVersion, Enabled: true, Ports: ports, Revision: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(rules, "-m multiport --dports") != 4 {
+		t.Fatalf("expected blacklist and classify rules for two port chunks:\n%s", rules)
+	}
+	if strings.Contains(rules, "--dports "+joinPorts(ports)) {
+		t.Fatal("generated a multiport rule with more than 15 ports")
+	}
+	if !strings.Contains(rules, "--dports 27000,27001,27002,27003,27004,27005,27006,27007,27008,27009,27010,27011,27012,27013,27014") || !strings.Contains(rules, "--dports 27015") {
+		t.Fatalf("missing expected chunks:\n%s", rules)
+	}
+}

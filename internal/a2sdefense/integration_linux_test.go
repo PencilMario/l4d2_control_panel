@@ -18,7 +18,11 @@ func TestRealIPv4RulesLimitA2SPlayerFloodAndCleanUp(t *testing.T) {
 	manager := NewManager(CommandExecutor{}, time.Now)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := manager.Apply(ctx, Config{Version: APIVersion, Enabled: true, Ports: []int{27015}, Revision: 1}); err != nil {
+	ports := make([]int, 16)
+	for index := range ports {
+		ports[index] = 27015 + index
+	}
+	if _, err := manager.Apply(ctx, Config{Version: APIVersion, Enabled: true, Ports: ports, Revision: 1}); err != nil {
 		t.Fatalf("apply rules: %v", err)
 	}
 	t.Cleanup(func() {

@@ -60,9 +60,11 @@ func buildEnableRestore(input Config, active ruleSlot) (string, error) {
 	if len(config.Ports) == 0 {
 		fmt.Fprintf(&rules, "-A %s -j RETURN\n", active.entry)
 	} else {
-		ports := joinPorts(config.Ports)
-		fmt.Fprintf(&rules, "-A %s -p udp -m multiport --dports %s -m recent --update --seconds 60 --hitcount 3 --name %s --rsource -j DROP\n", active.entry, ports, RecentName)
-		fmt.Fprintf(&rules, "-A %s -p udp -m multiport --dports %s -j %s\n", active.entry, ports, active.classify)
+		for _, chunk := range portChunks(config.Ports, 15) {
+			ports := joinPorts(chunk)
+			fmt.Fprintf(&rules, "-A %s -p udp -m multiport --dports %s -m recent --update --seconds 60 --hitcount 3 --name %s --rsource -j DROP\n", active.entry, ports, RecentName)
+			fmt.Fprintf(&rules, "-A %s -p udp -m multiport --dports %s -j %s\n", active.entry, ports, active.classify)
+		}
 		fmt.Fprintf(&rules, "-A %s -j RETURN\n", active.entry)
 
 		fmt.Fprintf(&rules, "-A %s -m u32 --u32 \"0>>22&0x3C@8=0xFFFFFFFF && 0>>22&0x3C@12&0xFF000000=0x54000000:0x57000000,0x69000000\" -m hashlimit --hashlimit-name L4D2_A2S_TOTAL --hashlimit-mode dstport --hashlimit-above 300/second --hashlimit-burst 600 --hashlimit-htable-expire 60000 -j %s\n", active.classify, active.drop)
@@ -88,6 +90,15 @@ func BuildDisableRestore() string {
 	}
 	rules.WriteString("COMMIT\n")
 	return rules.String()
+}
+
+func portChunks(ports []int, size int) [][]int {
+	chunks := make([][]int, 0, (len(ports)+size-1)/size)
+	for start := 0; start < len(ports); start += size {
+		end := min(start+size, len(ports))
+		chunks = append(chunks, ports[start:end])
+	}
+	return chunks
 }
 
 func projectChains() []string {
