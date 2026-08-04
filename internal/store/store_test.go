@@ -97,6 +97,33 @@ func TestGitHubReleasesAcceleratorSettings(t *testing.T) {
 	}
 }
 
+func TestA2SDefenseSettingsDefaultAndRoundTrip(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	settings, err := s.A2SDefenseSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.Enabled || settings.Revision != 0 || settings.Pending || settings.LastError != "" {
+		t.Fatalf("default=%+v", settings)
+	}
+	want := domain.A2SDefenseSettings{Enabled: true, Revision: 7, Pending: true, LastError: "helper unavailable", LastSyncedAt: time.Date(2026, 8, 5, 2, 3, 4, 0, time.UTC)}
+	if err := s.SaveA2SDefenseSettings(ctx, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.A2SDefenseSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got=%+v want=%+v", got, want)
+	}
+}
+
 func TestSelfServiceVPKSettingsAndPasswordVersion(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/not0721here/l4d2-control-panel/internal/a2s"
+	"github.com/not0721here/l4d2-control-panel/internal/a2sdefense"
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/automation"
 	"github.com/not0721here/l4d2-control-panel/internal/config"
@@ -153,6 +154,12 @@ func main() {
 		overlaySocket = "/run/l4d2-panel-overlay/overlay.sock"
 	}
 	overlayClient := overlayfs.NewClient(overlaySocket)
+	a2sDefenseSocket := os.Getenv("L4D2_PANEL_A2S_DEFENSE_SOCKET")
+	if a2sDefenseSocket == "" {
+		a2sDefenseSocket = "/run/l4d2-panel-a2s-defense/a2s-defense.sock"
+	}
+	a2sDefenseCoordinator := a2sdefense.NewCoordinator(db, a2sdefense.NewClient(a2sDefenseSocket), time.Minute, time.Now)
+	a2sDefenseCoordinator.Start(context.Background())
 	updatePipeline.WithSharedOverlay(overlayClient, db)
 	portChecker := ports.Checker{Configured: func(ctx context.Context) ([]ports.Reservation, error) {
 		instances, err := db.Instances(ctx)
@@ -219,6 +226,7 @@ func main() {
 	}
 	api := httpapi.New(db, sessions, httpapi.WithGameLogs(gameLogManager, gameLogScheduler), httpapi.WithOperations(life, jobManager), httpapi.WithMaintenanceGate(sharedGate), httpapi.WithJobLogs(jobLogManager), httpapi.WithConsole(engine), httpapi.WithPlayers(playerService), httpapi.WithContent(uploadManager, privateManager, packageManager, updatePipeline, updateCoordinator), httpapi.WithReleases(releaseClient), httpapi.WithSelfServiceVPK(selfServiceVPKManager), httpapi.WithSelfServiceVPKKey(secretKey), httpapi.WithVPKRestartRegistrar(vpkRestartCoordinator), httpapi.WithPrivateUploads(privateUploadManager), httpapi.WithGameUpdates(gameCoordinator), httpapi.WithSharedGameUpdates(sharedGameCoordinator), httpapi.WithSharedGameMigration(sharedGameMigration), httpapi.WithSharedGamePath(cfg.GameCurrentPath), httpapi.WithScheduler(scheduleService), httpapi.WithSecrets(secretService), httpapi.WithResources(engine), httpapi.WithPerformance(performanceSampler), httpapi.WithSystem(engine), httpapi.WithSecureCookie(secureCookie))
 	stopBackground := func() {
+		a2sDefenseCoordinator.Stop()
 		vpkRestartCoordinator.Stop()
 		scheduleService.Stop()
 		gameLogScheduler.Stop()

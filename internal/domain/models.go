@@ -99,3 +99,11 @@ type SharedGameState struct {
 	Version           string    `json:"version,omitempty"`
 	Path              string    `json:"path,omitempty"`
 }
+
+type A2SDefenseSettings struct {
+	Enabled      bool      `json:"enabled"`
+	Revision     int64     `json:"revision"`
+	Pending      bool      `json:"pending"`
+	LastError    string    `json:"last_error,omitempty"`
+	LastSyncedAt time.Time `json:"last_synced_at,omitempty"`
+}
