@@ -136,8 +136,15 @@ func TestA2SDefenseImageBuildsOnlyItsDependencyClosure(t *testing.T) {
 	if strings.Contains(dockerfile, "go mod download") {
 		t.Fatal("A2S defense image must not download unrelated panel modules")
 	}
-	if strings.Contains(dockerfile, "COPY go.mod go.sum") || !strings.Contains(dockerfile, "COPY a2s-defense-helper/go.mod ./go.mod") {
-		t.Fatal("A2S defense image must use its dependency-free helper module")
+	if strings.Contains(dockerfile, "COPY go.mod go.sum") || !strings.Contains(dockerfile, "COPY a2s-defense-helper/go.mod a2s-defense-helper/go.sum ./") {
+		t.Fatal("A2S defense image must use its isolated helper module and checksum file")
+	}
+	module, err := os.ReadFile("a2s-defense-helper/go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(module), "github.com/florianl/go-nflog/v2 v2.3.0") {
+		t.Fatal("A2S defense helper must pin the approved NFLOG dependency")
 	}
 	assertContains(t, dockerfile, "go build", "A2S defense helper build")
 }
