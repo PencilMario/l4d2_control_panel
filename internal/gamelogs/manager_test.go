@@ -20,12 +20,12 @@ import (
 func TestAppendA2SDefenseWritesFixedGameLog(t *testing.T) {
 	root := t.TempDir()
 	manager := NewManager(root, Options{})
-	event := a2sdefense.Event{Timestamp: time.Date(2026, 8, 5, 7, 42, 10, 0, time.UTC), Source: netip.MustParseAddr("203.0.113.8"), DestinationPort: 27015, Query: a2sdefense.QueryPlayer, Action: "DROP"}
+	event := a2sdefense.Event{Timestamp: time.Date(2026, 8, 5, 7, 42, 10, 0, time.UTC), Source: netip.MustParseAddr("203.0.113.8"), SourcePort: 52144, DestinationPort: 27015, PacketBytes: 33, Query: a2sdefense.QueryPlayer, SampledDrops60s: 3, Action: "DROP"}
 	if err := manager.AppendA2SDefense(context.Background(), "instance-1", event); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(root, "instances", "instance-1", "logs", "game", "a2s_protect.log")
-	assertFile(t, path, "2026-08-05T07:42:10Z src=203.0.113.8 dst_port=27015 query=A2S_PLAYER action=DROP\n")
+	assertFile(t, path, "2026-08-05T07:42:10Z src=203.0.113.8 src_port=52144 dst_port=27015 packet_bytes=33 query=A2S_PLAYER sampled_drops_60s=3 action=DROP\n")
 	info, err := os.Stat(path)
 	if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o640) {
 		t.Fatalf("mode=%v err=%v", info.Mode().Perm(), err)

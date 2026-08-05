@@ -42,7 +42,8 @@ func TestManagerStatusReadsLiveCountersAndRecentBlacklist(t *testing.T) {
 [7:420] -A L4D2_A2S_CLASS_A -m hashlimit --hashlimit-name L4D2_A2S_PLAYER -j L4D2_A2S_DROP_A
 [2:120] -A L4D2_A2S_CLASS_B -m hashlimit --hashlimit-name L4D2_A2S_PLAYER -j L4D2_A2S_DROP_B
 [5:300] -A L4D2_A2S_CLASS_A -m hashlimit --hashlimit-name L4D2_A2S_RULES -j L4D2_A2S_DROP_A
-[11:660] -A L4D2_A2S_SLOT_A -m recent --name L4D2_A2S_ATTACKER -j DROP
+[11:660] -A L4D2_A2S_SLOT_A -m recent --name L4D2_A2S_ATTACKER -j L4D2_A2S_DROP_A
+[7:420] -A L4D2_A2S_SLOT_B -m recent --name L4D2_A2S_ATTACKER -j L4D2_A2S_DROP_B
 COMMIT
 `}
 	manager := NewManager(executor, time.Now)
@@ -58,7 +59,7 @@ COMMIT
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Counters.Info != 3 || status.Counters.Player != 9 || status.Counters.Rules != 5 || status.Counters.Aggregate != 0 || status.Counters.Blacklist != 11 {
+	if status.Counters.Info != 3 || status.Counters.Player != 9 || status.Counters.Rules != 5 || status.Counters.Aggregate != 0 || status.Counters.Blacklist != 18 {
 		t.Fatalf("counters=%+v", status.Counters)
 	}
 	if status.BlacklistSize != 2 {
@@ -69,6 +70,13 @@ COMMIT
 func TestCommandPathsMatchAlpineIptablesPackage(t *testing.T) {
 	if iptablesPath != "/usr/sbin/iptables" || iptablesSavePath != "/usr/sbin/iptables-save" || iptablesRestorePath != "/usr/sbin/iptables-restore" {
 		t.Fatalf("command paths = %q %q %q", iptablesPath, iptablesSavePath, iptablesRestorePath)
+	}
+}
+
+func TestParseCountersKeepsLegacyDirectBlacklistDrop(t *testing.T) {
+	counters := parseCounters("[4:240] -A L4D2_A2S_SLOT_A -m recent --name L4D2_A2S_ATTACKER -j DROP\n")
+	if counters.Blacklist != 4 {
+		t.Fatalf("blacklist=%d", counters.Blacklist)
 	}
 }
 

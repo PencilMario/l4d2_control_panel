@@ -84,7 +84,7 @@ func (m *Manager) AppendA2SDefense(ctx context.Context, instanceID string, event
 	default:
 		return errors.New("invalid A2S defense query")
 	}
-	line := fmt.Sprintf("%s src=%s dst_port=%d query=%s action=DROP\n", event.Timestamp.UTC().Format(time.RFC3339), event.Source, event.DestinationPort, event.Query)
+	line := fmt.Sprintf("%s src=%s src_port=%d dst_port=%d packet_bytes=%d query=%s sampled_drops_60s=%d action=DROP\n", event.Timestamp.UTC().Format(time.RFC3339), event.Source, event.SourcePort, event.DestinationPort, event.PacketBytes, event.Query, event.SampledDrops60s)
 	return m.appendA2SDefenseLine(ctx, instanceID, line)
 }
 

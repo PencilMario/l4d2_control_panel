@@ -20,9 +20,57 @@ func TestParseNFLogPacketExtractsIPv4UDPQuery(t *testing.T) {
 		binary.BigEndian.PutUint16(packet[24:26], 13)
 		copy(packet[28:], []byte{0xff, 0xff, 0xff, 0xff, opcode})
 		event, err := ParseNFLogPacket(packet, time.Date(2026, 8, 5, 8, 0, 0, 0, time.UTC))
-		if err != nil || event.Source.String() != "192.0.2.9" || event.DestinationPort != 27015 || event.Query != query {
+		if err != nil || event.Source.String() != "192.0.2.9" || event.SourcePort != 40000 || event.DestinationPort != 27015 || event.PacketBytes != 33 || event.Query != query {
 			t.Fatalf("opcode=%x event=%+v err=%v", opcode, event, err)
 		}
+	}
+}
+
+func TestSampleWindowCountsTrailingMinutePerSourceAcrossPorts(t *testing.T) {
+	window := NewSampleWindow(time.Minute)
+	first := netip.MustParseAddr("192.0.2.1")
+	second := netip.MustParseAddr("192.0.2.2")
+	base := time.Date(2026, 8, 5, 8, 0, 0, 0, time.UTC)
+
+	if got := window.Observe(first, base); got != 1 {
+		t.Fatalf("first count=%d", got)
+	}
+	if got := window.Observe(first, base.Add(30*time.Second)); got != 2 {
+		t.Fatalf("cross-port count=%d", got)
+	}
+	if got := window.Observe(second, base.Add(30*time.Second)); got != 1 {
+		t.Fatalf("independent count=%d", got)
+	}
+	if got := window.Observe(first, base.Add(61*time.Second)); got != 2 {
+		t.Fatalf("expired count=%d", got)
+	}
+}
+
+func TestSampleWindowDoesNotMoveBackwardForOutOfOrderSamples(t *testing.T) {
+	window := NewSampleWindow(time.Minute)
+	source := netip.MustParseAddr("192.0.2.1")
+	base := time.Date(2026, 8, 5, 8, 0, 0, 0, time.UTC)
+
+	window.Observe(source, base.Add(70*time.Second))
+	if got := window.Observe(source, base); got != 1 {
+		t.Fatalf("stale sample count=%d", got)
+	}
+	if got := window.Observe(source, base.Add(80*time.Second)); got != 2 {
+		t.Fatalf("forward count=%d", got)
+	}
+}
+
+func TestSampleWindowCountsOutOfOrderSampleInsideLatestWindow(t *testing.T) {
+	window := NewSampleWindow(time.Minute)
+	source := netip.MustParseAddr("192.0.2.1")
+	base := time.Date(2026, 8, 5, 8, 0, 0, 0, time.UTC)
+
+	window.Observe(source, base.Add(70*time.Second))
+	if got := window.Observe(source, base.Add(60*time.Second)); got != 2 {
+		t.Fatalf("in-window late sample count=%d", got)
+	}
+	if got := window.Observe(source, base.Add(121*time.Second)); got != 2 {
+		t.Fatalf("ordered expiry count=%d", got)
 	}
 }
 

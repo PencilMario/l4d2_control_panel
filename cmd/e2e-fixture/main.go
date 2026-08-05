@@ -79,7 +79,7 @@ func seedGameLogs(root, id string) error {
 		age                 time.Duration
 	}{
 		{kind: "game", name: "server.log", content: "2026-07-18 12:00:00 ERROR instance=" + id + " UserID=42 127.0.0.1:27015\n"},
-		{kind: "game", name: "a2s_protect.log", content: "2026-08-05T07:42:10Z src=203.0.113.8 dst_port=27015 query=A2S_PLAYER action=DROP\n"},
+		{kind: "game", name: "a2s_protect.log", content: "2026-08-05T07:42:10Z src=203.0.113.8 src_port=52144 dst_port=27015 packet_bytes=33 query=A2S_PLAYER sampled_drops_60s=3 action=DROP\n"},
 		{kind: "sourcemod", name: "errors/current-error.log", content: "2026-07-18 12:00:01 [SM] ERROR plugin:fixture.smx UserID=42\n"},
 		{kind: "sourcemod", name: "errors/aged-error.log", content: "2026-06-01 12:00:00 ERROR expired fixture log\n", age: 30 * 24 * time.Hour},
 	}

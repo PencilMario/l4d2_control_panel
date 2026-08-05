@@ -73,7 +73,7 @@ func TestRealIPv4RulesLimitA2SPlayerFloodAndCleanUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read live status: %v", err)
 	}
-	if status.Counters.Player == 0 || status.BlacklistSize != 1 {
+	if status.Counters.Player == 0 || status.Counters.Blacklist == 0 || status.BlacklistSize != 1 {
 		t.Fatalf("live status did not report drops and attacker: %+v", status)
 	}
 	deadline := time.Now().Add(2 * time.Second)
@@ -93,7 +93,7 @@ func TestRealIPv4RulesLimitA2SPlayerFloodAndCleanUp(t *testing.T) {
 		t.Fatal("NFLOG did not deliver a sampled drop event")
 	}
 	event := batch.Events[0]
-	if !event.Source.Is4() || event.DestinationPort != 27015 || event.Query != QueryPlayer || event.Action != "DROP" {
+	if !event.Source.Is4() || event.SourcePort < 1 || event.DestinationPort != 27015 || event.PacketBytes != 20+8+len(payload) || event.Query != QueryPlayer || event.SampledDrops60s < 1 || event.Action != "DROP" {
 		t.Fatalf("unexpected NFLOG event: %+v", event)
 	}
 

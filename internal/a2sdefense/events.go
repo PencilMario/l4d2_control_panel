@@ -24,8 +24,11 @@ type Event struct {
 	Sequence        uint64     `json:"sequence"`
 	Timestamp       time.Time  `json:"timestamp"`
 	Source          netip.Addr `json:"source"`
+	SourcePort      int        `json:"source_port"`
 	DestinationPort int        `json:"destination_port"`
+	PacketBytes     int        `json:"packet_bytes"`
 	Query           QueryType  `json:"query"`
+	SampledDrops60s int        `json:"sampled_drops_60s"`
 	Action          string     `json:"action"`
 }
 
@@ -126,7 +129,15 @@ func ParseNFLogPacket(packet []byte, timestamp time.Time) (Event, error) {
 	if !ok {
 		return Event{}, errors.New("invalid IPv4 source")
 	}
-	return Event{Timestamp: timestamp.UTC(), Source: source.Unmap(), DestinationPort: int(binary.BigEndian.Uint16(packet[headerLength+2 : headerLength+4])), Query: query, Action: "DROP"}, nil
+	return Event{
+		Timestamp:       timestamp.UTC(),
+		Source:          source.Unmap(),
+		SourcePort:      int(binary.BigEndian.Uint16(packet[headerLength : headerLength+2])),
+		DestinationPort: int(binary.BigEndian.Uint16(packet[headerLength+2 : headerLength+4])),
+		PacketBytes:     totalLength,
+		Query:           query,
+		Action:          "DROP",
+	}, nil
 }
 
 func queryTypeForOpcode(opcode byte) (QueryType, bool) {

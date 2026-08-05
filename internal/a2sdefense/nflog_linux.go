@@ -12,15 +12,16 @@ import (
 const NFLogGroup = 100
 
 type NFLogSource struct {
-	ring *EventRing
-	now  func() time.Time
+	ring    *EventRing
+	now     func() time.Time
+	samples *SampleWindow
 }
 
 func NewNFLogSource(ring *EventRing, now func() time.Time) *NFLogSource {
 	if now == nil {
 		now = time.Now
 	}
-	return &NFLogSource{ring: ring, now: now}
+	return &NFLogSource{ring: ring, now: now, samples: NewSampleWindow(time.Minute)}
 }
 
 func (s *NFLogSource) Run(ctx context.Context) error {
@@ -39,6 +40,7 @@ func (s *NFLogSource) Run(ctx context.Context) error {
 		}
 		event, parseErr := ParseNFLogPacket(*attribute.Payload, timestamp)
 		if parseErr == nil {
+			event.SampledDrops60s = s.samples.Observe(event.Source, event.Timestamp)
 			_ = s.ring.Add(event)
 		}
 		return 0

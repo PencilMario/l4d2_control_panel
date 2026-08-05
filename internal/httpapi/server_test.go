@@ -100,7 +100,7 @@ func TestGameLogsHTTPContract(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "instances", "logs", "logs", "game", name), []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
-	a2sEvent := a2sdefense.Event{Timestamp: time.Date(2026, 8, 5, 7, 42, 10, 0, time.UTC), Source: netip.MustParseAddr("203.0.113.8"), DestinationPort: 27015, Query: a2sdefense.QueryPlayer, Action: "DROP"}
+	a2sEvent := a2sdefense.Event{Timestamp: time.Date(2026, 8, 5, 7, 42, 10, 0, time.UTC), Source: netip.MustParseAddr("203.0.113.8"), SourcePort: 52144, DestinationPort: 27015, PacketBytes: 33, Query: a2sdefense.QueryPlayer, SampledDrops60s: 3, Action: "DROP"}
 	if err := gm.AppendA2SDefense(context.Background(), "logs", a2sEvent); err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestGameLogsHTTPContract(t *testing.T) {
 	}
 	a2sPreview := authenticatedJSON(t, s, c, http.MethodGet, "/api/instances/logs/game-logs/preview?kind=game&path=a2s_protect.log", "")
 	var a2sLog gamelogs.Preview
-	if a2sPreview.Code != 200 || json.Unmarshal(a2sPreview.Body.Bytes(), &a2sLog) != nil || !strings.Contains(a2sLog.Text, "src=203.0.113.8 dst_port=27015 query=A2S_PLAYER action=DROP") {
+	if a2sPreview.Code != 200 || json.Unmarshal(a2sPreview.Body.Bytes(), &a2sLog) != nil || !strings.Contains(a2sLog.Text, "src=203.0.113.8 src_port=52144 dst_port=27015 packet_bytes=33 query=A2S_PLAYER sampled_drops_60s=3 action=DROP") {
 		t.Fatalf("a2s preview=%d %s", a2sPreview.Code, a2sPreview.Body.String())
 	}
 	a2sDownload := authenticatedJSON(t, s, c, http.MethodGet, "/api/instances/logs/game-logs/download?kind=game&path=a2s_protect.log", "")

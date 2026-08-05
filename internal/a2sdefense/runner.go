@@ -181,7 +181,8 @@ func parseCounters(save string) Counters {
 		case "L4D2_A2S_TOTAL":
 			counters.Aggregate += packets
 		}
-		if name == "" && argumentValue(fields, "--name") == RecentName && argumentValue(fields, "-j") == "DROP" {
+		target := argumentValue(fields, "-j")
+		if name == "" && argumentValue(fields, "--name") == RecentName && (target == "DROP" || target == DropChain || target == DropB) {
 			counters.Blacklist += packets
 		}
 	}
