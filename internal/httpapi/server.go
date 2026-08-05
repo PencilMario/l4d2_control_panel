@@ -24,6 +24,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/a2sdefense"
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
+	"github.com/not0721here/l4d2-control-panel/internal/databaseconfig"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/gamelogs"
@@ -80,6 +81,7 @@ type Server struct {
 	sharedGamePath   string
 	a2sDefense       A2SDefenseReconciler
 	a2sSettings      A2SDefenseSettingsController
+	databaseRoot     string
 }
 
 type A2SDefenseReconciler interface {
@@ -99,6 +101,12 @@ type A2SDefenseSettingsController interface {
 func WithA2SDefenseSettings(controller A2SDefenseSettingsController) Option {
 	return func(s *Server) { s.a2sSettings = controller }
 }
+
+func WithDatabaseSystem(root string) Option {
+	return func(s *Server) { s.databaseRoot = root }
+}
+
+func (s *Server) EnableDatabaseSystem(root string) { s.databaseRoot = root }
 
 func WithPrivateUploads(manager *content.PrivateUploadManager) Option {
 	return func(s *Server) { s.privateUploads = manager }
@@ -257,6 +265,10 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Post("/api/settings/game-logs/cleanup", s.cleanupGameLogs)
 		r.Get("/api/settings/a2s-defense", s.getA2SDefenseSettings)
 		r.Put("/api/settings/a2s-defense", s.putA2SDefenseSettings)
+		r.Get("/api/settings/databases", s.getDatabaseSettings)
+		r.Get("/api/settings/databases/defaults", s.getDatabaseDefaults)
+		r.Put("/api/settings/databases", s.putDatabaseSettings)
+		r.Post("/api/settings/databases/sync", s.syncDatabaseSettings)
 		r.Get("/api/instances/{id}/performance-history", s.instancePerformanceHistory)
 		r.Post("/api/instances", s.createInstance)
 		r.Put("/api/instances/{id}", s.updateInstance)
@@ -2199,6 +2211,75 @@ func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
 		jobs.Job
 		Events []domain.JobEvent
 	}{Job: job, Events: events})
+}
+
+func (s *Server) getDatabaseDefaults(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, databaseconfig.Defaults())
+}
+
+func (s *Server) getDatabaseSettings(w http.ResponseWriter, r *http.Request) {
+	config, err := s.store.DatabaseConfig(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "database_settings_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, config)
+}
+
+func (s *Server) putDatabaseSettings(w http.ResponseWriter, r *http.Request) {
+	var requested databaseconfig.Config
+	if err := decodeJSON(w, r, &requested); err != nil {
+		return
+	}
+	requested = databaseconfig.Normalize(requested)
+	if err := databaseconfig.Validate(requested); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_database_settings", err.Error())
+		return
+	}
+	current, err := s.store.DatabaseConfig(r.Context())
+	if err != nil {
+		writeError(w, 500, "database_settings_error", err.Error())
+		return
+	}
+	if requested.Revision != current.Revision {
+		writeError(w, http.StatusConflict, "database_settings_conflict", "database settings changed; reload and retry")
+		return
+	}
+	requested.Revision++
+	s.startDatabaseSync(w, r, &requested)
+}
+
+func (s *Server) syncDatabaseSettings(w http.ResponseWriter, r *http.Request) {
+	s.startDatabaseSync(w, r, nil)
+}
+
+func (s *Server) startDatabaseSync(w http.ResponseWriter, r *http.Request, save *databaseconfig.Config) {
+	if s.jobs == nil || s.databaseRoot == "" {
+		writeError(w, http.StatusServiceUnavailable, "database_sync_unavailable", "database synchronization unavailable")
+		return
+	}
+	job, err := s.jobs.Start(context.WithoutCancel(r.Context()), "database-system", "database_sync", func(ctx context.Context, reporter jobs.Reporter) error {
+		reporter.Progress("validate", 5, "正在验证数据库配置")
+		if save != nil {
+			reporter.Progress("persist", 10, "正在保存数据库配置")
+			if err := s.store.SaveDatabaseConfig(ctx, *save); err != nil {
+				return err
+			}
+		}
+		reporter.Progress("discover", 15, "正在枚举游戏实例")
+		synchronizer := databaseconfig.Synchronizer{Root: s.databaseRoot, Repository: s.store}
+		result, err := synchronizer.SyncAll(ctx, reporter)
+		if err != nil {
+			return err
+		}
+		reporter.Progress("complete", 100, fmt.Sprintf("已同步 %d 个实例，延后 %d 个实例", result.Synced, result.Deferred))
+		return nil
+	})
+	if err != nil {
+		writeError(w, 500, "database_sync_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, job)
 }
 func (s *Server) Handler() http.Handler { return s.router }
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {

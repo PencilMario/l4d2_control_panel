@@ -561,11 +561,23 @@ func privateDiff(current map[string]manifestEntry, applied privateManifest) Priv
 }
 
 func (m *PrivateManager) ApplyChanges(ctx context.Context, instanceID string) error {
-	return m.applyPrivate(ctx, instanceID, false, true, nil)
+	if err := m.applyPrivate(ctx, instanceID, false, true, nil); err != nil {
+		return err
+	}
+	if m.databaseReconciler != nil {
+		return m.databaseReconciler.SyncInstance(ctx, instanceID)
+	}
+	return nil
 }
 
 func (m *PrivateManager) ApplyChangesWithProgress(ctx context.Context, instanceID string, progress func(string)) error {
-	return m.applyPrivate(ctx, instanceID, false, true, progress)
+	if err := m.applyPrivate(ctx, instanceID, false, true, progress); err != nil {
+		return err
+	}
+	if m.databaseReconciler != nil {
+		return m.databaseReconciler.SyncInstance(ctx, instanceID)
+	}
+	return nil
 }
 
 func (m *PrivateManager) RebaseAndApply(ctx context.Context, instanceID string) error {

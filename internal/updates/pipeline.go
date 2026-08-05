@@ -32,14 +32,24 @@ const (
 )
 
 type Pipeline struct {
-	root        string
-	AfterDeploy func() error
-	overlay     interface {
+	root               string
+	AfterDeploy        func() error
+	databaseReconciler interface {
+		SyncInstance(context.Context, string) error
+	}
+	overlay interface {
 		ResetManagedPaths(context.Context, string, string, []string) error
 	}
 	sharedState interface {
 		SharedGameState(context.Context) (domain.SharedGameState, error)
 	}
+}
+
+func (p *Pipeline) WithDatabaseReconciler(reconciler interface {
+	SyncInstance(context.Context, string) error
+}) *Pipeline {
+	p.databaseReconciler = reconciler
+	return p
 }
 
 type manifest struct {
@@ -353,6 +363,11 @@ func (p *Pipeline) Begin(ctx context.Context, instanceID, archivePath, version s
 	}
 	if err := privateTransaction.RebaseAndApply(ctx); err != nil {
 		return fail(err)
+	}
+	if p.databaseReconciler != nil {
+		if err := p.databaseReconciler.SyncInstance(ctx, instanceID); err != nil {
+			return fail(err)
+		}
 	}
 	if err := writeManifest(manifestPath, newManifest); err != nil {
 		return fail(err)

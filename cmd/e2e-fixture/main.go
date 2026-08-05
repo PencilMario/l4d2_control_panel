@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
+	"github.com/not0721here/l4d2-control-panel/internal/databaseconfig"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/gamelogs"
@@ -326,7 +327,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	private := content.NewPrivateManager(root, 1<<20)
+	private := content.NewPrivateManager(root, 1<<20).WithDatabaseReconciler(databaseconfig.Synchronizer{Root: root, Repository: db})
 	privateUploads := content.NewPrivateUploadManager(root, 8<<20)
 	pipeline, err := newFixturePipeline(root)
 	if err != nil {
@@ -360,6 +361,7 @@ func main() {
 	api := httpapi.New(
 		db,
 		sessions,
+		httpapi.WithDatabaseSystem(root),
 		httpapi.WithGameLogs(gameLogManager, gameLogScheduler),
 		httpapi.WithOperations(lifecycle, jobManager),
 		httpapi.WithJobLogs(jobLogManager),
