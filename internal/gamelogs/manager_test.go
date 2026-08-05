@@ -4,14 +4,53 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/not0721here/l4d2-control-panel/internal/a2sdefense"
 )
+
+func TestAppendA2SDefenseWritesFixedGameLog(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root, Options{})
+	event := a2sdefense.Event{Timestamp: time.Date(2026, 8, 5, 7, 42, 10, 0, time.UTC), Source: netip.MustParseAddr("203.0.113.8"), DestinationPort: 27015, Query: a2sdefense.QueryPlayer, Action: "DROP"}
+	if err := manager.AppendA2SDefense(context.Background(), "instance-1", event); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "instances", "instance-1", "logs", "game", "a2s_protect.log")
+	assertFile(t, path, "2026-08-05T07:42:10Z src=203.0.113.8 dst_port=27015 query=A2S_PLAYER action=DROP\n")
+	info, err := os.Stat(path)
+	if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o640) {
+		t.Fatalf("mode=%v err=%v", info.Mode().Perm(), err)
+	}
+}
+
+func TestAppendA2SDefenseRejectsSymlinkLeaf(t *testing.T) {
+	root := t.TempDir()
+	gameRoot := filepath.Join(root, "instances", "instance-1", "logs", "game")
+	if err := os.MkdirAll(gameRoot, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "outside.log")
+	if err := os.WriteFile(target, []byte("keep"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(gameRoot, "a2s_protect.log")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	event := a2sdefense.Event{Timestamp: time.Now(), Source: netip.MustParseAddr("192.0.2.1"), DestinationPort: 27015, Query: a2sdefense.QueryInfo, Action: "DROP"}
+	if err := NewManager(root, Options{}).AppendA2SDefense(context.Background(), "instance-1", event); err == nil {
+		t.Fatal("expected symlink rejection")
+	}
+	assertFile(t, target, "keep")
+}
 
 func TestTreeListsNestedLogsWithStableKindPathOrder(t *testing.T) {
 	root := t.TempDir()

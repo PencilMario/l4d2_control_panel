@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/not0721here/l4d2-control-panel/internal/a2sdefense"
 	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
 	"github.com/not0721here/l4d2-control-panel/internal/safepath"
@@ -72,6 +73,67 @@ func NewManager(root string, options Options) *Manager {
 		remove = func(path string, _ os.FileInfo) error { return os.Remove(path) }
 	}
 	return &Manager{root: root, now: now, remove: remove, instances: make(map[string]*instanceLockEntry)}
+}
+
+func (m *Manager) AppendA2SDefense(ctx context.Context, instanceID string, event a2sdefense.Event) error {
+	if !event.Source.IsValid() || !event.Source.Is4() || event.DestinationPort < 1 || event.DestinationPort > 65535 || event.Action != "DROP" {
+		return errors.New("invalid A2S defense event")
+	}
+	switch event.Query {
+	case a2sdefense.QueryInfo, a2sdefense.QueryPlayer, a2sdefense.QueryRules, a2sdefense.QueryChallenge, a2sdefense.QueryOther69:
+	default:
+		return errors.New("invalid A2S defense query")
+	}
+	line := fmt.Sprintf("%s src=%s dst_port=%d query=%s action=DROP\n", event.Timestamp.UTC().Format(time.RFC3339), event.Source, event.DestinationPort, event.Query)
+	return m.appendA2SDefenseLine(ctx, instanceID, line)
+}
+
+func (m *Manager) AppendA2SDefenseLoss(ctx context.Context, instanceID string, lost uint64) error {
+	value := "unknown"
+	if lost > 0 {
+		value = fmt.Sprintf("%d", lost)
+	}
+	return m.appendA2SDefenseLine(ctx, instanceID, fmt.Sprintf("%s events_lost=%s\n", m.now().UTC().Format(time.RFC3339), value))
+}
+
+func (m *Manager) appendA2SDefenseLine(ctx context.Context, instanceID, line string) error {
+	if err := validateInstanceID(instanceID); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	unlock, err := m.lockInstance(ctx, instanceID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	root := m.logRoot(instanceID, "game")
+	if err := secureMkdirAll(m.root, root); err != nil {
+		return fmt.Errorf("prepare A2S defense log directory: %w", err)
+	}
+	path := filepath.Join(root, "a2s_protect.log")
+	file, err := openAppendNoFollow(path, 0o640)
+	if err != nil {
+		return fmt.Errorf("open A2S defense log: %w", err)
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	current, err := os.Lstat(path)
+	if err != nil || !opened.Mode().IsRegular() || !current.Mode().IsRegular() || !os.SameFile(opened, current) {
+		return errors.New("A2S defense log is not a stable regular file")
+	}
+	if err := file.Chmod(0o640); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err = io.WriteString(file, line)
+	return err
 }
 
 func (m *Manager) Cleanup(ctx context.Context, instanceID string, retentionDays int) (CleanupResult, error) {

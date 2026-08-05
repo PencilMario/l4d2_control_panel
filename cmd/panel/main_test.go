@@ -31,6 +31,29 @@ func (f fakeJobWaiter) Wait(context.Context) error {
 
 type fakeSamplerStopper struct{ events *[]string }
 
+type blockingEventLogger struct {
+	started chan struct{}
+	stopped chan struct{}
+}
+
+func (l blockingEventLogger) Run(ctx context.Context) {
+	close(l.started)
+	<-ctx.Done()
+	close(l.stopped)
+}
+
+func TestStartA2SEventLoggerStopWaitsForExit(t *testing.T) {
+	logger := blockingEventLogger{started: make(chan struct{}), stopped: make(chan struct{})}
+	stop := startA2SEventLogger(context.Background(), logger)
+	<-logger.started
+	stop()
+	select {
+	case <-logger.stopped:
+	case <-time.After(time.Second):
+		t.Fatal("event logger did not stop")
+	}
+}
+
 func (f fakeSamplerStopper) Stop(context.Context) error {
 	*f.events = append(*f.events, "sampler")
 	return nil

@@ -54,6 +54,23 @@ type samplerStopper interface {
 	Stop(context.Context) error
 }
 
+type a2sEventRunner interface {
+	Run(context.Context)
+}
+
+func startA2SEventLogger(parent context.Context, logger a2sEventRunner) func() {
+	ctx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		logger.Run(ctx)
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
 const startMinimumFreeBytes uint64 = 1 << 30
 
 func shutdownPanel(ctx context.Context, server httpShutdowner, stopScheduler func(), sampler samplerStopper, waiter jobWaiter) error {
@@ -158,7 +175,8 @@ func main() {
 	if a2sDefenseSocket == "" {
 		a2sDefenseSocket = "/run/l4d2-panel-a2s-defense/a2s-defense.sock"
 	}
-	a2sDefenseCoordinator := a2sdefense.NewCoordinator(db, a2sdefense.NewClient(a2sDefenseSocket), time.Minute, time.Now)
+	a2sDefenseClient := a2sdefense.NewClient(a2sDefenseSocket)
+	a2sDefenseCoordinator := a2sdefense.NewCoordinator(db, a2sDefenseClient, time.Minute, time.Now)
 	a2sDefenseCoordinator.Start(context.Background())
 	updatePipeline.WithSharedOverlay(overlayClient, db)
 	portChecker := ports.Checker{Configured: func(ctx context.Context) ([]ports.Reservation, error) {
@@ -172,6 +190,8 @@ func main() {
 	instanceProvisioner := provisioning.Service{Root: cfg.DataRoot, Packages: packageManager, Sources: db, Deployer: updatePipeline, Instances: db, SharedState: db, Overlay: overlayClient}
 	sharedGate := maintenance.NewGate()
 	gameLogManager := gamelogs.NewManager(cfg.DataRoot, gamelogs.Options{})
+	a2sEventLogger := a2sdefense.NewEventLogger(a2sDefenseClient, db, gameLogManager, time.Second, func(err error) { log.Printf("A2S defense event log: %v", err) })
+	stopA2SEventLogger := startA2SEventLogger(context.Background(), a2sEventLogger)
 	life := lifecycle.New(db, engine, portChecker, cfg.DataRoot, lifecycle.WithHealth(healthChecker), lifecycle.WithSpace(disk.Checker{}, startMinimumFreeBytes), lifecycle.WithProvisioner(instanceProvisioner), lifecycle.WithMaintenanceGate(sharedGate), lifecycle.WithLogPreparer(gameLogManager), lifecycle.WithDefenseGate(a2sDefenseCoordinator))
 	if recoverErr := instanceProvisioner.RecoverOverlays(context.Background()); recoverErr != nil {
 		log.Printf("container reconciliation deferred: recover overlays: %v", recoverErr)
@@ -226,6 +246,7 @@ func main() {
 	}
 	api := httpapi.New(db, sessions, httpapi.WithGameLogs(gameLogManager, gameLogScheduler), httpapi.WithOperations(life, jobManager), httpapi.WithMaintenanceGate(sharedGate), httpapi.WithJobLogs(jobLogManager), httpapi.WithConsole(engine), httpapi.WithPlayers(playerService), httpapi.WithContent(uploadManager, privateManager, packageManager, updatePipeline, updateCoordinator), httpapi.WithReleases(releaseClient), httpapi.WithSelfServiceVPK(selfServiceVPKManager), httpapi.WithSelfServiceVPKKey(secretKey), httpapi.WithVPKRestartRegistrar(vpkRestartCoordinator), httpapi.WithPrivateUploads(privateUploadManager), httpapi.WithGameUpdates(gameCoordinator), httpapi.WithSharedGameUpdates(sharedGameCoordinator), httpapi.WithSharedGameMigration(sharedGameMigration), httpapi.WithSharedGamePath(cfg.GameCurrentPath), httpapi.WithScheduler(scheduleService), httpapi.WithSecrets(secretService), httpapi.WithResources(engine), httpapi.WithPerformance(performanceSampler), httpapi.WithSystem(engine), httpapi.WithA2SDefenseMutations(a2sDefenseCoordinator), httpapi.WithA2SDefenseSettings(a2sDefenseCoordinator), httpapi.WithSecureCookie(secureCookie))
 	stopBackground := func() {
+		stopA2SEventLogger()
 		a2sDefenseCoordinator.Stop()
 		vpkRestartCoordinator.Stop()
 		scheduleService.Stop()
