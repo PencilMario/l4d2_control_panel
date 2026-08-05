@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -99,12 +100,25 @@ func TestGameLogsHTTPContract(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "instances", "logs", "logs", "game", name), []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
+	a2sEvent := a2sdefense.Event{Timestamp: time.Date(2026, 8, 5, 7, 42, 10, 0, time.UTC), Source: netip.MustParseAddr("203.0.113.8"), DestinationPort: 27015, Query: a2sdefense.QueryPlayer, Action: "DROP"}
+	if err := gm.AppendA2SDefense(context.Background(), "logs", a2sEvent); err != nil {
+		t.Fatal(err)
+	}
 	s = New(db, s.auth, WithGameLogs(gm, nil))
 	c := loginCookie(t, s)
 	tr := authenticatedJSON(t, s, c, http.MethodGet, "/api/instances/logs/game-logs/tree", "")
 	var tree []gamelogs.Entry
-	if tr.Code != 200 || json.Unmarshal(tr.Body.Bytes(), &tree) != nil || len(tree) != 1 || tree[0].Kind != "game" || tree[0].Path != name {
+	if tr.Code != 200 || json.Unmarshal(tr.Body.Bytes(), &tree) != nil || !hasLogEntry(tree, "game", name) || !hasLogEntry(tree, "game", "a2s_protect.log") {
 		t.Fatalf("tree=%d %s", tr.Code, tr.Body.String())
+	}
+	a2sPreview := authenticatedJSON(t, s, c, http.MethodGet, "/api/instances/logs/game-logs/preview?kind=game&path=a2s_protect.log", "")
+	var a2sLog gamelogs.Preview
+	if a2sPreview.Code != 200 || json.Unmarshal(a2sPreview.Body.Bytes(), &a2sLog) != nil || !strings.Contains(a2sLog.Text, "src=203.0.113.8 dst_port=27015 query=A2S_PLAYER action=DROP") {
+		t.Fatalf("a2s preview=%d %s", a2sPreview.Code, a2sPreview.Body.String())
+	}
+	a2sDownload := authenticatedJSON(t, s, c, http.MethodGet, "/api/instances/logs/game-logs/download?kind=game&path=a2s_protect.log", "")
+	if a2sDownload.Code != 200 || !strings.Contains(a2sDownload.Body.String(), "query=A2S_PLAYER") || !strings.Contains(a2sDownload.Header().Get("Content-Disposition"), "a2s_protect.log") {
+		t.Fatalf("a2s download=%d headers=%v body=%q", a2sDownload.Code, a2sDownload.Header(), a2sDownload.Body.String())
 	}
 	pr := authenticatedJSON(t, s, c, http.MethodGet, "/api/instances/logs/game-logs/preview?kind=game&path="+url.QueryEscape(name), "")
 	var preview gamelogs.Preview
@@ -140,6 +154,15 @@ func TestGameLogsHTTPContract(t *testing.T) {
 	if got := authenticatedJSON(t, s, c, http.MethodPut, "/api/settings/game-logs", `{"retention_days":30,"max_file_size_mb":10}`).Code; got != 503 {
 		t.Fatalf("nil scheduler=%d", got)
 	}
+}
+
+func hasLogEntry(entries []gamelogs.Entry, kind, path string) bool {
+	for _, entry := range entries {
+		if entry.Kind == kind && entry.Path == path {
+			return true
+		}
+	}
+	return false
 }
 
 func TestPutGameLogSettingsQueuesCleanupWhenPolicyBecomesStricter(t *testing.T) {

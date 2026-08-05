@@ -49,8 +49,7 @@ const counterLabels: Array<[keyof DefenseCounters, string]> = [
   ["player", "A2S_PLAYER"],
   ["rules", "A2S_RULES"],
   ["challenge", "Challenge"],
-  ["aggregate", "端口总限速"],
-  ["blacklist", "黑名单"],
+  ["blacklist", "黑名单丢弃"],
 ];
 
 export function A2SDefenseSettings() {
@@ -120,11 +119,12 @@ export function A2SDefenseSettings() {
         {confirmed && confirmed.protected_ports.length === 0 ? <span>无活动端口</span> : null}
       </div>
       <div className="a2s-defense-counters">
+        <div><span>当前封禁 IP</span><b>{confirmed?.blacklist_size ?? 0}</b></div>
         {counterLabels.map(([key, label]) => <div key={key}><span>{label}</span><b>{confirmed?.counters[key] ?? 0}</b></div>)}
       </div>
       {notice ? <p className="settings-notice" role="status">{notice}</p> : null}
       <footer>
-        <small>策略 v{confirmed?.policy_version ?? "-"} · revision {confirmed?.revision ?? "-"} · 当前封禁 {confirmed?.blacklist_size ?? 0}</small>
+        <small>策略 v{confirmed?.policy_version ?? "-"} · revision {confirmed?.revision ?? "-"}</small>
         <button className="settings-save" type="submit" aria-label="保存 A2S 防御设置" disabled={!confirmed || busy || draftEnabled === confirmed.desired_enabled} aria-busy={busy}>
           {busy ? <RefreshCw /> : <Save />}<span>{busy ? "应用中…" : "保存防御设置"}</span>
         </button>

@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -78,6 +79,7 @@ func seedGameLogs(root, id string) error {
 		age                 time.Duration
 	}{
 		{kind: "game", name: "server.log", content: "2026-07-18 12:00:00 ERROR instance=" + id + " UserID=42 127.0.0.1:27015\n"},
+		{kind: "game", name: "a2s_protect.log", content: "2026-08-05T07:42:10Z src=203.0.113.8 dst_port=27015 query=A2S_PLAYER action=DROP\n"},
 		{kind: "sourcemod", name: "errors/current-error.log", content: "2026-07-18 12:00:01 [SM] ERROR plugin:fixture.smx UserID=42\n"},
 		{kind: "sourcemod", name: "errors/aged-error.log", content: "2026-06-01 12:00:00 ERROR expired fixture log\n", age: 30 * 24 * time.Hour},
 	}
@@ -377,6 +379,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/__e2e/private-lower", privateLowerDiagnostic(root))
 	mux.HandleFunc("/__e2e/console-output", consoleOutputControl(console))
+	mux.HandleFunc("/__e2e/seed-instance", seedInstanceControl(db))
 	mux.HandleFunc("/__e2e/seed-game-logs", seedGameLogsControl(root, db))
 	mux.Handle("/api/", api.Handler())
 	mux.Handle("/", spaHandler(webRoot()))
@@ -388,6 +391,27 @@ func main() {
 	log.Printf("e2e fixture listening on http://%s", address)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
+	}
+}
+
+func seedInstanceControl(db *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		id := uuid.NewString()
+		name := r.URL.Query().Get("name")
+		if name == "" {
+			name = "A2S Log Fixture"
+		}
+		instance := domain.Instance{ID: id, NodeID: "local", Name: name, ContainerID: "fixture-" + id, GamePort: 27015, SourceTVPort: 27020, StartMap: "c2m1_highway", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}
+		if err := db.CreateInstance(r.Context(), instance); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(instance)
 	}
 }
 

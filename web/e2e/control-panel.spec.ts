@@ -132,6 +132,35 @@ test("administrator enables A2S defense from system settings", async ({ page }, 
   await panel.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-a2s-defense-settings.png`) });
 });
 
+test("game log browser shows sampled A2S defense log", async ({ page }, testInfo) => {
+  const mobile = testInfo.project.name === "mobile";
+  await page.goto("/");
+  await page.getByLabel("管理员密码").fill("correct horse battery staple");
+  await page.getByRole("button", { name: "进入作战室" }).click();
+  await expect(page.getByRole("heading", { name: "服务器作战室" })).toBeVisible();
+
+  const instance = await page.evaluate(async () => {
+    const created = await fetch("/__e2e/seed-instance?name=A2S%20Log%20Fixture", { method: "POST" });
+    if (!created.ok) throw new Error(`seed instance failed with HTTP ${created.status}`);
+    const item = await created.json() as { ID?: string; id?: string };
+    const id = item.id ?? item.ID;
+    if (!id) throw new Error("seed instance did not return id");
+    const logs = await fetch(`/__e2e/seed-game-logs?id=${encodeURIComponent(id)}`);
+    if (!logs.ok) throw new Error(`seed game logs failed with HTTP ${logs.status}`);
+    return { id };
+  });
+
+  await page.reload();
+  await page.getByRole("button", { name: "游戏日志" }).click();
+  await page.getByRole("combobox", { name: "目标实例" }).selectOption(instance.id);
+  if (mobile) await page.getByRole("button", { name: "选择日志文件" }).click();
+  await page.getByRole("treeitem", { name: "a2s_protect.log" }).click();
+  const logViewer = page.getByRole("region", { name: "游戏日志分类预览" });
+  await expect(logViewer).toContainText("src=203.0.113.8");
+  await expect(logViewer).toContainText("dst_port=27015");
+  await expect(logViewer).toContainText("query=A2S_PLAYER action=DROP");
+});
+
 test("real HTTP administration journey survives refresh and streams recovery state", async ({
   page,
 }, testInfo) => {

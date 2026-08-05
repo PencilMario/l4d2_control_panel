@@ -29,6 +29,9 @@ it("enables A2S defense and renders effective ports and counters", async () => {
   expect(toggle).not.toBeChecked();
   expect(screen.getByText("27015")).toBeInTheDocument();
   expect(screen.getByText("A2S_INFO").nextSibling).toHaveTextContent("12");
+  expect(screen.getByText("当前封禁 IP").nextSibling).toHaveTextContent("2");
+  expect(screen.getByText("黑名单丢弃").nextSibling).toHaveTextContent("5");
+  expect(screen.queryByText("端口总限速")).not.toBeInTheDocument();
   await userEvent.click(toggle);
   await userEvent.click(screen.getByRole("button", { name: "保存 A2S 防御设置" }));
   expect(fetchMock).toHaveBeenLastCalledWith("/api/settings/a2s-defense", expect.objectContaining({ method: "PUT", body: JSON.stringify({ enabled: true }) }));
