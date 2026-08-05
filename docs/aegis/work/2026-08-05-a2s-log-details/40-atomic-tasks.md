@@ -6,4 +6,4 @@
 - [x] RED/GREEN: normalized game-log line
 - [x] Related regression verification; full Windows suite retains documented TempDir cleanup flakes
 - [x] 安可服 disposable Linux integration
-- [ ] Merge, push, deploy, and production verification
+- [x] Merge, push, deploy, and production verification

@@ -25,15 +25,24 @@
 
 - Independent review found no Critical issues. Its Important in-window out-of-order finding was reproduced with a failing test and fixed. Its Minor Linux metadata assertion gap was closed before the clean remote PASS.
 
+## Delivery evidence
+
+- `e27acc3` added log metadata, rolling sampled counts, and sampled-chain blacklist parsing. `9e73e26` added `sample_window.go` to the Helper image's fixed source closure after the first remote build exposed the omission; the deployment contract test failed before and passed after that repair.
+- Both commits were fast-forwarded into `main` and pushed to `origin/main`.
+- 安可服 could not reach `proxy.golang.org`, so the deployment used locally cross-compiled Linux binaries layered onto the existing production Panel and Helper images. Only `a2s-defense-helper` and `panel` were recreated. The two game container IDs and their 14-hour uptimes remained unchanged.
+- Production Panel became healthy. Helper retained only `CAP_NET_ADMIN`; Panel retained its existing `CAP_CHOWN`. Protected ports remained `24561` and `30721`, compatibility was true, and no last error was reported.
+- A controlled 120-packet A2S_PLAYER sample from a disposable Docker bridge source produced `player=3`, `blacklist=97`, and `blacklist_size=2` through the authenticated settings API. This directly verifies that active sampled-chain blacklist drops no longer display as zero.
+- The matching instance log contained five sampled lines with source ports, `packet_bytes=37`, and `sampled_drops_60s` increasing from 1 through 5. The disposable sender exited, and all local and remote build/test/deploy temporary files were removed.
+
 ## TodoCheckpointDraft
 
-- Active slice: merge, push, deploy, and production verification.
-- Completed: scope, baseline read, design, implementation, red-green cycles, related regression, review, and disposable Linux integration.
-- Next: integrate the verified branch and inspect live Helper/Panel behavior.
+- Active slice: none.
+- Completed: scope, baseline read, design, implementation, red-green cycles, related regression, review, disposable Linux integration, merge, push, and production verification.
+- Next: normal operations observation only.
 
 ## DriftCheckDraft
 
 - Scope: unchanged.
 - Compatibility: additive event fields; firewall and security boundaries unchanged.
 - Retirement: legacy direct-DROP counter recognition remains only for live upgrade compatibility; no duplicate counter owner was introduced.
-- Decision: continue to delivery.
+- Decision: verified delivery candidate; no scope drift or pending implementation item.
