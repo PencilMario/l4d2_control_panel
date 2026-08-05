@@ -22,6 +22,7 @@
 
 ## Implementation Plans
 
+- [Per-instance A2S defense logs](plans/2026-08-05-a2s-defense-instance-logs.md)
 - [IPv4 A2S defense helper and system setting](plans/2026-08-05-a2s-defense-helper.md)
 - [Self-service VPK upload](plans/2026-08-02-self-service-vpk-upload.md)
 - [Detailed background task logging](plans/2026-07-30-detailed-background-task-logging.md)
