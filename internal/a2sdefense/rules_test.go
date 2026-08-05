@@ -65,7 +65,8 @@ func TestBuildEnableRestoreContainsFixedDefensePolicy(t *testing.T) {
 		"--hashlimit-mode srcip",
 		"--set --name L4D2_A2S_ATTACKER",
 		"--limit 5/minute",
-		"--log-prefix \"L4D2_A2S_DROP: \"",
+		"--nflog-group 100",
+		"--nflog-prefix \"L4D2_A2S_DROP\"",
 		"-j DROP",
 		"-j RETURN",
 		"COMMIT",
@@ -78,10 +79,16 @@ func TestBuildEnableRestoreContainsFixedDefensePolicy(t *testing.T) {
 		t.Fatalf("rules modify INPUT ownership boundary:\n%s", rules)
 	}
 	mark := strings.Index(rules, "--set --name L4D2_A2S_ATTACKER")
-	log := strings.Index(rules, "--log-prefix \"L4D2_A2S_DROP: \"")
+	log := strings.Index(rules, "--nflog-prefix \"L4D2_A2S_DROP\"")
 	drop := strings.LastIndex(rules, "-j DROP")
 	if mark < 0 || log < mark || drop < log {
 		t.Fatalf("drop path order mark=%d log=%d drop=%d\n%s", mark, log, drop, rules)
+	}
+	if strings.Contains(rules, "-j LOG") || strings.Contains(rules, "--log-prefix") {
+		t.Fatalf("kernel LOG target remains:\n%s", rules)
+	}
+	if strings.Contains(rules, "--name "+RecentName+" --rsource -j DROP") {
+		t.Fatalf("blacklist bypasses sampled drop chain:\n%s", rules)
 	}
 }
 

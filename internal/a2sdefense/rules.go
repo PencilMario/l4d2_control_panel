@@ -62,7 +62,7 @@ func buildEnableRestore(input Config, active ruleSlot) (string, error) {
 	} else {
 		for _, chunk := range portChunks(config.Ports, 15) {
 			ports := joinPorts(chunk)
-			fmt.Fprintf(&rules, "-A %s -p udp -m multiport --dports %s -m recent --update --seconds 60 --hitcount 3 --name %s --rsource -j DROP\n", active.entry, ports, RecentName)
+			fmt.Fprintf(&rules, "-A %s -p udp -m multiport --dports %s -m recent --update --seconds 60 --hitcount 3 --name %s --rsource -j %s\n", active.entry, ports, RecentName, active.drop)
 			fmt.Fprintf(&rules, "-A %s -p udp -m multiport --dports %s -j %s\n", active.entry, ports, active.classify)
 		}
 		fmt.Fprintf(&rules, "-A %s -j RETURN\n", active.entry)
@@ -74,7 +74,7 @@ func buildEnableRestore(input Config, active ruleSlot) (string, error) {
 		fmt.Fprintf(&rules, "-A %s -j RETURN\n", active.classify)
 	}
 	fmt.Fprintf(&rules, "-A %s -m recent --set --name %s --rsource\n", active.drop, RecentName)
-	fmt.Fprintf(&rules, "-A %s -m limit --limit 5/minute --limit-burst 5 -j LOG --log-prefix \"L4D2_A2S_DROP: \" --log-level 4\n", active.drop)
+	fmt.Fprintf(&rules, "-A %s -m limit --limit 5/minute --limit-burst 5 -j NFLOG --nflog-group 100 --nflog-prefix \"L4D2_A2S_DROP\"\n", active.drop)
 	fmt.Fprintf(&rules, "-A %s -j DROP\nCOMMIT\n", active.drop)
 	return rules.String(), nil
 }
