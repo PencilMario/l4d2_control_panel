@@ -9,7 +9,6 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/automation"
 	"github.com/not0721here/l4d2-control-panel/internal/config"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
-	"github.com/not0721here/l4d2-control-panel/internal/databaseconfig"
 	"github.com/not0721here/l4d2-control-panel/internal/disk"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/gamelogs"
@@ -160,8 +159,6 @@ func main() {
 	engine := docker.NewEngine(dockerHost, docker.WithDownloadProxy(os.Getenv("L4D2_PANEL_DOWNLOAD_PROXY")), docker.WithSteamCredentials(steamCredentials))
 	trafficClient := traffic.NewUnixClient(strings.TrimPrefix(dockerHost, "unix://"))
 	updatePipeline := updates.New(cfg.DataRoot)
-	databaseSynchronizer := databaseconfig.Synchronizer{Root: cfg.DataRoot, Repository: db}
-	updatePipeline.WithDatabaseReconciler(databaseSynchronizer)
 	if err := updatePipeline.Recover(context.Background()); err != nil {
 		log.Fatal(err)
 	}
@@ -195,7 +192,7 @@ func main() {
 	gameLogManager := gamelogs.NewManager(cfg.DataRoot, gamelogs.Options{})
 	a2sEventLogger := a2sdefense.NewEventLogger(a2sDefenseClient, db, gameLogManager, time.Second, func(err error) { log.Printf("A2S defense event log: %v", err) })
 	stopA2SEventLogger := startA2SEventLogger(context.Background(), a2sEventLogger)
-	life := lifecycle.New(db, engine, portChecker, cfg.DataRoot, lifecycle.WithHealth(healthChecker), lifecycle.WithSpace(disk.Checker{}, startMinimumFreeBytes), lifecycle.WithProvisioner(instanceProvisioner), lifecycle.WithMaintenanceGate(sharedGate), lifecycle.WithLogPreparer(gameLogManager), lifecycle.WithDefenseGate(a2sDefenseCoordinator), lifecycle.WithDatabaseReconciler(databaseSynchronizer))
+	life := lifecycle.New(db, engine, portChecker, cfg.DataRoot, lifecycle.WithHealth(healthChecker), lifecycle.WithSpace(disk.Checker{}, startMinimumFreeBytes), lifecycle.WithProvisioner(instanceProvisioner), lifecycle.WithMaintenanceGate(sharedGate), lifecycle.WithLogPreparer(gameLogManager), lifecycle.WithDefenseGate(a2sDefenseCoordinator))
 	if recoverErr := instanceProvisioner.RecoverOverlays(context.Background()); recoverErr != nil {
 		log.Printf("container reconciliation deferred: recover overlays: %v", recoverErr)
 	} else if unknown, reconcileErr := life.Reconcile(context.Background()); reconcileErr != nil {
@@ -221,7 +218,7 @@ func main() {
 	if err := selfServiceVPKScheduler.Start(); err != nil {
 		log.Fatal(err)
 	}
-	privateManager := content.NewPrivateManager(cfg.DataRoot, 1<<20).WithDatabaseReconciler(databaseSynchronizer)
+	privateManager := content.NewPrivateManager(cfg.DataRoot, 1<<20)
 	privateUploadManager := content.NewPrivateUploadManager(cfg.DataRoot, 2<<30)
 	if err := privateUploadManager.RecoverAll(); err != nil {
 		log.Printf("private upload recovery: %v", err)
@@ -248,7 +245,6 @@ func main() {
 		}
 	}
 	api := httpapi.New(db, sessions, httpapi.WithGameLogs(gameLogManager, gameLogScheduler), httpapi.WithOperations(life, jobManager), httpapi.WithMaintenanceGate(sharedGate), httpapi.WithJobLogs(jobLogManager), httpapi.WithConsole(engine), httpapi.WithPlayers(playerService), httpapi.WithContent(uploadManager, privateManager, packageManager, updatePipeline, updateCoordinator), httpapi.WithReleases(releaseClient), httpapi.WithSelfServiceVPK(selfServiceVPKManager), httpapi.WithSelfServiceVPKKey(secretKey), httpapi.WithVPKRestartRegistrar(vpkRestartCoordinator), httpapi.WithPrivateUploads(privateUploadManager), httpapi.WithGameUpdates(gameCoordinator), httpapi.WithSharedGameUpdates(sharedGameCoordinator), httpapi.WithSharedGameMigration(sharedGameMigration), httpapi.WithSharedGamePath(cfg.GameCurrentPath), httpapi.WithScheduler(scheduleService), httpapi.WithSecrets(secretService), httpapi.WithResources(engine), httpapi.WithPerformance(performanceSampler), httpapi.WithSystem(engine), httpapi.WithA2SDefenseMutations(a2sDefenseCoordinator), httpapi.WithA2SDefenseSettings(a2sDefenseCoordinator), httpapi.WithSecureCookie(secureCookie))
-	api.EnableDatabaseSystem(cfg.DataRoot)
 	stopBackground := func() {
 		stopA2SEventLogger()
 		a2sDefenseCoordinator.Stop()

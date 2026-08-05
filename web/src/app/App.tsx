@@ -66,7 +66,6 @@ import { SchedulesPage } from "./SchedulesPage";
 import { VPKUploadQueue } from "./VPKUploadQueue";
 import { SelfServiceVPKSettings } from "./SelfServiceVPKSettings";
 import { A2SDefenseSettings } from "./A2SDefenseSettings";
-import { DatabaseSettings } from "./DatabaseSettings";
 import { cancelVPKUpload, enqueueVPKUploads, retryVPKUpload, startVPKUploadQueue, type VPKUploadMode, type VPKUploadTask } from "../vpk/uploadQueue";
 import { useConsoleFollow } from "./useConsoleFollow";
 import { appendConsoleOutput } from "./consoleBuffer";
@@ -147,7 +146,7 @@ type Props = {
   initialPackageSources?: GitHubSource[];
   onAction?: (id: string, action: string) => void;
 };
-type Page = "overview" | "private" | "content" | "jobs" | "joblogs" | "gamelogs" | "schedules" | "databases" | "settings";
+type Page = "overview" | "private" | "content" | "jobs" | "joblogs" | "gamelogs" | "schedules" | "settings";
 type HealthState = {
   status: "checking" | "online" | "error";
   message: string;
@@ -716,8 +715,6 @@ export function App({ initialInstances, initialPackages, initialPackageSources, 
                 ? "游戏日志分类预览"
                 : page === "schedules"
                   ? "计划任务"
-                  : page === "databases"
-                    ? "数据库系统"
                   : "系统设置";
   return (
     <div className="app-shell">
@@ -783,13 +780,6 @@ export function App({ initialInstances, initialPackages, initialPackageSources, 
             icon={<CalendarClock />}
           >
             计划任务
-          </Nav>
-          <Nav
-            active={page === "databases"}
-            onClick={() => setPage("databases")}
-            icon={<Database />}
-          >
-            数据库系统
           </Nav>
           <Nav
             active={page === "settings"}
@@ -873,7 +863,6 @@ export function App({ initialInstances, initialPackages, initialPackageSources, 
         {page === "schedules" && (
           <SchedulesPage instances={instances} packages={packages} />
         )}{" "}
-        {page === "databases" && <DatabaseSettings onJob={(next) => { setJob(next); void pollJob(next.ID).catch(() => undefined); }} />}
         {page === "settings" && <SettingsPage />}{" "}
         {job && <JobStrip job={job} />}
         </div>

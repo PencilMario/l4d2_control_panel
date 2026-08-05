@@ -16,18 +16,8 @@ import (
 )
 
 type PrivateManager struct {
-	root               string
-	maxBytes           int
-	databaseReconciler interface {
-		SyncInstance(context.Context, string) error
-	}
-}
-
-func (m *PrivateManager) WithDatabaseReconciler(reconciler interface {
-	SyncInstance(context.Context, string) error
-}) *PrivateManager {
-	m.databaseReconciler = reconciler
-	return m
+	root     string
+	maxBytes int
 }
 
 // Locks are shared by all managers in the process for the bounded set of instance roots.

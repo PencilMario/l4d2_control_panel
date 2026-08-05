@@ -142,9 +142,6 @@ type Service struct {
 	minimumInstallBytes uint64
 	maintenanceGate     *maintenance.Gate
 	defenseGate         DefenseGate
-	databaseReconciler  interface {
-		SyncInstance(context.Context, string) error
-	}
 }
 type Option func(*Service)
 
@@ -162,11 +159,6 @@ func WithMaintenanceGate(gate *maintenance.Gate) Option {
 	return func(s *Service) { s.maintenanceGate = gate }
 }
 func WithDefenseGate(gate DefenseGate) Option { return func(s *Service) { s.defenseGate = gate } }
-func WithDatabaseReconciler(reconciler interface {
-	SyncInstance(context.Context, string) error
-}) Option {
-	return func(s *Service) { s.databaseReconciler = reconciler }
-}
 
 func New(repo Repository, engine Engine, ports PortChecker, dataRoot string, options ...Option) *Service {
 	service := &Service{repo: repo, engine: engine, ports: ports, dataRoot: dataRoot}
@@ -262,11 +254,6 @@ func (s *Service) Start(ctx context.Context, id string) error {
 		jobs.Logf(ctx, "lifecycle", joblogs.Info, "container created instance=%s container=%s image=%s", id, containerID, v.RuntimeImage)
 		if err := s.repo.UpdateInstance(ctx, v); err != nil {
 			return err
-		}
-	}
-	if s.databaseReconciler != nil {
-		if err := s.databaseReconciler.SyncInstance(ctx, id); err != nil {
-			return s.fault(ctx, v, err)
 		}
 	}
 	if err := s.engine.Start(ctx, v.ContainerID); err != nil {
