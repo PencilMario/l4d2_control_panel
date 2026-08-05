@@ -76,6 +76,9 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+async function expandPerformanceDetails() {
+  await userEvent.click(await screen.findByRole("button", { name: "展开性能详情与历史曲线" }));
+}
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -108,11 +111,11 @@ describe("App", () => {
 
   it("folds each instance performance detail independently", async () => {
     render(<App initialInstances={[instance]} />);
-    expect(screen.getByTestId("performance-chart")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "收起性能详情" }));
     expect(screen.queryByTestId("performance-chart")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "展开性能详情与历史曲线" }));
     expect(screen.getByTestId("performance-chart")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "收起性能详情" }));
+    expect(screen.queryByTestId("performance-chart")).not.toBeInTheDocument();
   });
 
   it("uses the game version without exposing the internal release ID", () => {
@@ -289,6 +292,7 @@ describe("App", () => {
     }));
 
     render(<App />);
+    await expandPerformanceDetails();
     await waitFor(() => expect(intervalSpy.mock.calls.some(([, timeout]) => timeout === 5_000)).toBe(true));
     const refresh = intervalSpy.mock.calls.find(([, timeout]) => timeout === 5_000)![0] as () => void;
     initialHistory.resolve(new Response(JSON.stringify([{ at: "2026-07-15T12:00:00Z", run_id: "run-1", cpu_percent: 1, memory_percent: 2, network_rx_bytes_per_sec: null, network_tx_bytes_per_sec: null, block_read_bytes_per_sec: null, block_write_bytes_per_sec: null }]), { status: 200, headers: { "Content-Type": "application/json" } }));
@@ -320,6 +324,7 @@ describe("App", () => {
     }));
 
     render(<App />);
+    await expandPerformanceDetails();
     expect(await screen.findByText("10%")).toBeInTheDocument();
     await waitFor(() => expect(intervalSpy.mock.calls.some(([, timeout]) => timeout === 5_000)).toBe(true));
     const refresh = intervalSpy.mock.calls.find(([, timeout]) => timeout === 5_000)![0] as () => void;
@@ -385,6 +390,7 @@ describe("App", () => {
     await waitFor(() => expect(instanceLists).toBe(3));
     await waitFor(() => expect(historyCalls).toBe(2));
     expect(await screen.findByText("深夜战役")).toBeInTheDocument();
+    await expandPerformanceDetails();
     expect(await screen.findByTestId("performance-chart")).toHaveAttribute("data-point-count", "1");
   });
   it("keeps one history bootstrap across poll generations without stale deletion poisoning", async () => {
@@ -412,6 +418,7 @@ describe("App", () => {
     }));
 
     render(<App />);
+    await expandPerformanceDetails();
     await waitFor(() => expect(historyCalls).toBe(1));
     await screen.findByRole("heading", { name: "服务器作战室" });
     await waitFor(() => expect(intervalSpy.mock.calls.some(([, timeout]) => timeout === 5_000)).toBe(true));
@@ -506,6 +513,7 @@ describe("App", () => {
       return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
     }));
     render(<App />);
+    await expandPerformanceDetails();
     expect(await screen.findByTestId("performance-chart")).toHaveAttribute("data-point-count", "1");
   });
   it("retries a failed history bootstrap on the next poll without clearing live samples", async () => {
@@ -531,6 +539,7 @@ describe("App", () => {
     }));
 
     render(<App />);
+    await expandPerformanceDetails();
     expect(await screen.findByTestId("performance-chart")).toHaveAttribute("data-point-count", "1");
     failedHistory.resolve(new Response('{"error":{"message":"unavailable"}}', { status: 503, headers: { "Content-Type": "application/json" } }));
     await act(async () => {
@@ -566,6 +575,7 @@ describe("App", () => {
       return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
     }));
     render(<App />);
+    await expandPerformanceDetails();
     await waitFor(() => expect(intervalSpy.mock.calls.some(([, timeout]) => timeout === 5_000)).toBe(true));
     const refresh = intervalSpy.mock.calls.find(([, timeout]) => timeout === 5_000)![0] as () => void;
     initialHistory.resolve(new Response(JSON.stringify([{ at: "2026-07-15T12:00:00Z", run_id: "run-1", cpu_percent: 1, memory_percent: null, network_rx_bytes_per_sec: null, network_tx_bytes_per_sec: null, block_read_bytes_per_sec: null, block_write_bytes_per_sec: null }]), { status: 200, headers: { "Content-Type": "application/json" } }));

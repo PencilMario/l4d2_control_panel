@@ -1099,7 +1099,7 @@ function Overview({
           <h2>所有游戏实例 ({instances.length})</h2>
         </div>
         <div className="grid instance-list">
-          {instances.map((x, index) => {
+          {instances.map((x) => {
             const selectedPackage = packagesByID.get(x.package_id);
             const selectedSource = packageSourcesByID.get(x.source_id || "");
             const appliedPackage = packagesByID.get(x.applied_package_id);
@@ -1118,7 +1118,7 @@ function Overview({
                 : x.observed_max_players;
             const starting = pendingActions.has(`${x.id}:start`);
             const stopping = pendingActions.has(`${x.id}:stop`);
-            const performanceExpanded = expandedPerformance[x.id] ?? index === 0;
+            const performanceExpanded = expandedPerformance[x.id] ?? false;
             return (
               <article className={`card instance-panel ${state}`} key={x.id}>
                 <header className="instance-command-bar">
