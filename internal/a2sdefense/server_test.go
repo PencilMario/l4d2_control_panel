@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -77,5 +78,30 @@ func TestServerRejectsOtherMethodsAndPaths(t *testing.T) {
 		if response.Code != http.StatusMethodNotAllowed && response.Code != http.StatusNotFound {
 			t.Fatalf("%s %s status=%d", request.Method, request.URL.Path, response.Code)
 		}
+	}
+}
+
+func TestServerReturnsStrictEventCursorBatch(t *testing.T) {
+	ring := NewEventRing("boot-a", 4)
+	if err := ring.Add(Event{Source: netip.MustParseAddr("192.0.2.3"), DestinationPort: 27015, Query: QueryPlayer}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(&fakeFirewall{}, ring)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/events?boot=boot-a&after=0", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"query":"A2S_PLAYER"`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, target := range []string{"/v1/events?after=-1", "/v1/events?after=1&extra=x", "/v1/events?after=1&after=2"} {
+		response = httptest.NewRecorder()
+		server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("target=%s status=%d", target, response.Code)
+		}
+	}
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/events", nil))
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST status=%d", response.Code)
 	}
 }

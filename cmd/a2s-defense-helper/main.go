@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"log"
 	"net"
@@ -23,12 +25,45 @@ func main() {
 		socket = "/run/l4d2-panel/a2s-defense.sock"
 	}
 	manager := a2sdefense.NewManager(a2sdefense.CommandExecutor{}, time.Now)
-	if err := serve(ctx, socket, manager); err != nil {
+	ring := a2sdefense.NewEventRing(newBootID(), a2sdefense.DefaultEventCapacity)
+	go runEventSource(ctx, a2sdefense.NewNFLogSource(ring, time.Now), 5*time.Second, func(err error) { log.Printf("A2S NFLOG listener: %v", err) })
+	if err := serve(ctx, socket, manager, ring); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func serve(ctx context.Context, socketPath string, firewall a2sdefense.Firewall) error {
+type eventSource interface {
+	Run(context.Context) error
+}
+
+func runEventSource(ctx context.Context, source eventSource, retryDelay time.Duration, report func(error)) {
+	for ctx.Err() == nil {
+		err := source.Run(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		if report != nil {
+			report(err)
+		}
+		timer := time.NewTimer(retryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func newBootID() string {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		return hex.EncodeToString([]byte(time.Now().UTC().Format(time.RFC3339Nano)))
+	}
+	return hex.EncodeToString(value)
+}
+
+func serve(ctx context.Context, socketPath string, firewall a2sdefense.Firewall, events ...a2sdefense.EventReader) error {
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o750); err != nil {
 		return err
 	}
@@ -43,7 +78,7 @@ func serve(ctx context.Context, socketPath string, firewall a2sdefense.Firewall)
 	if err := os.Chmod(socketPath, 0o660); err != nil {
 		return err
 	}
-	server := &http.Server{Handler: a2sdefense.NewServer(firewall), ReadHeaderTimeout: 10 * time.Second}
+	server := &http.Server{Handler: a2sdefense.NewServer(firewall, events...), ReadHeaderTimeout: 10 * time.Second}
 	done := make(chan struct{})
 	go func() {
 		select {

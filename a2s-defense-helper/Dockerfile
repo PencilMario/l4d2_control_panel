@@ -5,7 +5,7 @@ ARG GOPROXY=https://proxy.golang.org,direct
 WORKDIR /src
 COPY a2s-defense-helper/go.mod ./go.mod
 COPY cmd/a2s-defense-helper ./cmd/a2s-defense-helper
-COPY internal/a2sdefense/types.go internal/a2sdefense/rules.go internal/a2sdefense/runner.go internal/a2sdefense/server.go ./internal/a2sdefense/
+COPY internal/a2sdefense/types.go internal/a2sdefense/events.go internal/a2sdefense/nflog_linux.go internal/a2sdefense/rules.go internal/a2sdefense/runner.go internal/a2sdefense/server.go ./internal/a2sdefense/
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/a2s-defense-helper ./cmd/a2s-defense-helper
 FROM ${ALPINE_IMAGE}
 RUN apk add --no-cache iptables

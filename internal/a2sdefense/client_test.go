@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
@@ -48,6 +50,20 @@ func TestClientReturnsHelperError(t *testing.T) {
 	defer server.Close()
 	if _, err := NewClient(socket).Apply(context.Background(), Config{Version: APIVersion, Revision: 1}); err == nil {
 		t.Fatal("expected helper error")
+	}
+}
+
+func TestClientReadsEventCursorBatch(t *testing.T) {
+	ring := NewEventRing("boot-client", 2)
+	if err := ring.Add(Event{Source: netip.MustParseAddr("192.0.2.4"), DestinationPort: 27016, Query: QueryRules}); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(NewServer(&fakeFirewall{}, ring))
+	defer server.Close()
+	client := &Client{httpClient: server.Client(), baseURL: server.URL}
+	batch, err := client.Events(context.Background(), "boot-client", 0)
+	if err != nil || len(batch.Events) != 1 || batch.Events[0].Query != QueryRules {
+		t.Fatalf("batch=%+v err=%v", batch, err)
 	}
 }
 

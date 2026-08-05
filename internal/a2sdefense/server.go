@@ -5,14 +5,25 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 )
+
+type EventReader interface {
+	Batch(string, uint64) EventBatch
+}
 
 type Server struct {
 	firewall Firewall
+	events   EventReader
 }
 
-func NewServer(firewall Firewall) *Server {
-	return &Server{firewall: firewall}
+func NewServer(firewall Firewall, events ...EventReader) *Server {
+	server := &Server{firewall: firewall}
+	if len(events) > 0 {
+		server.events = events[0]
+	}
+	return server
 }
 
 func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -49,6 +60,37 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			return
 		}
 		writeJSON(response, status)
+	case "/v1/events":
+		if request.Method != http.MethodGet {
+			http.Error(response, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if s.events == nil {
+			http.Error(response, "events unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		query := request.URL.Query()
+		for key, values := range query {
+			if (key != "boot" && key != "after") || len(values) != 1 {
+				http.Error(response, "invalid event cursor", http.StatusBadRequest)
+				return
+			}
+		}
+		boot := query.Get("boot")
+		if len(boot) > 64 || strings.ContainsAny(boot, "\x00\r\n") {
+			http.Error(response, "invalid event boot", http.StatusBadRequest)
+			return
+		}
+		after := uint64(0)
+		if raw, exists := query["after"]; exists {
+			parsed, err := strconv.ParseUint(raw[0], 10, 64)
+			if err != nil {
+				http.Error(response, "invalid event sequence", http.StatusBadRequest)
+				return
+			}
+			after = parsed
+		}
+		writeJSON(response, s.events.Batch(boot, after))
 	case "/v1/status":
 		if request.Method != http.MethodGet {
 			http.Error(response, "method not allowed", http.StatusMethodNotAllowed)

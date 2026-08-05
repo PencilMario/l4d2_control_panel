@@ -1,6 +1,7 @@
 package a2sdefense
 
 import (
+	"encoding/binary"
 	"errors"
 	"net/netip"
 	"sync"
@@ -98,5 +99,49 @@ func (q QueryType) valid() bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func ParseNFLogPacket(packet []byte, timestamp time.Time) (Event, error) {
+	if len(packet) < 20 || packet[0]>>4 != 4 {
+		return Event{}, errors.New("not an IPv4 packet")
+	}
+	headerLength := int(packet[0]&0x0f) * 4
+	if headerLength < 20 || len(packet) < headerLength+13 || packet[9] != 17 {
+		return Event{}, errors.New("not a complete IPv4 UDP A2S packet")
+	}
+	totalLength := int(binary.BigEndian.Uint16(packet[2:4]))
+	if totalLength < headerLength+13 || totalLength > len(packet) {
+		return Event{}, errors.New("invalid IPv4 packet length")
+	}
+	payload := packet[headerLength+8 : totalLength]
+	if len(payload) < 5 || payload[0] != 0xff || payload[1] != 0xff || payload[2] != 0xff || payload[3] != 0xff {
+		return Event{}, errors.New("not an A2S query")
+	}
+	query, ok := queryTypeForOpcode(payload[4])
+	if !ok {
+		return Event{}, errors.New("unsupported A2S query")
+	}
+	source, ok := netip.AddrFromSlice(packet[12:16])
+	if !ok {
+		return Event{}, errors.New("invalid IPv4 source")
+	}
+	return Event{Timestamp: timestamp.UTC(), Source: source.Unmap(), DestinationPort: int(binary.BigEndian.Uint16(packet[headerLength+2 : headerLength+4])), Query: query, Action: "DROP"}, nil
+}
+
+func queryTypeForOpcode(opcode byte) (QueryType, bool) {
+	switch opcode {
+	case 0x54:
+		return QueryInfo, true
+	case 0x55:
+		return QueryPlayer, true
+	case 0x56:
+		return QueryRules, true
+	case 0x57:
+		return QueryChallenge, true
+	case 0x69:
+		return QueryOther69, true
+	default:
+		return "", false
 	}
 }

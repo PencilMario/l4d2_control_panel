@@ -2,16 +2,61 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/not0721here/l4d2-control-panel/internal/a2sdefense"
 )
+
+type retryingEventSource struct {
+	calls atomic.Int32
+}
+
+func (s *retryingEventSource) Run(ctx context.Context) error {
+	if s.calls.Add(1) == 1 {
+		return errors.New("listener unavailable")
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestRunEventSourceRetriesWithoutOwningServerLifecycle(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	source := &retryingEventSource{}
+	errorsSeen := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		runEventSource(ctx, source, time.Millisecond, func(err error) { errorsSeen <- err })
+		close(done)
+	}()
+	select {
+	case err := <-errorsSeen:
+		if err == nil || source.calls.Load() != 1 {
+			t.Fatalf("err=%v calls=%d", err, source.calls.Load())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("listener failure not reported")
+	}
+	for deadline := time.Now().Add(time.Second); source.calls.Load() < 2 && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+	if source.calls.Load() < 2 {
+		t.Fatal("listener was not retried")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("listener retry loop did not stop")
+	}
+}
 
 type stubFirewall struct{}
 
