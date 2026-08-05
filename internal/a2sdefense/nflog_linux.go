@@ -29,7 +29,7 @@ func (s *NFLogSource) Run(ctx context.Context) error {
 		return err
 	}
 	defer connection.Close()
-	return connection.RegisterWithErrorFunc(ctx, func(attribute nflog.Attribute) int {
+	if err := connection.RegisterWithErrorFunc(ctx, func(attribute nflog.Attribute) int {
 		if attribute.Payload == nil {
 			return 0
 		}
@@ -42,5 +42,9 @@ func (s *NFLogSource) Run(ctx context.Context) error {
 			_ = s.ring.Add(event)
 		}
 		return 0
-	}, func(error) int { return 0 })
+	}, func(error) int { return 0 }); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	return nil
 }
