@@ -146,6 +146,7 @@ func TestA2SDefenseImageBuildsOnlyItsDependencyClosure(t *testing.T) {
 	if !strings.Contains(string(module), "github.com/florianl/go-nflog/v2 v2.3.0") {
 		t.Fatal("A2S defense helper must pin the approved NFLOG dependency")
 	}
+	assertContains(t, dockerfile, "internal/a2sdefense/sample_window.go", "A2S defense sample window source")
 	assertContains(t, dockerfile, "go build", "A2S defense helper build")
 }
 
