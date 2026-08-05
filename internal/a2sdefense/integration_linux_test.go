@@ -18,6 +18,9 @@ func TestRealIPv4RulesLimitA2SPlayerFloodAndCleanUp(t *testing.T) {
 	manager := NewManager(CommandExecutor{}, time.Now)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	ring := NewEventRing("integration", DefaultEventCapacity)
+	sourceErrors := make(chan error, 1)
+	go func() { sourceErrors <- NewNFLogSource(ring, time.Now).Run(ctx) }()
 	ports := make([]int, 16)
 	for index := range ports {
 		ports[index] = 27015 + index
@@ -72,6 +75,26 @@ func TestRealIPv4RulesLimitA2SPlayerFloodAndCleanUp(t *testing.T) {
 	}
 	if status.Counters.Player == 0 || status.BlacklistSize != 1 {
 		t.Fatalf("live status did not report drops and attacker: %+v", status)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	var batch EventBatch
+	for time.Now().Before(deadline) {
+		batch = ring.Batch("integration", 0)
+		if len(batch.Events) > 0 {
+			break
+		}
+		select {
+		case sourceErr := <-sourceErrors:
+			t.Fatalf("NFLOG source stopped before receiving an event: %v", sourceErr)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	if len(batch.Events) == 0 {
+		t.Fatal("NFLOG did not deliver a sampled drop event")
+	}
+	event := batch.Events[0]
+	if !event.Source.Is4() || event.DestinationPort != 27015 || event.Query != QueryPlayer || event.Action != "DROP" {
+		t.Fatalf("unexpected NFLOG event: %+v", event)
 	}
 
 	if _, err := manager.Apply(ctx, Config{Version: APIVersion, Enabled: false, Revision: 2}); err != nil {
