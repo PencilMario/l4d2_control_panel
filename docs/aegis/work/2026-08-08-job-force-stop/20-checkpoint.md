@@ -2,10 +2,10 @@
 
 ## TodoCheckpointDraft
 
-- 当前 todo：回写远端证据，提交并推送证据文档。
-- 已完成：设计与基线读取；Manager 取消 RED/GREEN；认证 HTTP 取消 RED/GREEN；JobsPage 取消交互 RED/GREEN；局部 CSS 兼容；本地全量验证；琥珀和安可部署与 sudoers 验证。
-- 当前切片：两个生产节点已运行目标 revision，远端健康检查和免密 sudo 均已通过。
-- 下一步：更新 `50-evidence.md`，提交并推送文档更新；无需重新部署运行代码。
+- 当前 todo：无未完成项；远端浏览器级交互保留为已知未覆盖项。
+- 已完成：设计与基线读取；Manager 取消 RED/GREEN；认证 HTTP 取消 RED/GREEN；JobsPage 取消交互 RED/GREEN；局部 CSS 兼容；本地全量验证；琥珀和安可部署与 sudoers 验证；证据文档提交并推送。
+- 当前切片：两个生产节点已运行目标 revision，远端健康检查和免密 sudo 均已通过；文档提交为 `3f16594`。
+- 下一步：无；无需重新部署运行代码。
 
 ## Evidence
 
