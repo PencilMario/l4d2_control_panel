@@ -2,10 +2,10 @@
 
 ## TodoCheckpointDraft
 
-- 当前 todo：提交、推送并更新两个生产节点。
-- 已完成：设计与基线读取；Manager 取消 RED/GREEN；认证 HTTP 取消 RED/GREEN；JobsPage 取消交互 RED/GREEN；局部 CSS 兼容；本地全量验证。
-- 当前切片：审查复核已通过，提交与部署准备。
-- 下一步：复核最终 diff，提交并推送 `main` 所需 revision；再通过 SSH 更新琥珀和安可。
+- 当前 todo：回写远端证据，提交并推送证据文档。
+- 已完成：设计与基线读取；Manager 取消 RED/GREEN；认证 HTTP 取消 RED/GREEN；JobsPage 取消交互 RED/GREEN；局部 CSS 兼容；本地全量验证；琥珀和安可部署与 sudoers 验证。
+- 当前切片：两个生产节点已运行目标 revision，远端健康检查和免密 sudo 均已通过。
+- 下一步：更新 `50-evidence.md`，提交并推送文档更新；无需重新部署运行代码。
 
 ## Evidence
 
@@ -16,6 +16,9 @@
 - `go vet ./...`: exit 0。
 - `git diff --check`: exit 0。
 - 并行 `go test ./...` 曾触发 Windows 临时目录清理和测试 exe 文件锁；对应目标测试各连续 3 次通过，串行全量套件通过。
+- 琥珀与安可新鲜 SSH 验证：revision 均为 `f4b28cc1f1ef53365d7d51d66413f7772275fb4a`，分支为 `main`，工作树干净。
+- 两台 `sudo docker compose --env-file .env ps`：panel 均为 `Up (healthy)`；`curl -fsS http://127.0.0.1:18081/api/health` 均返回 `status: ok`、`database: ok`。
+- 两台 `/etc/sudoers.d/steam-nopasswd`：内容为 `steam ALL=(ALL) NOPASSWD:ALL`，权限/所有者为 `0440:root:root`；`visudo` 和无密码 `sudo -n true` 均通过。
 
 ## DriftCheckDraft
 
@@ -27,4 +30,4 @@
 ## Risk / Unknown
 
 - 未运行 `go test -race`，当前 Windows 环境缺少 GCC。
-- 远端部署 revision、Compose 状态、健康接口和浏览器级按钮行为尚未验证。
+- 浏览器级生产交互仍未在远端执行；琥珀部署前的另一项超时/VPK 重启未提交改动已保留在 `stash@{0}`，未覆盖。
