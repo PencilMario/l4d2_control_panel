@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { CheckCircle2, ChevronDown, Clock, FileText, RotateCw, Search, XCircle } from "lucide-react";
+import { CheckCircle2, ChevronDown, Clock, FileText, LoaderCircle, RotateCw, Search, Square, XCircle } from "lucide-react";
 import { api, type Job, type JobEvent } from "../api/client";
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "interrupted"]);
@@ -34,6 +34,7 @@ export function JobsPage({ onOpenLogs }: { onOpenLogs?: (job: Job) => void }) {
   const [details, setDetails] = useState<Record<string, Job>>({});
   const [detailErrors, setDetailErrors] = useState<Record<string, string>>({});
   const [loadingID, setLoadingID] = useState("");
+  const [cancelingIDs, setCancelingIDs] = useState<Set<string>>(() => new Set());
   const [statusFilter, setStatusFilter] = useState("all");
   const [query, setQuery] = useState("");
 
@@ -64,6 +65,22 @@ export function JobsPage({ onOpenLogs }: { onOpenLogs?: (job: Job) => void }) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!cancelingIDs.size) return;
+    const next = new Set(cancelingIDs);
+    let changed = false;
+    for (const id of cancelingIDs) {
+      const item = items.find((candidate) => candidate.ID === id);
+      if (item && item.Status !== "running") {
+        next.delete(id);
+        changed = true;
+      }
+    }
+    if (changed) {
+      setCancelingIDs(next);
+    }
+  }, [cancelingIDs, items]);
+
   const loadDetails = useCallback(async (item: Job) => {
     setLoadingID(item.ID);
     setDetailErrors((current) => ({ ...current, [item.ID]: "" }));
@@ -77,6 +94,23 @@ export function JobsPage({ onOpenLogs }: { onOpenLogs?: (job: Job) => void }) {
       }));
     } finally {
       setLoadingID((current) => (current === item.ID ? "" : current));
+    }
+  }, []);
+
+  const cancelJob = useCallback(async (item: Job) => {
+    if (!window.confirm(`确定要强制停止 ${item.Type || "unknown"} 任务（${item.ID}）吗？`)) {
+      return;
+    }
+    setCancelingIDs((current) => new Set(current).add(item.ID));
+    try {
+      await api<Job>(`/api/jobs/${item.ID}/cancel`, { method: "POST" });
+    } catch (reason) {
+      setJobsError(reason instanceof Error ? reason.message : String(reason));
+      setCancelingIDs((current) => {
+        const next = new Set(current);
+        next.delete(item.ID);
+        return next;
+      });
     }
   }, []);
 
@@ -173,6 +207,7 @@ export function JobsPage({ onOpenLogs }: { onOpenLogs?: (job: Job) => void }) {
           const detail = details[item.ID];
           const panelID = `job-log-${item.ID}`;
           const StatusIcon = STATUS_ICONS[item.Status as keyof typeof STATUS_ICONS] || Clock;
+          const canceling = cancelingIDs.has(item.ID);
           return (
             <article
               className={`job-entry ${expanded ? "expanded" : ""}`}
@@ -203,6 +238,19 @@ export function JobsPage({ onOpenLogs }: { onOpenLogs?: (job: Job) => void }) {
                 </span>
                 <span className="job-time">{formatTimestamp(item.CreatedAt)}</span>
                 <span className="job-operation">
+                  {item.Status === "running" ? (
+                    <button
+                      type="button"
+                      className="job-force-stop"
+                      aria-label={`强制停止 ${type} 任务，任务 ID ${item.ID}`}
+                      aria-busy={canceling}
+                      title={canceling ? "正在停止任务" : "强制停止任务"}
+                      disabled={canceling}
+                      onClick={() => void cancelJob(item)}
+                    >
+                      {canceling ? <LoaderCircle aria-hidden="true" /> : <Square aria-hidden="true" />}
+                    </button>
+                  ) : null}
                   <button type="button" className="job-event-toggle" aria-expanded={expanded} aria-controls={panelID} aria-label={`查看 ${type} 任务日志，任务 ID ${item.ID}`} onClick={() => toggle(item)}>
                     <span>事件</span><ChevronDown className="job-chevron" aria-hidden="true" />
                   </button>

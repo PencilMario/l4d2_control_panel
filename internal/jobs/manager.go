@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -21,6 +22,13 @@ const (
 	Failed      Status = "failed"
 	Interrupted Status = "interrupted"
 )
+
+var (
+	ErrJobNotFound   = errors.New("job not found")
+	ErrJobNotRunning = errors.New("job is not running")
+)
+
+const forceStopMessage = "任务已由管理员强制停止"
 
 type Job struct {
 	ID, InstanceID, Type, Stage, Message string
@@ -94,15 +102,25 @@ func (r reporter) logFinish(err error) {
 	}
 	r.m.appendLog(r.id, "task", joblogs.Info, fmt.Sprintf("task completed type=%s target=%s duration=%s", r.kind, r.target, duration))
 }
+func (r reporter) logInterrupted() {
+	r.m.mu.RLock()
+	phase := r.m.jobs[r.id].Stage
+	r.m.mu.RUnlock()
+	duration := FormatDuration(time.Since(r.startedAt))
+	r.m.appendLog(r.id, "task", joblogs.Warn, fmt.Sprintf("task interrupted type=%s target=%s phase=%s duration=%s", r.kind, r.target, phase, duration))
+}
 
 type Manager struct {
-	mu     sync.RWMutex
-	jobs   map[string]Job
-	events map[string][]domain.JobEvent
-	locks  map[string]*sync.Mutex
-	repo   Repository
-	logs   LogSink
-	wg     sync.WaitGroup
+	mu              sync.RWMutex
+	jobs            map[string]Job
+	events          map[string][]domain.JobEvent
+	locks           map[string]*sync.Mutex
+	cancels         map[string]context.CancelFunc
+	cancelRequested map[string]bool
+	finishing       map[string]bool
+	repo            Repository
+	logs            LogSink
+	wg              sync.WaitGroup
 }
 
 type LogSink interface {
@@ -123,7 +141,14 @@ type Repository interface {
 }
 
 func NewManager(options ...Option) *Manager {
-	m := &Manager{jobs: map[string]Job{}, events: map[string][]domain.JobEvent{}, locks: map[string]*sync.Mutex{}}
+	m := &Manager{
+		jobs:            map[string]Job{},
+		events:          map[string][]domain.JobEvent{},
+		locks:           map[string]*sync.Mutex{},
+		cancels:         map[string]context.CancelFunc{},
+		cancelRequested: map[string]bool{},
+		finishing:       map[string]bool{},
+	}
 	for _, option := range options {
 		option(m)
 	}
@@ -181,6 +206,8 @@ func (m *Manager) StartWithOptions(ctx context.Context, instanceID, kind string,
 	m.mu.Lock()
 	m.jobs[j.ID] = j
 	m.events[j.ID] = append(m.events[j.ID], event)
+	runCtx, cancelRun := context.WithCancel(ctx)
+	m.cancels[j.ID] = cancelRun
 	lock := m.locks[instanceID]
 	if lock == nil {
 		lock = &sync.Mutex{}
@@ -191,6 +218,10 @@ func (m *Manager) StartWithOptions(ctx context.Context, instanceID, kind string,
 	m.appendLog(j.ID, "task", joblogs.Info, event.Message)
 	go func() {
 		defer m.wg.Done()
+		defer func() {
+			cancelRun()
+			m.clearCancellation(j.ID)
+		}()
 		target := instanceID
 		if target == "" {
 			target = "global"
@@ -209,9 +240,8 @@ func (m *Manager) StartWithOptions(ctx context.Context, instanceID, kind string,
 				_ = m.setStatus(j.ID, Failed, -1, err.Error())
 				return
 			}
-			if err := options.Preflight(context.WithValue(ctx, reporterContextKey{}, Reporter(activeReporter)), activeReporter); err != nil {
-				activeReporter.logFinish(err)
-				_ = m.setStatus(j.ID, Failed, -1, err.Error())
+			if err := options.Preflight(context.WithValue(runCtx, reporterContextKey{}, Reporter(activeReporter)), activeReporter); err != nil {
+				m.finish(j.ID, activeReporter, err)
 				return
 			}
 		}
@@ -223,17 +253,76 @@ func (m *Manager) StartWithOptions(ctx context.Context, instanceID, kind string,
 				return
 			}
 		}
-		operationCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMinutes)*time.Minute)
+		operationCtx, cancel := context.WithTimeout(runCtx, time.Duration(timeoutMinutes)*time.Minute)
 		err := fn(context.WithValue(operationCtx, reporterContextKey{}, Reporter(activeReporter)), activeReporter)
 		cancel()
-		activeReporter.logFinish(err)
-		if err != nil {
-			_ = m.setStatus(j.ID, Failed, -1, err.Error())
-		} else {
-			_ = m.setStatus(j.ID, Succeeded, 100, "")
-		}
+		m.finish(j.ID, activeReporter, err)
 	}()
 	return j, nil
+}
+
+func (m *Manager) Cancel(id string) (Job, error) {
+	m.mu.Lock()
+	job, ok := m.jobs[id]
+	if !ok && m.repo != nil {
+		record, found, err := m.repo.LoadJob(id)
+		if err != nil {
+			m.mu.Unlock()
+			return Job{}, err
+		}
+		if found {
+			job, ok = fromRecord(record), true
+		}
+	}
+	if !ok {
+		m.mu.Unlock()
+		return Job{}, ErrJobNotFound
+	}
+	cancel := m.cancels[id]
+	if job.Status != Running || cancel == nil || m.finishing[id] {
+		m.mu.Unlock()
+		return job, ErrJobNotRunning
+	}
+	m.cancelRequested[id] = true
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return job, nil
+}
+
+func (m *Manager) finish(id string, activeReporter reporter, err error) {
+	status := Succeeded
+	percent := 100
+	message := ""
+	if err != nil {
+		status = Failed
+		percent = -1
+		message = err.Error()
+	}
+	m.mu.Lock()
+	if m.cancelRequested[id] {
+		status = Interrupted
+		percent = -1
+		message = forceStopMessage
+	}
+	m.finishing[id] = true
+	m.mu.Unlock()
+
+	if status == Interrupted {
+		activeReporter.logInterrupted()
+	} else {
+		activeReporter.logFinish(err)
+	}
+	_ = m.setStatus(id, status, percent, message)
+}
+
+func (m *Manager) clearCancellation(id string) {
+	m.mu.Lock()
+	delete(m.cancels, id)
+	delete(m.cancelRequested, id)
+	delete(m.finishing, id)
+	m.mu.Unlock()
 }
 
 func (m *Manager) Wait(ctx context.Context) error {

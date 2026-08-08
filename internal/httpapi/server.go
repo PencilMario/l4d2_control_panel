@@ -263,6 +263,7 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Delete("/api/instances/{id}", s.deleteInstance)
 		r.Post("/api/instances/{id}/actions", s.instanceAction)
 		r.Get("/api/jobs/{id}", s.getJob)
+		r.Post("/api/jobs/{id}/cancel", s.cancelJob)
 		r.Get("/api/jobs/{id}/logs", s.jobLogHistory)
 		r.Get("/api/jobs/{id}/logs/stream", s.jobLogStream)
 		r.Get("/api/jobs/{id}/logs/download", s.downloadJobLog)
@@ -2199,6 +2200,24 @@ func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
 		jobs.Job
 		Events []domain.JobEvent
 	}{Job: job, Events: events})
+}
+
+func (s *Server) cancelJob(w http.ResponseWriter, r *http.Request) {
+	if s.jobs == nil {
+		writeError(w, http.StatusServiceUnavailable, "jobs_unavailable", "job manager unavailable")
+		return
+	}
+	job, err := s.jobs.Cancel(chi.URLParam(r, "id"))
+	switch {
+	case errors.Is(err, jobs.ErrJobNotFound):
+		writeError(w, http.StatusNotFound, "job_not_found", "job not found")
+	case errors.Is(err, jobs.ErrJobNotRunning):
+		writeError(w, http.StatusConflict, "job_not_running", "only running jobs can be force-stopped")
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "jobs_error", err.Error())
+	default:
+		writeJSON(w, http.StatusAccepted, job)
+	}
 }
 func (s *Server) Handler() http.Handler { return s.router }
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {

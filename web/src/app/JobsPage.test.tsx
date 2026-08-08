@@ -64,6 +64,129 @@ describe("JobsPage", () => {
     expect(screen.getByRole("button", { name: /查看 game_update 任务日志/ })).toHaveTextContent("事件");
   });
 
+  it("shows force stop only for a running task", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json([
+      { ID: "job-running", Type: "game_update", Status: "running", Stage: "download", Percent: 42 },
+      { ID: "job-pending", Type: "backup", Status: "pending", Stage: "queued", Percent: 0 },
+      { ID: "job-done", Type: "cleanup", Status: "succeeded", Stage: "complete", Percent: 100 },
+    ])));
+
+    render(<JobsPage />);
+
+    expect(await screen.findByRole("button", {
+      name: "强制停止 game_update 任务，任务 ID job-running",
+    })).toBeVisible();
+    expect(screen.queryByRole("button", {
+      name: "强制停止 backup 任务，任务 ID job-pending",
+    })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", {
+      name: "强制停止 cleanup 任务，任务 ID job-done",
+    })).not.toBeInTheDocument();
+  });
+
+  it("does not send a force stop request when confirmation is declined", async () => {
+    const fetchMock = vi.fn(async () => Response.json([
+      { ID: "job-running", Type: "game_update", Status: "running", Stage: "download", Percent: 42 },
+    ]));
+    vi.stubGlobal("fetch", fetchMock);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    render(<JobsPage />);
+    await userEvent.click(await screen.findByRole("button", {
+      name: "强制停止 game_update 任务，任务 ID job-running",
+    }));
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("强制停止"));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("posts a force stop request and disables the button while it is pending", async () => {
+    let resolveCancel: ((response: Response) => void) | undefined;
+    const cancelResponse = new Promise<Response>((resolve) => {
+      resolveCancel = resolve;
+    });
+    const running = {
+      ID: "job-running",
+      Type: "game_update",
+      Status: "running",
+      Stage: "download",
+      Percent: 42,
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/jobs") return Response.json([running]);
+      expect(String(input)).toBe("/api/jobs/job-running/cancel");
+      expect(init?.method).toBe("POST");
+      return cancelResponse;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("EventSource", FakeEventSource);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<JobsPage />);
+    const button = await screen.findByRole("button", {
+      name: "强制停止 game_update 任务，任务 ID job-running",
+    });
+    await userEvent.click(button);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-busy", "true");
+    resolveCancel?.(Response.json(running));
+    await waitFor(() => expect(button).toBeDisabled());
+
+    FakeEventSource.latest?.emitJobs([
+      { ...running, Status: "interrupted", Error: "任务已由管理员强制停止" },
+    ]);
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", {
+          name: "强制停止 game_update 任务，任务 ID job-running",
+        }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText("已中断")).toBeVisible();
+  });
+
+  it("keeps force stop state independent for concurrent running tasks", async () => {
+    const running = (id: string) => ({
+      ID: id,
+      Type: "game_update",
+      Status: "running",
+      Stage: "download",
+      Percent: 42,
+    });
+    const pendingCancels = new Map<string, Promise<Response>>();
+    const resolvers = new Map<string, (response: Response) => void>();
+    for (const id of ["job-one", "job-two"]) {
+      pendingCancels.set(id, new Promise<Response>((resolve) => resolvers.set(id, resolve)));
+    }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/jobs") return Response.json([running("job-one"), running("job-two")]);
+      expect(init?.method).toBe("POST");
+      const id = String(input).split("/")[3];
+      return pendingCancels.get(id);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<JobsPage />);
+    const first = await screen.findByRole("button", {
+      name: "强制停止 game_update 任务，任务 ID job-one",
+    });
+    const second = screen.getByRole("button", {
+      name: "强制停止 game_update 任务，任务 ID job-two",
+    });
+    await userEvent.click(first);
+    await userEvent.click(second);
+
+    await waitFor(() => {
+      expect(first).toBeDisabled();
+      expect(second).toBeDisabled();
+    });
+    resolvers.get("job-one")?.(Response.json(running("job-one")));
+    resolvers.get("job-two")?.(Response.json(running("job-two")));
+  });
+
   it("refreshes an expanded running job when its summary timestamp changes", async () => {
     let detailCalls = 0;
     const summary = {

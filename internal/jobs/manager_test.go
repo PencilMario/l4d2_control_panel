@@ -26,6 +26,25 @@ type recordingLogSink struct {
 	calls []recordedLogCall
 }
 
+type blockingCompletionLogSink struct {
+	recordingLogSink
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingCompletionLogSink) Append(ctx context.Context, jobID, source string, level joblogs.Level, message string) (joblogs.Record, error) {
+	if strings.Contains(message, "task completed") {
+		s.once.Do(func() { close(s.entered) })
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return joblogs.Record{}, ctx.Err()
+		}
+	}
+	return s.recordingLogSink.Append(ctx, jobID, source, level, message)
+}
+
 func (s *recordingLogSink) Append(_ context.Context, jobID, source string, level joblogs.Level, message string) (joblogs.Record, error) {
 	s.mu.Lock()
 	s.calls = append(s.calls, recordedLogCall{kind: "append", jobID: jobID, source: source, level: level, message: message})
@@ -249,6 +268,125 @@ func TestManagerSerializesMutationPerInstance(t *testing.T) {
 	if !overlap.Load() {
 		t.Fatal("queued job never ran")
 	}
+}
+
+func TestManagerForceStopMarksCancelledTaskInterrupted(t *testing.T) {
+	m := NewManager()
+	started := make(chan struct{})
+	job, err := m.Start(context.Background(), "a", "install", func(ctx context.Context, _ Reporter) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+
+	if _, err := m.Cancel(job.ID); err != nil {
+		t.Fatalf("cancel error=%v", err)
+	}
+	got := waitForTerminal(t, m, job.ID)
+	if got.Status != Interrupted || got.Error != forceStopMessage {
+		t.Fatalf("job=%#v", got)
+	}
+	_, events, found, err := m.Details(job.ID)
+	if err != nil || !found {
+		t.Fatalf("events=%#v found=%v err=%v", events, found, err)
+	}
+	assertEventKinds(t, events, "queued", "started", "interrupted")
+}
+
+func TestManagerForceStopWinsOverSuccessfulReturn(t *testing.T) {
+	m := NewManager()
+	release := make(chan struct{})
+	job, err := m.Start(context.Background(), "a", "install", func(context.Context, Reporter) error {
+		<-release
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, m, job.ID, Running)
+	if _, err := m.Cancel(job.ID); err != nil {
+		t.Fatalf("cancel error=%v", err)
+	}
+	close(release)
+
+	got := waitForTerminal(t, m, job.ID)
+	if got.Status != Interrupted || got.Error != forceStopMessage {
+		t.Fatalf("job=%#v", got)
+	}
+}
+
+func TestManagerRejectsForceStopAfterCompletionDecision(t *testing.T) {
+	sink := &blockingCompletionLogSink{entered: make(chan struct{}), release: make(chan struct{})}
+	m := NewManager(WithLogSink(sink))
+	job, err := m.Start(context.Background(), "a", "install", func(context.Context, Reporter) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-sink.entered:
+	case <-time.After(time.Second):
+		t.Fatal("completion log was not reached")
+	}
+	if _, err := m.Cancel(job.ID); !errors.Is(err, ErrJobNotRunning) {
+		t.Fatalf("cancel error=%v", err)
+	}
+	close(sink.release)
+
+	got := waitForTerminal(t, m, job.ID)
+	if got.Status != Succeeded || got.Error != "" {
+		t.Fatalf("job=%#v", got)
+	}
+}
+
+func TestManagerRejectsForceStopWithoutActiveTask(t *testing.T) {
+	now := time.Now().UTC()
+	repo := staticJobRepository{record: domain.JobRecord{
+		ID: "orphan-running", Type: "install", Status: string(Running), CreatedAt: now, UpdatedAt: now,
+	}}
+	m := NewPersistentManager(repo)
+	job, err := m.Cancel("orphan-running")
+	if !errors.Is(err, ErrJobNotRunning) || job.Status != Running {
+		t.Fatalf("job=%#v err=%v", job, err)
+	}
+}
+
+func TestManagerRejectsForceStopForPendingTask(t *testing.T) {
+	m := NewManager()
+	release := make(chan struct{})
+	started := make(chan struct{})
+	pendingStarted := make(chan struct{})
+	first, err := m.Start(context.Background(), "a", "install", func(context.Context, Reporter) error {
+		close(started)
+		<-release
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	pending, err := m.Start(context.Background(), "a", "backup", func(context.Context, Reporter) error {
+		close(pendingStarted)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, m, pending.ID, Pending)
+	if _, err := m.Cancel(pending.ID); !errors.Is(err, ErrJobNotRunning) {
+		t.Fatalf("cancel error=%v", err)
+	}
+	select {
+	case <-pendingStarted:
+		t.Fatal("pending task started before the first task was released")
+	default:
+	}
+	close(release)
+	waitForTerminal(t, m, first.ID)
+	waitForTerminal(t, m, pending.ID)
 }
 
 func TestPersistentManagerReloadsCompletedJob(t *testing.T) {
@@ -480,6 +618,14 @@ func (failingRepository) LoadJob(string) (domain.JobRecord, bool, error) {
 }
 func (failingRepository) JobEvents(string) ([]domain.JobEvent, error) { return nil, nil }
 
+type staticJobRepository struct{ record domain.JobRecord }
+
+func (r staticJobRepository) SaveJobWithEvent(domain.JobRecord, domain.JobEvent) error { return nil }
+func (r staticJobRepository) LoadJob(id string) (domain.JobRecord, bool, error) {
+	return r.record, r.record.ID == id, nil
+}
+func (staticJobRepository) JobEvents(string) ([]domain.JobEvent, error) { return nil, nil }
+
 type failNthLifecycleWriteRepository struct {
 	*store.Store
 	calls atomic.Int32
@@ -535,6 +681,34 @@ func wait(t *testing.T, m *Manager, id string) Job {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("timeout")
+	return Job{}
+}
+
+func waitForStatus(t *testing.T, m *Manager, id string, want Status) Job {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		job, _ := m.Get(id)
+		if job.Status == want {
+			return job
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("job %s did not reach status %s", id, want)
+	return Job{}
+}
+
+func waitForTerminal(t *testing.T, m *Manager, id string) Job {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		job, _ := m.Get(id)
+		if job.Status == Succeeded || job.Status == Failed || job.Status == Interrupted {
+			return job
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("job %s did not reach a terminal status", id)
 	return Job{}
 }
 

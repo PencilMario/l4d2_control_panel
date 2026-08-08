@@ -701,8 +701,11 @@ code, pre { font-family: var(--mono); }
 .job-state.running { border-color: #92400e99; background: #451a03cc; color: #fcd34d; }
 .job-state.succeeded { border-color: #04785799; background: #022c22cc; color: #6ee7b7; }
 .job-state.failed, .job-state.interrupted { border-color: #b91c1c99; background: #450a0acc; color: #fca5a5; }
-.job-operation { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.job-operation { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap; min-width: 0; }
 .job-operation button { display: inline-flex; align-items: center; gap: 4px; min-height: 0; padding: 4px 10px; border-radius: 4px; font-size: 11px; white-space: nowrap; }
+.job-force-stop { width: 28px; padding-inline: 6px !important; border-color: #7f1d1d; background: #450a0acc; color: #fca5a5; }
+.job-force-stop:hover:not(:disabled) { border-color: #b91c1c; background: #7f1d1dcc; color: #fee2e2; }
+.job-force-stop svg { width: 12px; height: 12px; }
 .job-event-toggle { border-color: #2a3a31; background: #1e2723; color: #a0b2a7; }
 .job-event-toggle:hover:not(:disabled) { border-color: #2a3a31; background: #28352f; color: #a0b2a7; }
 .job-full-log { border: 0; background: #84cc1633; color: #84cc16; font-weight: 600; transition: color .15s ease, background-color .15s ease; }

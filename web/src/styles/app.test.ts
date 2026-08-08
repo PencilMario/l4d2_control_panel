@@ -201,6 +201,8 @@ describe("background jobs reference layout", () => {
     expect(css).toMatch(/\.task-log-levels button\.active\s*\{/);
     expect(css).toContain(".job-operation button { display: inline-flex; align-items: center; gap: 4px; min-height: 0; padding: 4px 10px; border-radius: 4px;");
     expect(css).toContain(".job-full-log { border: 0; background: #84cc1633;");
+    expect(css).toContain(".job-operation { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap;");
+    expect(css).toContain(".job-force-stop { width: 28px;");
     expect(css).toContain(".job-operation button svg { width: 12px; height: 12px;");
     expect(css).toContain(".task-log-head { align-items: stretch; flex-direction: column;");
     expect(css).toContain(".task-log-search { width: 100%; flex-basis: auto;");
