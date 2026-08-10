@@ -2,6 +2,7 @@
 
 ## Specifications
 
+- [Accelerator management, crash viewing, and AI analysis](specs/2026-08-10-accelerator-management-analysis-design.md)
 - [Accelerator crash report receiver](specs/2026-08-09-accelerator-crash-report-receiver-design.md)
 - [Per-instance A2S defense logs](specs/2026-08-05-a2s-defense-instance-logs-design.md)
 - [IPv4 A2S defense helper and system setting](specs/2026-08-05-a2s-defense-helper-design.md)
