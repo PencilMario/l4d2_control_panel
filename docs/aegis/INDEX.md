@@ -24,6 +24,7 @@
 
 ## Implementation Plans
 
+- [Accelerator management, crash viewing, and AI analysis](plans/2026-08-10-accelerator-management-analysis.md)
 - [Per-instance A2S defense logs](plans/2026-08-05-a2s-defense-instance-logs.md)
 - [IPv4 A2S defense helper and system setting](plans/2026-08-05-a2s-defense-helper.md)
 - [Self-service VPK upload](plans/2026-08-02-self-service-vpk-upload.md)
