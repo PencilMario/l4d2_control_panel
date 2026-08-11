@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	DefaultAIRequestTimeout   time.Duration = 60 * time.Second
+	DefaultAIRequestTimeout   time.Duration = 10 * time.Minute
 	DefaultMaxAIResponseBytes int64         = 1 << 20
 )
 

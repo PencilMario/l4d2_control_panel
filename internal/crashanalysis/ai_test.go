@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestOpenAIClientNormalizesEndpointSendsModelAndRetriesServerFailure(t *testing.T) {
@@ -31,6 +32,9 @@ func TestOpenAIClientNormalizesEndpointSendsModelAndRetriesServerFailure(t *test
 	client, err := NewOpenAIClient(OpenAIConfig{Endpoint: server.URL + "/v1", Model: "local-model", APIKey: "api-key", HTTPClient: server.Client()})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if client.Timeout != 10*time.Minute {
+		t.Fatalf("default timeout=%s", client.Timeout)
 	}
 	result, err := client.Analyze(context.Background(), []byte("diagnostic input"))
 	if err != nil || result != "analysis result" || requests.Load() != 2 {
