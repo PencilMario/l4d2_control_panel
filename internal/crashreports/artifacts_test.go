@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSaveBinaryIsContentAddressedAndStoresIdentityManifest(t *testing.T) {
@@ -172,5 +173,47 @@ func TestLateArtifactsBackfillExistingReportModules(t *testing.T) {
 	}
 	if len(got.Modules) != 1 || got.Modules[0].SymbolArtifact != artifactID {
 		t.Fatalf("late symbol was not linked: modules=%#v artifact=%s", got.Modules, artifactID)
+	}
+}
+
+func TestSaveGeneratedSymbolIsPersistentAndUsesBreakpadLookupPath(t *testing.T) {
+	current := testProtocolNow()
+	manager, err := New(Config{
+		Root: t.TempDir(),
+		Now:  func() time.Time { return current },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("MODULE Linux x86_64 GENERATED engine.so\nFUNC 1 2 generated\n")
+	if err := manager.SaveGeneratedSymbol(context.Background(), "instance-a", bytes.NewReader(content)); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SaveSymbol(context.Background(), SymbolInput{Symbol: bytes.NewReader(content)}); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(content)
+	id := hex.EncodeToString(digest[:])
+	file, artifact, err := manager.OpenArtifact(context.Background(), ArtifactKindSymbol, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if artifact.InstanceID != "instance-a" || !artifact.Generated || artifact.Builtin {
+		t.Fatalf("artifact=%#v", artifact)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	current = current.Add(91 * 24 * time.Hour)
+	if _, err := manager.Cleanup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	remaining, _, err := manager.OpenArtifact(context.Background(), ArtifactKindSymbol, id)
+	if err != nil {
+		t.Fatalf("generated artifact was cleaned up: %v", err)
+	}
+	if err := remaining.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

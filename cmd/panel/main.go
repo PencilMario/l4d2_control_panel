@@ -12,6 +12,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/crashanalysis"
 	"github.com/not0721here/l4d2-control-panel/internal/crashreports"
+	"github.com/not0721here/l4d2-control-panel/internal/crashsymbols"
 	"github.com/not0721here/l4d2-control-panel/internal/disk"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/gamelogs"
@@ -134,6 +135,28 @@ func main() {
 		log.Printf("crash report cleanup: reports=%d pending=%d bytes=%d", result.ReportsRemoved, result.PendingRemoved, result.BytesReleased)
 	}
 	stopCrashReportCleanup := crashReportManager.StartCleanup(context.Background())
+	symbolGenerator, err := crashsymbols.New(crashsymbols.Config{Path: cfg.DumpSymsPath})
+	if err != nil {
+		log.Fatal(err)
+	}
+	symbolIndexer := crashsymbols.Indexer{
+		Generator: symbolGenerator,
+		Source: crashsymbols.FilesystemRootSource{
+			ReleasesRoot:  cfg.GameReleasesDir,
+			InstancesRoot: cfg.InstancesDir,
+		},
+		Store: crashReportManager,
+	}
+	stopCrashSymbolIndexer := symbolIndexer.Start(context.Background(), 0, func(summary crashsymbols.Summary, err error) {
+		if err != nil {
+			log.Printf("crash symbol indexing: %v", err)
+			return
+		}
+		log.Printf("crash symbol indexing: scanned=%d candidates=%d generated=%d skipped=%d duplicates=%d failed=%d", summary.Scanned, summary.Candidates, summary.Generated, summary.Skipped, summary.Duplicates, summary.Failed)
+		for _, failure := range summary.Failures {
+			log.Printf("crash symbol module failed path=%s error=%s", failure.Path, failure.Error)
+		}
+	})
 	sessions, err := auth.NewPersistentService(db)
 	if err != nil {
 		log.Fatal(err)
@@ -345,6 +368,7 @@ func main() {
 		if err := analysisWorker.Stop(context.Background()); err != nil {
 			log.Printf("stop crash analysis worker: %v", err)
 		}
+		stopCrashSymbolIndexer()
 		stopCrashReportCleanup()
 		stopA2SEventLogger()
 		a2sDefenseCoordinator.Stop()

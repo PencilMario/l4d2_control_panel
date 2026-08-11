@@ -431,6 +431,14 @@ func hasMinidumpHeader(path string) error {
 }
 
 func (m *Manager) SaveSymbol(ctx context.Context, input SymbolInput) error {
+	return m.saveSymbol(ctx, input, false)
+}
+
+func (m *Manager) SaveGeneratedSymbol(ctx context.Context, instanceID string, symbol io.Reader) error {
+	return m.saveSymbol(ctx, SymbolInput{InstanceID: instanceID, Symbol: symbol}, true)
+}
+
+func (m *Manager) saveSymbol(ctx context.Context, input SymbolInput, generated bool) error {
 	if input.Symbol == nil || !validOptionalIdentifier(input.DebugIdentifier) || !validOptionalIdentifier(input.CodeIdentifier) {
 		return ErrInvalidSymbol
 	}
@@ -521,6 +529,9 @@ func (m *Manager) SaveSymbol(ctx context.Context, input SymbolInput) error {
 	if input.DebugFile == "" {
 		input.DebugFile = parsedDebugFile
 	}
+	if generated && (input.Platform == "" || input.Architecture == "" || input.DebugFile == "") {
+		return ErrInvalidSymbol
+	}
 	name := hex.EncodeToString(digest.Sum(nil)) + ".sym"
 	id := strings.TrimSuffix(name, ".sym")
 	target := m.artifactPath(ArtifactKindSymbol, id, false)
@@ -542,7 +553,17 @@ func (m *Manager) SaveSymbol(ctx context.Context, input SymbolInput) error {
 		InstanceID: input.InstanceID, DebugIdentifier: input.DebugIdentifier,
 		CodeIdentifier: input.CodeIdentifier, DebugFile: input.DebugFile,
 		Platform: input.Platform, Architecture: input.Architecture,
+		Generated:  generated,
 		ReceivedAt: m.currentTime().Format(timeFormat),
+	}
+	if existingRaw, readErr := os.ReadFile(m.artifactManifestPath(ArtifactKindSymbol, id)); readErr == nil {
+		var existing Artifact
+		if json.Unmarshal(existingRaw, &existing) == nil && existing.ID == id && existing.Kind == ArtifactKindSymbol {
+			artifact.Generated = existing.Generated || artifact.Generated
+			if artifact.InstanceID == "" {
+				artifact.InstanceID = existing.InstanceID
+			}
+		}
 	}
 	if err := m.ensureSymbolLookup(artifact, target); err != nil {
 		if installed {
@@ -781,7 +802,7 @@ func (m *Manager) cleanupArtifacts(ctx context.Context, cutoff time.Time) (Clean
 			if err := json.Unmarshal(raw, &artifact); err != nil || artifact.ID != id || artifact.Kind != item.kind || artifact.SHA256 != id {
 				continue
 			}
-			if artifact.Builtin || !artifactTimeBefore(artifact, cutoff) || hasArtifactReference(referenced, item.kind, id) {
+			if artifact.Builtin || artifact.Generated || !artifactTimeBefore(artifact, cutoff) || hasArtifactReference(referenced, item.kind, id) {
 				continue
 			}
 			objectPath := m.artifactPath(item.kind, id, false)

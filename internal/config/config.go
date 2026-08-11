@@ -16,6 +16,7 @@ type Config struct {
 	PanelPort          int
 	AcceleratorPort    int
 	StackwalkPath      string
+	DumpSymsPath       string
 	GameHost           string
 	DataRoot           string
 	PanelDir           string
@@ -78,11 +79,19 @@ func Load() (Config, error) {
 	if !plainFilesystemPath(stackwalkPath) {
 		return Config{}, errors.New("L4D2_PANEL_STACKWALK_PATH must be an absolute filesystem path")
 	}
+	dumpSymsPath := os.Getenv("L4D2_PANEL_DUMP_SYMS_PATH")
+	if dumpSymsPath == "" {
+		dumpSymsPath = "/usr/local/bin/dump_syms"
+	}
+	if !plainFilesystemPath(dumpSymsPath) {
+		return Config{}, errors.New("L4D2_PANEL_DUMP_SYMS_PATH must be an absolute filesystem path")
+	}
 	c := Config{
 		ListenAddress:      listen,
 		PanelPort:          panelPort,
 		AcceleratorPort:    acceleratorPort,
 		StackwalkPath:      stackwalkPath,
+		DumpSymsPath:       dumpSymsPath,
 		GameHost:           gameHost,
 		DataRoot:           filepath.Clean(root),
 		CrashRetentionDays: retentionDays,

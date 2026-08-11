@@ -134,6 +134,7 @@ services:
       L4D2_PANEL_CRASH_REPORT_TOKEN: ${L4D2_PANEL_CRASH_REPORT_TOKEN:-}
       L4D2_PANEL_CRASH_RETENTION_DAYS: ${L4D2_PANEL_CRASH_RETENTION_DAYS:-90}
       L4D2_PANEL_STACKWALK_PATH: ${L4D2_PANEL_STACKWALK_PATH:-/usr/local/bin/minidump_stackwalk}
+      L4D2_PANEL_DUMP_SYMS_PATH: ${L4D2_PANEL_DUMP_SYMS_PATH:-/usr/local/bin/dump_syms}
       DOCKER_HOST: unix:///run/l4d2-panel/proxy.sock
       L4D2_PANEL_OVERLAY_SOCKET: /run/l4d2-panel-overlay/overlay.sock
       L4D2_PANEL_A2S_DEFENSE_SOCKET: /run/l4d2-panel-a2s-defense/a2s-defense.sock

@@ -112,11 +112,12 @@ func TestLoadParsesPanelPortAndStackwalkPath(t *testing.T) {
 	t.Setenv("L4D2_PANEL_GAME_HOST", "192.0.2.10")
 	t.Setenv("L4D2_PANEL_LISTEN", "127.0.0.1:9090")
 	t.Setenv("L4D2_PANEL_STACKWALK_PATH", "/opt/tools/minidump_stackwalk")
+	t.Setenv("L4D2_PANEL_DUMP_SYMS_PATH", "/opt/tools/dump_syms")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.PanelPort != 9090 || cfg.StackwalkPath != "/opt/tools/minidump_stackwalk" {
+	if cfg.PanelPort != 9090 || cfg.StackwalkPath != "/opt/tools/minidump_stackwalk" || cfg.DumpSymsPath != "/opt/tools/dump_syms" {
 		t.Fatalf("config=%+v", cfg)
 	}
 }
@@ -176,7 +177,7 @@ func TestLoadUsesStackwalkDefaultAndRejectsInvalidListenOrToolPath(t *testing.T)
 				}
 				return
 			}
-			if err != nil || cfg.PanelPort != test.port || cfg.StackwalkPath != test.toolOut {
+			if err != nil || cfg.PanelPort != test.port || cfg.StackwalkPath != test.toolOut || cfg.DumpSymsPath != "/usr/local/bin/dump_syms" {
 				t.Fatalf("config=%+v err=%v", cfg, err)
 			}
 		})

@@ -98,6 +98,7 @@ func TestControlServicesUseSharedUnixProxyAndPublishOnlyPanel(t *testing.T) {
 	assertContains(t, panel, "L4D2_PANEL_CRASH_REPORT_TOKEN: ${L4D2_PANEL_CRASH_REPORT_TOKEN:-}", "Panel crash report token")
 	assertContains(t, panel, "L4D2_PANEL_CRASH_RETENTION_DAYS: ${L4D2_PANEL_CRASH_RETENTION_DAYS:-90}", "Panel crash report retention")
 	assertContains(t, panel, "L4D2_PANEL_STACKWALK_PATH: ${L4D2_PANEL_STACKWALK_PATH:-/usr/local/bin/minidump_stackwalk}", "Panel stackwalk tool path")
+	assertContains(t, panel, "L4D2_PANEL_DUMP_SYMS_PATH: ${L4D2_PANEL_DUMP_SYMS_PATH:-/usr/local/bin/dump_syms}", "Panel dump_syms tool path")
 	assertContains(t, panel, "cap_add: [CHOWN]", "Panel CHOWN-only capability")
 	if strings.Contains(panel, "SYS_ADMIN") || strings.Contains(panel, "NET_ADMIN") || strings.Contains(panel, "SYS_PTRACE") || strings.Contains(panel, "privileged:") {
 		t.Fatal("Panel must not receive broad capabilities")

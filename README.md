@@ -86,6 +86,7 @@ Panel 使用 host network，直接监听 `0.0.0.0:${L4D2_PANEL_HTTP_PORT:-18081}
 | `L4D2_PANEL_CRASH_REPORT_TOKEN` | Accelerator 接收端共享 token；为空时关闭接收端 | 空 |
 | `L4D2_PANEL_CRASH_RETENTION_DAYS` | dump 与 metadata 保留天数，范围 `1..3650` | `90` |
 | `L4D2_PANEL_STACKWALK_PATH` | Panel 容器内 `minidump_stackwalk` 可执行文件路径 | `/usr/local/bin/minidump_stackwalk` |
+| `L4D2_PANEL_DUMP_SYMS_PATH` | Panel 容器内 Breakpad `dump_syms` 可执行文件路径 | `/usr/local/bin/dump_syms` |
 | `L4D2_PANEL_DOWNLOAD_PROXY` | GitHub Release、SteamCMD 等下载代理 | 空 |
 | `L4D2_PANEL_SECURE_COOKIE` | 是否只通过 HTTPS 发送会话 Cookie | `true` |
 
@@ -147,7 +148,7 @@ GET /api/crash-reports/<crash-id>/download?file=binary&artifact=<artifact-id>
 POST /api/crash-reports/<crash-id>/analyze
 ```
 
-Panel 的标准镜像在构建阶段从可配置的 Breakpad 仓库构建并内置 `minidump_stackwalk`，默认路径由 `L4D2_PANEL_STACKWALK_PATH` 指定；自定义镜像或该变量可以提供其它绝对路径。工具缺失、符号不足或 stackwalk 失败只会把分析状态标为失败，不会使 Accelerator 上传失败。仓库只内置 SourceMod 和 Metamod 符号，不分发 Valve/L4D2 游戏符号。
+Panel 的标准镜像在构建阶段从可配置的 Breakpad 仓库构建并内置 `minidump_stackwalk` 与 `dump_syms`，默认路径分别由 `L4D2_PANEL_STACKWALK_PATH` 和 `L4D2_PANEL_DUMP_SYMS_PATH` 指定；自定义镜像或这些变量可以提供其它绝对路径。Panel 启动时会扫描共享游戏 release 与实例 overlay 中的 ELF 模块，单个模块失败不会阻止其他模块；生成的符号按 Breakpad MODULE debug ID 去重，写入本地符号库并供 stackwalk 使用。工具缺失、符号不足或 stackwalk 失败只会把分析状态标为失败，不会使 Accelerator 上传失败。仓库只内置 SourceMod 和 Metamod 符号，不把 Valve/L4D2 生成物提交为公共内置资产。
 
 在实例设置中可分别开启“安装 Accelerator”和“自动分析崩溃”。开启后，首次部署、插件重装/更新、游戏重装和容器重建都会重新对账并安装 Accelerator 文件；下载地址以及是否使用 GitHub Release 加速链接在“系统设置 > Accelerator 下载”中配置，不锁定目标仓库或版本。AI 在“系统设置 > 崩溃 AI”中配置 OpenAI-compatible endpoint、model 和 API key；密钥加密保存，发送前只保留脱敏后的崩溃签名、metadata 摘要和 stackwalk 文本。
 

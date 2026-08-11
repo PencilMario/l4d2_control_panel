@@ -24,11 +24,13 @@ WORKDIR /src/breakpad
 RUN git clone --depth 1 --branch "${BREAKPAD_REF}" --recurse-submodules --shallow-submodules "${BREAKPAD_REPOSITORY}" .
 RUN ./configure --disable-silent-rules
 RUN make -j2 src/processor/minidump_stackwalk
+RUN make -j2 src/tools/linux/dump_syms/dump_syms
 
 FROM ${ALPINE_IMAGE}
 RUN addgroup -S -g 10001 panel && adduser -S -D -H -u 10001 -G panel panel && apk add --no-cache ca-certificates libstdc++ tzdata
 COPY --from=backend /out/panel /usr/local/bin/panel
 COPY --from=breakpad /src/breakpad/src/processor/minidump_stackwalk /usr/local/bin/minidump_stackwalk
+COPY --from=breakpad /src/breakpad/src/tools/linux/dump_syms/dump_syms /usr/local/bin/dump_syms
 COPY --from=web /src/web/dist /opt/panel/web
 USER panel
 ENV L4D2_PANEL_WEB_ROOT=/opt/panel/web L4D2_PANEL_DATA_ROOT=/srv/l4d2-panel

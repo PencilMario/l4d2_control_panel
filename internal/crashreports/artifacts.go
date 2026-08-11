@@ -33,6 +33,7 @@ type Artifact struct {
 	Architecture    string       `json:"architecture,omitempty"`
 	Basename        string       `json:"basename,omitempty"`
 	Builtin         bool         `json:"builtin,omitempty"`
+	Generated       bool         `json:"generated,omitempty"`
 	ReceivedAt      string       `json:"received_at"`
 }
 
