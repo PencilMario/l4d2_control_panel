@@ -115,7 +115,7 @@ services:
         ALPINE_IMAGE: ${ALPINE_IMAGE:-alpine:3.22}
         GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
     restart: unless-stopped
-    network_mode: bridge
+    network_mode: host
     depends_on:
       panel-init:
         condition: service_completed_successfully
@@ -126,10 +126,14 @@ services:
       a2s-defense-helper:
         condition: service_started
     environment:
-      L4D2_PANEL_LISTEN: 0.0.0.0:8080
+      L4D2_PANEL_LISTEN: 0.0.0.0:${L4D2_PANEL_HTTP_PORT:-18081}
+      L4D2_PANEL_ACCELERATOR_PORT: ${L4D2_PANEL_ACCELERATOR_PORT:-${L4D2_PANEL_HTTP_PORT:-18081}}
       L4D2_PANEL_GAME_HOST: ${L4D2_PANEL_GAME_HOST:?set the host address SRCDS answers on}
       L4D2_PANEL_DATA_ROOT: ${L4D2_PANEL_DATA_ROOT:-/srv/l4d2-panel}
       L4D2_PANEL_ADMIN_PASSWORD: ${L4D2_PANEL_ADMIN_PASSWORD:?set admin password}
+      L4D2_PANEL_CRASH_REPORT_TOKEN: ${L4D2_PANEL_CRASH_REPORT_TOKEN:-}
+      L4D2_PANEL_CRASH_RETENTION_DAYS: ${L4D2_PANEL_CRASH_RETENTION_DAYS:-90}
+      L4D2_PANEL_STACKWALK_PATH: ${L4D2_PANEL_STACKWALK_PATH:-/usr/local/bin/minidump_stackwalk}
       DOCKER_HOST: unix:///run/l4d2-panel/proxy.sock
       L4D2_PANEL_OVERLAY_SOCKET: /run/l4d2-panel-overlay/overlay.sock
       L4D2_PANEL_A2S_DEFENSE_SOCKET: /run/l4d2-panel-a2s-defense/a2s-defense.sock
@@ -138,8 +142,6 @@ services:
       HTTPS_PROXY: ${L4D2_PANEL_DOWNLOAD_PROXY:-}
       NO_PROXY: ${L4D2_PANEL_NO_PROXY:-localhost,127.0.0.1}
       L4D2_PANEL_SECURE_COOKIE: ${L4D2_PANEL_SECURE_COOKIE:-true}
-    ports:
-      - "${L4D2_PANEL_HTTP_PORT:-18081}:8080"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -150,7 +152,7 @@ services:
     cap_add: [CHOWN]
     security_opt: [no-new-privileges:true]
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/api/health"]
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:${L4D2_PANEL_HTTP_PORT:-18081}/api/health"]
       interval: 15s
       timeout: 5s
       retries: 5

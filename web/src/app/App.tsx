@@ -11,7 +11,9 @@ import {
   AlertCircle,
   ArrowDown,
   Ban,
+  Bot,
   Box,
+  Bug,
   CalendarClock,
   CheckCircle2,
   Clock,
@@ -54,6 +56,7 @@ import { api, normalizeInstance, type Job } from "../api/client";
 import { JobsPage } from "./JobsPage";
 import { JobLogsPage } from "./JobLogsPage";
 import { GameLogsPage } from "./GameLogsPage";
+import { CrashReportsPage } from "./CrashReportsPage";
 import {
   InstanceConfigModal,
   type ConfigurableInstance,
@@ -146,7 +149,7 @@ type Props = {
   initialPackageSources?: GitHubSource[];
   onAction?: (id: string, action: string) => void;
 };
-type Page = "overview" | "private" | "content" | "jobs" | "joblogs" | "gamelogs" | "schedules" | "settings";
+type Page = "overview" | "private" | "content" | "jobs" | "joblogs" | "gamelogs" | "crashes" | "schedules" | "settings";
 type HealthState = {
   status: "checking" | "online" | "error";
   message: string;
@@ -713,9 +716,11 @@ export function App({ initialInstances, initialPackages, initialPackageSources, 
               ? "任务日志"
               : page === "gamelogs"
                 ? "游戏日志分类预览"
-                : page === "schedules"
-                  ? "计划任务"
-                  : "系统设置";
+                : page === "crashes"
+                  ? "崩溃报告"
+                  : page === "schedules"
+                    ? "计划任务"
+                    : "系统设置";
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -766,6 +771,13 @@ export function App({ initialInstances, initialPackages, initialPackageSources, 
             disabled={!instances.length}
           >
             游戏日志
+          </Nav>
+          <Nav
+            active={page === "crashes"}
+            onClick={() => setPage("crashes")}
+            icon={<Bug />}
+          >
+            崩溃报告
           </Nav>
           <Nav
             active={page === "jobs" || page === "joblogs"}
@@ -860,6 +872,7 @@ export function App({ initialInstances, initialPackages, initialPackageSources, 
         {page === "jobs" && <JobsPage onOpenLogs={(selected) => { setLogJob(selected); setPage("joblogs"); }} />}
         {page === "joblogs" && logJob ? <JobLogsPage job={logJob} onBack={() => setPage("jobs")} /> : null}
         {page === "gamelogs" ? <GameLogsPage instances={instances} /> : null}
+        {page === "crashes" ? <CrashReportsPage instances={instances.map((instance) => ({ id: instance.id, name: instance.name }))} /> : null}
         {page === "schedules" && (
           <SchedulesPage instances={instances} packages={packages} />
         )}{" "}
@@ -1827,6 +1840,22 @@ function PlayerSummaryItem({ icon, label, value }: { icon: ReactNode; label: str
 function SettingsPage() {
   const [steam, setSteam] = useState(false);
   const [github, setGithub] = useState(false);
+  const [acceleratorDownloadURL, setAcceleratorDownloadURL] = useState("");
+  const [draftAcceleratorDownloadURL, setDraftAcceleratorDownloadURL] = useState("");
+  const [acceleratorGitHubProxy, setAcceleratorGitHubProxy] = useState(false);
+  const [acceleratorSettingsReady, setAcceleratorSettingsReady] = useState(false);
+  const [savingAcceleratorSettings, setSavingAcceleratorSettings] = useState(false);
+  const [acceleratorSettingsNotice, setAcceleratorSettingsNotice] = useState("");
+  const [crashAIEndpoint, setCrashAIEndpoint] = useState("");
+  const [draftCrashAIEndpoint, setDraftCrashAIEndpoint] = useState("");
+  const [crashAIModel, setCrashAIModel] = useState("");
+  const [draftCrashAIModel, setDraftCrashAIModel] = useState("");
+  const [crashAIKeySet, setCrashAIKeySet] = useState(false);
+  const [draftCrashAIKey, setDraftCrashAIKey] = useState("");
+  const [clearCrashAIKey, setClearCrashAIKey] = useState(false);
+  const [crashAISettingsReady, setCrashAISettingsReady] = useState(false);
+  const [savingCrashAISettings, setSavingCrashAISettings] = useState(false);
+  const [crashAISettingsNotice, setCrashAISettingsNotice] = useState("");
   const [confirmedReleaseAccelerator, setConfirmedReleaseAccelerator] = useState("");
   const [draftReleaseAccelerator, setDraftReleaseAccelerator] = useState("");
   const [releaseSettingsReady, setReleaseSettingsReady] = useState(false);
@@ -1853,6 +1882,27 @@ function SettingsPage() {
       .catch((reason) => setSettingsError(errorMessage(reason)));
     api<any>("/api/settings/github-token")
       .then((x) => setGithub(x.configured))
+      .catch((reason) => setSettingsError(errorMessage(reason)));
+    api<{ download_url?: string; use_github_proxy?: boolean }>("/api/settings/accelerator")
+      .then((settings) => {
+        const downloadURL = typeof settings.download_url === "string" ? settings.download_url : "";
+        setAcceleratorDownloadURL(downloadURL);
+        setDraftAcceleratorDownloadURL(downloadURL);
+        setAcceleratorGitHubProxy(settings.use_github_proxy === true);
+        setAcceleratorSettingsReady(true);
+      })
+      .catch((reason) => setSettingsError(errorMessage(reason)));
+    api<{ endpoint?: string; model?: string; api_key_set?: boolean }>("/api/settings/crash-analysis")
+      .then((settings) => {
+        const endpoint = typeof settings.endpoint === "string" ? settings.endpoint : "";
+        const model = typeof settings.model === "string" ? settings.model : "";
+        setCrashAIEndpoint(endpoint);
+        setDraftCrashAIEndpoint(endpoint);
+        setCrashAIModel(model);
+        setDraftCrashAIModel(model);
+        setCrashAIKeySet(settings.api_key_set === true);
+        setCrashAISettingsReady(true);
+      })
       .catch((reason) => setSettingsError(errorMessage(reason)));
     api<{ accelerator_url: string }>("/api/settings/github-releases")
       .then((settings) => {
@@ -1961,6 +2011,77 @@ function SettingsPage() {
       setSettingsError(errorMessage(reason));
     } finally {
       setSavingReleaseSettings(false);
+    }
+  };
+  const saveAcceleratorSettings = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (settingsActions.isLocked("accelerator")) return;
+    const value = draftAcceleratorDownloadURL.trim();
+    if (value !== "") {
+      try {
+        const parsed = new URL(value);
+        if ((parsed.protocol !== "https:" && parsed.protocol !== "http:") || parsed.search || parsed.hash || parsed.username || parsed.password) throw new Error();
+      } catch {
+        setSettingsError("Accelerator 下载地址必须是无凭据、查询参数和片段的 HTTP 或 HTTPS 地址");
+        return;
+      }
+    }
+    setSettingsError("");
+    setAcceleratorSettingsNotice("");
+    setSavingAcceleratorSettings(true);
+    try {
+      await settingsActions.run("accelerator", async () => {
+        const saved = await api<{ download_url: string; use_github_proxy: boolean }>("/api/settings/accelerator", {
+          method: "PUT",
+          body: JSON.stringify({ download_url: value, use_github_proxy: acceleratorGitHubProxy }),
+        });
+        setAcceleratorDownloadURL(saved.download_url);
+        setDraftAcceleratorDownloadURL(saved.download_url);
+        setAcceleratorGitHubProxy(saved.use_github_proxy);
+        setAcceleratorSettingsNotice("Accelerator 下载设置已保存");
+      });
+    } catch (reason) {
+      setDraftAcceleratorDownloadURL(acceleratorDownloadURL);
+      setSettingsError(errorMessage(reason));
+    } finally {
+      setSavingAcceleratorSettings(false);
+    }
+  };
+  const saveCrashAISettings = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (settingsActions.isLocked("crash-ai")) return;
+    setSettingsError("");
+    setCrashAISettingsNotice("");
+    setSavingCrashAISettings(true);
+    try {
+      await settingsActions.run("crash-ai", async () => {
+        const body: { endpoint: string; model: string; api_key?: string; clear_api_key?: boolean } = {
+          endpoint: draftCrashAIEndpoint.trim(),
+          model: draftCrashAIModel.trim(),
+        };
+        if (draftCrashAIKey.trim()) body.api_key = draftCrashAIKey.trim();
+        else if (clearCrashAIKey) body.clear_api_key = true;
+        const saved = await api<{ endpoint: string; model: string; api_key_set: boolean }>("/api/settings/crash-analysis", {
+          method: "PUT",
+          body: JSON.stringify(body),
+        });
+        setCrashAIEndpoint(saved.endpoint);
+        setDraftCrashAIEndpoint(saved.endpoint);
+        setCrashAIModel(saved.model);
+        setDraftCrashAIModel(saved.model);
+        setCrashAIKeySet(saved.api_key_set);
+        setDraftCrashAIKey("");
+        setClearCrashAIKey(false);
+        setCrashAISettingsNotice("崩溃 AI 设置已保存");
+      });
+    } catch (reason) {
+      setDraftCrashAIEndpoint(crashAIEndpoint);
+      setDraftCrashAIModel(crashAIModel);
+      setDraftCrashAIKey("");
+      setClearCrashAIKey(false);
+      setSettingsError(errorMessage(reason));
+    } finally {
+      setSavingCrashAISettings(false);
     }
   };
   const saveJobSettings = async (e: FormEvent<HTMLFormElement>) => {
@@ -2084,6 +2205,28 @@ function SettingsPage() {
           <p>用于突破 GitHub REST API 速率限制并访问私有插件发布仓库。</p>
           <div className="settings-fields"><label>Personal Access Token (ghp_...)<input name="token" type="password" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" required /></label></div>
           <footer><small>未配置时公开仓库仍可受限访问</small><button className="settings-save" disabled={settingsActions.pending.has("github")} aria-busy={settingsActions.pending.has("github")}>{settingsActions.pending.has("github") ? <RefreshCw /> : <Save />}<span>{settingsActions.pending.has("github") ? "保存中…" : "更新 GitHub 令牌"}</span></button></footer>
+        </form>
+        <form className="settings-card" onSubmit={saveAcceleratorSettings}>
+          <div className="settings-card-title"><h3><Download />Accelerator 下载源</h3><span className={acceleratorDownloadURL ? "configured" : "unconfigured"}>{acceleratorDownloadURL ? "已配置" : "未配置"}</span></div>
+          <p>为实例自动安装 Accelerator。地址支持可配置的 HTTP 或 HTTPS 下载源，安装时会写入本面板的上传服务。</p>
+          <div className="settings-fields">
+            <label>Accelerator 下载地址<input aria-label="Accelerator 下载地址" type="url" placeholder="https://example.com/accelerator.zip" value={draftAcceleratorDownloadURL} disabled={!acceleratorSettingsReady || savingAcceleratorSettings} onChange={(event) => { setDraftAcceleratorDownloadURL(event.target.value); setAcceleratorSettingsNotice(""); }} /></label>
+            <label className="settings-toggle"><input type="checkbox" checked={acceleratorGitHubProxy} disabled={!acceleratorSettingsReady || savingAcceleratorSettings} onChange={(event) => setAcceleratorGitHubProxy(event.target.checked)} /><span><b>启用 GitHub 代理链接加速</b><small>仅替换 Accelerator Release 下载链接</small></span></label>
+          </div>
+          {acceleratorSettingsNotice ? <p className="settings-notice" role="status">{acceleratorSettingsNotice}</p> : null}
+          <footer><small>默认使用官方 Linux 包；保存空地址可关闭自动安装。</small><button className="settings-save" type="submit" aria-label="保存 Accelerator 下载设置" disabled={!acceleratorSettingsReady || savingAcceleratorSettings} aria-busy={savingAcceleratorSettings}>{savingAcceleratorSettings ? <RefreshCw /> : <Save />}<span>{savingAcceleratorSettings ? "保存中…" : "保存 Accelerator 设置"}</span></button></footer>
+        </form>
+        <form className="settings-card" onSubmit={saveCrashAISettings}>
+          <div className="settings-card-title"><h3><Bot />崩溃 AI 分析</h3><span className={crashAIKeySet && crashAIEndpoint && crashAIModel ? "configured" : "unconfigured"}>{crashAIKeySet && crashAIEndpoint && crashAIModel ? "已配置" : "未配置"}</span></div>
+          <p>AI 请求只发送脱敏后的崩溃签名、metadata 摘要和 stackwalk 文本，支持本机 OpenAI-compatible 服务。</p>
+          <div className="settings-fields">
+            <label>Endpoint<input aria-label="崩溃 AI Endpoint" type="url" placeholder="http://127.0.0.1:11434/v1" value={draftCrashAIEndpoint} disabled={!crashAISettingsReady || savingCrashAISettings} onChange={(event) => setDraftCrashAIEndpoint(event.target.value)} /></label>
+            <label>Model<input aria-label="崩溃 AI Model" value={draftCrashAIModel} placeholder="local-model" disabled={!crashAISettingsReady || savingCrashAISettings} onChange={(event) => setDraftCrashAIModel(event.target.value)} /></label>
+            <label>API key<input aria-label="崩溃 AI API key" type="password" autoComplete="new-password" placeholder={crashAIKeySet ? "已配置，留空保持不变" : "可选"} value={draftCrashAIKey} disabled={!crashAISettingsReady || savingCrashAISettings} onChange={(event) => { setDraftCrashAIKey(event.target.value); setClearCrashAIKey(false); }} /></label>
+            {crashAIKeySet ? <label className="settings-toggle"><input type="checkbox" checked={clearCrashAIKey} disabled={!crashAISettingsReady || savingCrashAISettings || Boolean(draftCrashAIKey)} onChange={(event) => setClearCrashAIKey(event.target.checked)} /><span><b>清除已保存 API key</b><small>密钥仅返回配置状态，不会显示明文</small></span></label> : null}
+          </div>
+          {crashAISettingsNotice ? <p className="settings-notice" role="status">{crashAISettingsNotice}</p> : null}
+          <footer><small><Lock />Endpoint、Model 与密钥状态</small><button className="settings-save" type="submit" aria-label="保存崩溃 AI 设置" disabled={!crashAISettingsReady || savingCrashAISettings} aria-busy={savingCrashAISettings}>{savingCrashAISettings ? <RefreshCw /> : <Save />}<span>{savingCrashAISettings ? "保存中…" : "保存 AI 设置"}</span></button></footer>
         </form>
         <form className="settings-card" onSubmit={saveReleaseSettings}>
           <div className="settings-card-title"><h3><Download />GitHub Release 下载</h3><span className={confirmedReleaseAccelerator ? "configured" : "unconfigured"}>{confirmedReleaseAccelerator ? "已启用加速" : "GitHub 直连"}</span></div>

@@ -3,3 +3,14 @@
 .playwright-mcp/
 .gotmp-merge/
 .env
+.tmp-accelerator-fix-*/
+accelerator-crash-test-*.tar.gz
+accelerator-upstream-inspect-*/
+accelerator-staging-jobs-*.png
+accelerator-static-precheck.png
+anke-accelerator-*.png
+anke-deployment-overview-*.png
+remote-anke-jobs-page.png
+web/*.tsbuildinfo
+web/vite.config.js
+web/vite.config.d.ts

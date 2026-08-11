@@ -64,7 +64,7 @@ func New(repo Repository, key []byte) (*Service, error) {
 	return &Service{repo: repo, aead: aead}, nil
 }
 func (s *Service) Set(ctx context.Context, name, value string) error {
-	allowed := map[string]bool{"github_token": true, "steam_username": true, "steam_password": true}
+	allowed := map[string]bool{"github_token": true, "steam_username": true, "steam_password": true, "accelerator_ai_api_key": true}
 	if !allowed[name] || value == "" {
 		return errors.New("unsupported or empty secret")
 	}

@@ -27,7 +27,7 @@ func TestControlServicesUseSharedUnixProxyAndPublishOnlyPanel(t *testing.T) {
 		}
 	}
 	slices.Sort(hostNetworkServices)
-	if !slices.Equal(hostNetworkServices, []string{"a2s-defense-helper", "socket-proxy"}) {
+	if !slices.Equal(hostNetworkServices, []string{"a2s-defense-helper", "panel", "socket-proxy"}) {
 		t.Fatalf("host networking services = %v", hostNetworkServices)
 	}
 
@@ -54,10 +54,7 @@ func TestControlServicesUseSharedUnixProxyAndPublishOnlyPanel(t *testing.T) {
 		t.Fatal("socket-proxy must add NET_RAW only and receive no broad privilege")
 	}
 
-	if strings.Contains(panel, "network_mode: host") {
-		t.Fatal("Panel must not use host networking")
-	}
-	assertContains(t, panel, "network_mode: bridge", "Panel default bridge networking for host-gateway A2S")
+	assertContains(t, panel, "network_mode: host", "Panel host networking for loopback-only Accelerator ingress")
 	if strings.Contains(panel, "/var/run/docker.sock") {
 		t.Fatal("Panel must never mount the raw Docker socket")
 	}
@@ -94,8 +91,22 @@ func TestControlServicesUseSharedUnixProxyAndPublishOnlyPanel(t *testing.T) {
 	assertContains(t, panel, "L4D2_PANEL_A2S_DEFENSE_SOCKET: /run/l4d2-panel-a2s-defense/a2s-defense.sock", "Panel A2S defense socket path")
 	assertContains(t, panel, "panel-proxy-run:/run/l4d2-panel", "Panel shared run volume")
 	assertContains(t, panel, "DOCKER_HOST: unix:///run/l4d2-panel/proxy.sock", "Panel Unix Docker host")
-	assertContains(t, panel, `ports:
-      - "${L4D2_PANEL_HTTP_PORT:-18081}:8080"`, "Panel published HTTP port")
+	if strings.Contains(panel, "ports:") {
+		t.Fatal("Panel host networking must not use Docker port mappings")
+	}
+	assertContains(t, panel, "L4D2_PANEL_LISTEN: 0.0.0.0:${L4D2_PANEL_HTTP_PORT:-18081}", "Panel host HTTP listener")
+	assertContains(t, panel, "L4D2_PANEL_CRASH_REPORT_TOKEN: ${L4D2_PANEL_CRASH_REPORT_TOKEN:-}", "Panel crash report token")
+	assertContains(t, panel, "L4D2_PANEL_CRASH_RETENTION_DAYS: ${L4D2_PANEL_CRASH_RETENTION_DAYS:-90}", "Panel crash report retention")
+	assertContains(t, panel, "L4D2_PANEL_STACKWALK_PATH: ${L4D2_PANEL_STACKWALK_PATH:-/usr/local/bin/minidump_stackwalk}", "Panel stackwalk tool path")
+	assertContains(t, panel, "cap_add: [CHOWN]", "Panel CHOWN-only capability")
+	if strings.Contains(panel, "SYS_ADMIN") || strings.Contains(panel, "NET_ADMIN") || strings.Contains(panel, "SYS_PTRACE") || strings.Contains(panel, "privileged:") {
+		t.Fatal("Panel must not receive broad capabilities")
+	}
+	for name, block := range services {
+		if name != "panel" && strings.Contains(block, "panel/crash-dumps") {
+			t.Fatalf("game/control service %q must not mount panel crash reports", name)
+		}
+	}
 	assertContains(t, panel, "L4D2_PANEL_GAME_HOST: ${L4D2_PANEL_GAME_HOST:?", "required SRCDS host")
 	assertContains(t, panel, `extra_hosts:
       - "host.docker.internal:host-gateway"`, "Panel host gateway mapping for A2S")
@@ -125,6 +136,20 @@ func TestSocketProxyImageDoesNotExposeRetiredTCPPort(t *testing.T) {
 	if strings.Contains(string(raw), "EXPOSE") {
 		t.Fatal("socket-proxy image must not advertise a TCP port")
 	}
+}
+
+func TestPanelImageContainsConfiguredStackwalkTool(t *testing.T) {
+	raw, err := os.ReadFile("Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dockerfile := string(raw)
+	assertContains(t, dockerfile, "FROM ${ALPINE_IMAGE} AS breakpad", "Breakpad build stage")
+	assertContains(t, dockerfile, "git clone --depth 1 --branch", "configurable Breakpad source")
+	assertContains(t, dockerfile, "make -j2 src/processor/minidump_stackwalk", "Breakpad stackwalk build")
+	assertContains(t, dockerfile, "COPY --from=breakpad /src/breakpad/src/processor/minidump_stackwalk", "Breakpad stackwalk installation")
+	assertContains(t, dockerfile, "minidump_stackwalk", "Breakpad stackwalk binary")
+	assertContains(t, dockerfile, "libstdc++", "Breakpad runtime library")
 }
 
 func TestA2SDefenseImageBuildsOnlyItsDependencyClosure(t *testing.T) {

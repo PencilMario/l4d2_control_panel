@@ -48,6 +48,16 @@ type fakeDeployer struct {
 	err    error
 }
 
+type fakeAccelerator struct {
+	events *[]string
+	err    error
+}
+
+func (a fakeAccelerator) Ensure(_ context.Context, instance domain.Instance) error {
+	*a.events = append(*a.events, "accelerator:"+instance.ID)
+	return a.err
+}
+
 type sharedStateRepo struct{ state domain.SharedGameState }
 
 func (r sharedStateRepo) SharedGameState(context.Context) (domain.SharedGameState, error) {
@@ -137,11 +147,12 @@ func TestPrepareDeploysSelectedPackage(t *testing.T) {
 		Overlay:     fakeOverlay{events: &events},
 		Packages:    fakePackages{item: content.PackageVersion{ID: "pkg", ArchivePath: "pkg.zip", Version: "v1"}},
 		Deployer:    fakeDeployer{events: &events},
+		Accelerator: fakeAccelerator{events: &events},
 	}
 	if err := service.Prepare(context.Background(), repo.instance); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(events, ",") != "ensure:one:release-1,deploy" {
+	if strings.Join(events, ",") != "ensure:one:release-1,deploy,accelerator:one" {
 		t.Fatalf("events=%v", events)
 	}
 	if repo.instance.PackageVersion != "pkg" {

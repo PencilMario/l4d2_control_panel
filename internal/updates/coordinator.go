@@ -3,6 +3,7 @@ package updates
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
@@ -20,10 +21,14 @@ type PackageInstanceRepository interface {
 	Instance(context.Context, string) (domain.Instance, error)
 	UpdateInstance(context.Context, domain.Instance) error
 }
+type AcceleratorEnsurer interface {
+	Ensure(context.Context, domain.Instance) error
+}
 type Coordinator struct {
-	Lifecycle Lifecycle
-	Deployer  Deployer
-	Instances PackageInstanceRepository
+	Lifecycle   Lifecycle
+	Deployer    Deployer
+	Instances   PackageInstanceRepository
+	Accelerator AcceleratorEnsurer
 }
 
 func (c Coordinator) ApplyPackage(ctx context.Context, instanceID string, item content.PackageVersion, mode Mode) error {
@@ -39,6 +44,9 @@ func (c Coordinator) ApplyPackage(ctx context.Context, instanceID string, item c
 		}
 		if err := transaction.Commit(); err != nil {
 			return errors.Join(err, transaction.Rollback())
+		}
+		if err := c.ensureAccelerator(ctx, instance); err != nil {
+			return err
 		}
 		return c.markApplied(ctx, instanceID, item.ID)
 	}
@@ -71,7 +79,20 @@ func (c Coordinator) ApplyPackage(ctx context.Context, instanceID string, item c
 		}
 		return errors.Join(commitErr, transaction.Rollback())
 	}
+	if err := c.ensureAccelerator(ctx, instance); err != nil {
+		return err
+	}
 	return c.markApplied(ctx, instanceID, item.ID)
+}
+
+func (c Coordinator) ensureAccelerator(ctx context.Context, instance domain.Instance) error {
+	if c.Accelerator == nil {
+		return nil
+	}
+	if err := c.Accelerator.Ensure(ctx, instance); err != nil {
+		return fmt.Errorf("ensure Accelerator after package deployment: %w", err)
+	}
+	return nil
 }
 
 func (c Coordinator) rollbackStarted(ctx context.Context, instanceID string, transaction Deployment, cause error) error {

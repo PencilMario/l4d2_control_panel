@@ -87,6 +87,8 @@ export const normalizeInstance = (value: any) => ({
   source_id: value.source_id ?? value.PackageSourceID ?? "",
   applied_package_id:
     value.applied_package_id ?? value.PackageVersion ?? "",
+  accelerator_enabled: value.accelerator_enabled ?? value.AcceleratorEnabled ?? false,
+  auto_crash_analysis: value.auto_crash_analysis ?? value.AutoCrashAnalysis ?? false,
   players: value.players ?? null,
   cpu: value.cpu ?? null,
   memory: value.memory ?? null,

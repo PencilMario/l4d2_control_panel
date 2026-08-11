@@ -274,7 +274,7 @@ func TestInstanceCRUD(t *testing.T) {
 	}
 	defer s.Close()
 	ctx := context.Background()
-	want := domain.Instance{ID: "instance-1", NodeID: "local", Name: "Coop One", GamePort: 27015, StartMap: "c2m1_highway", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "l4d2-server-runtime:latest", DesiredState: domain.StateStopped, ActualState: domain.StateUninstalled}
+	want := domain.Instance{ID: "instance-1", NodeID: "local", Name: "Coop One", GamePort: 27015, StartMap: "c2m1_highway", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "l4d2-server-runtime:latest", DesiredState: domain.StateStopped, ActualState: domain.StateUninstalled, AcceleratorEnabled: true, AutoCrashAnalysis: true}
 	if err := s.CreateInstance(ctx, want); err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func TestInstanceCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Name != want.Name || got.NodeID != "local" || got.GamePort != 27015 {
+	if got.Name != want.Name || got.NodeID != "local" || got.GamePort != 27015 || !got.AcceleratorEnabled || !got.AutoCrashAnalysis {
 		t.Fatalf("unexpected instance: %#v", got)
 	}
 	got.Name = "Renamed"
@@ -403,7 +403,7 @@ func TestMigrationBackfillsSelectedPackageFromAppliedPackage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.SelectedPackageID != "package-a" || got.PackageVersion != "package-a" {
+	if got.SelectedPackageID != "package-a" || got.PackageVersion != "package-a" || got.AcceleratorEnabled || got.AutoCrashAnalysis {
 		t.Fatalf("instance=%#v", got)
 	}
 }

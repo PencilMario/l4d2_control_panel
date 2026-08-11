@@ -3,6 +3,7 @@ package updates
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
@@ -31,14 +32,15 @@ type ReinstallOptions struct {
 	Package bool
 }
 type GameCoordinator struct {
-	Root      string
-	Instances InstanceRepository
-	Lifecycle Lifecycle
-	Updater   GameUpdater
-	Private   PrivateApplier
-	Packages  PackageSource
-	Sources   SourceSynchronizer
-	Deployer  Deployer
+	Root        string
+	Instances   InstanceRepository
+	Lifecycle   Lifecycle
+	Updater     GameUpdater
+	Private     PrivateApplier
+	Packages    PackageSource
+	Sources     SourceSynchronizer
+	Deployer    Deployer
+	Accelerator AcceleratorEnsurer
 }
 
 func (c GameCoordinator) Update(ctx context.Context, id string) error {
@@ -118,6 +120,10 @@ func (c GameCoordinator) Reinstall(ctx context.Context, id string, options Reins
 		}
 	} else if err := c.Private.Apply(ctx, id); err != nil {
 		return c.fault(ctx, id, err)
+	} else if c.Accelerator != nil {
+		if err := c.Accelerator.Ensure(ctx, instance); err != nil {
+			return c.fault(ctx, id, fmt.Errorf("ensure Accelerator after private deployment: %w", err))
+		}
 	}
 	latest, err := c.Instances.Instance(ctx, id)
 	if err != nil {
@@ -156,6 +162,11 @@ func (c GameCoordinator) Reinstall(ctx context.Context, id string, options Reins
 		latest, err = c.Instances.Instance(ctx, id)
 		if err != nil {
 			return err
+		}
+		if c.Accelerator != nil {
+			if err := c.Accelerator.Ensure(ctx, latest); err != nil {
+				return c.fault(ctx, id, fmt.Errorf("ensure Accelerator after package deployment: %w", err))
+			}
 		}
 		latest.PackageVersion = item.ID
 		if err := c.Instances.UpdateInstance(ctx, latest); err != nil {

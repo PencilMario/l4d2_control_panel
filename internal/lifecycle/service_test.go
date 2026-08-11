@@ -191,6 +191,18 @@ type fakeLogPreparer struct {
 	check  func() error
 }
 
+type fakeAccelerator struct {
+	events *[]string
+	err    error
+}
+
+func (a fakeAccelerator) Ensure(_ context.Context, instance domain.Instance) error {
+	if a.events != nil {
+		*a.events = append(*a.events, "accelerator:"+instance.ID)
+	}
+	return a.err
+}
+
 func (p fakeLogPreparer) Prepare(_ context.Context, instanceID string) error {
 	*p.events = append(*p.events, "logs:"+instanceID)
 	if p.check != nil {
@@ -221,7 +233,7 @@ func TestStartPreparesSelectedPackageBeforeCreatingContainer(t *testing.T) {
 	}
 	events := []string{}
 	engine := &fakeEngine{events: &events}
-	service := New(db, engine, freePorts{}, root, WithProvisioner(fakeProvisioner{repo: db, events: &events}), WithLogPreparer(fakeLogPreparer{events: &events}))
+	service := New(db, engine, freePorts{}, root, WithProvisioner(fakeProvisioner{repo: db, events: &events}), WithLogPreparer(fakeLogPreparer{events: &events}), WithAccelerator(fakeAccelerator{events: &events}))
 	sink := &lifecycleLogSink{}
 	jobManager := jobs.NewManager(jobs.WithLogSink(sink))
 	if _, err := jobManager.Start(context.Background(), value.ID, "start", func(ctx context.Context, _ jobs.Reporter) error {
@@ -232,7 +244,7 @@ func TestStartPreparesSelectedPackageBeforeCreatingContainer(t *testing.T) {
 	if err := jobManager.Wait(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(events, ",") != "prepare,logs:prepared,create,start" {
+	if strings.Join(events, ",") != "prepare,logs:prepared,accelerator:prepared,create,start" {
 		t.Fatalf("events=%v", events)
 	}
 	got, err := db.Instance(context.Background(), value.ID)
@@ -247,6 +259,32 @@ func TestStartPreparesSelectedPackageBeforeCreatingContainer(t *testing.T) {
 		if !strings.Contains(logs, want) {
 			t.Fatalf("logs=%q missing %q", logs, want)
 		}
+	}
+}
+
+func TestStartDoesNotCreateContainerWhenAcceleratorEnsureFails(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	value := domain.Instance{ID: "failed-accelerator", NodeID: "local", Name: "failed accelerator", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", ActualState: domain.StateStopped}
+	if err := db.CreateInstance(context.Background(), value); err != nil {
+		t.Fatal(err)
+	}
+	engine := &fakeEngine{}
+	want := errors.New("accelerator unavailable")
+	service := New(db, engine, freePorts{}, root, WithAccelerator(fakeAccelerator{err: want}))
+	if err := service.Start(context.Background(), value.ID); !errors.Is(err, want) {
+		t.Fatalf("err=%v", err)
+	}
+	got, err := db.Instance(context.Background(), value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if engine.created || engine.started || got.ActualState != domain.StateFaulted {
+		t.Fatalf("engine=%#v instance=%#v", engine, got)
 	}
 }
 

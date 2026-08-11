@@ -43,6 +43,16 @@ func (p privateApplier) Apply(context.Context, string) error {
 	return nil
 }
 
+type gameAccelerator struct {
+	events *[]string
+	err    error
+}
+
+func (a gameAccelerator) Ensure(_ context.Context, instance domain.Instance) error {
+	*a.events = append(*a.events, "accelerator:"+instance.ID)
+	return a.err
+}
+
 type orderedLife struct{ events *[]string }
 
 func (l orderedLife) Stop(context.Context, string) error {
@@ -99,16 +109,17 @@ func TestGameReinstallPackageOnlyForcesFullDeployment(t *testing.T) {
 	events := []string{}
 	repo := &gameRepo{instance: domain.Instance{ID: "abc", SelectedPackageID: "pkg", PackageVersion: "pkg", DesiredState: domain.StateStopped, ActualState: domain.StateStopped}}
 	coordinator := GameCoordinator{
-		Instances: repo,
-		Lifecycle: orderedLife{&events},
-		Private:   privateApplier{&events},
-		Packages:  gamePackages{item: content.PackageVersion{ID: "pkg", ArchivePath: "package.zip", Version: "v1"}},
-		Deployer:  gameDeployer{events: &events},
+		Instances:   repo,
+		Lifecycle:   orderedLife{&events},
+		Private:     privateApplier{&events},
+		Packages:    gamePackages{item: content.PackageVersion{ID: "pkg", ArchivePath: "package.zip", Version: "v1"}},
+		Deployer:    gameDeployer{events: &events},
+		Accelerator: gameAccelerator{events: &events},
 	}
 	if err := coordinator.Reinstall(context.Background(), "abc", ReinstallOptions{Package: true}); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(events, ","); got != "deploy:full,commit" {
+	if got := strings.Join(events, ","); got != "deploy:full,commit,accelerator:abc" {
 		t.Fatalf("events=%s", got)
 	}
 	if repo.instance.PackageVersion != "pkg" {

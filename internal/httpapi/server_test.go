@@ -745,7 +745,7 @@ func waitForJob(t *testing.T, manager *jobs.Manager, id string) jobs.Job {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		job, ok := manager.Get(id)
-		if ok && (job.Status == jobs.Succeeded || job.Status == jobs.Failed) {
+		if ok && (job.Status == jobs.Succeeded || job.Status == jobs.Failed || job.Status == jobs.Interrupted) {
 			return job
 		}
 		time.Sleep(time.Millisecond)
@@ -1779,6 +1779,73 @@ func TestInstanceActionRunsAsPersistentJob(t *testing.T) {
 	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"succeeded"`)) {
 		t.Fatalf("job: %d %s", w.Code, w.Body.String())
 	}
+}
+
+func TestJobCancellation(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	manager := jobs.NewPersistentManager(db)
+	s = New(db, s.auth, WithOperations(nil, manager))
+	cookie := loginCookie(t, s)
+	started := make(chan struct{})
+	job, err := manager.Start(context.Background(), "", "long_task", func(ctx context.Context, _ jobs.Reporter) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+
+	response := authenticatedJSON(t, s, cookie, http.MethodPost, "/api/jobs/"+job.ID+"/cancel", "")
+	if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"Status":"running"`) {
+		t.Fatalf("cancel status=%d body=%s", response.Code, response.Body.String())
+	}
+	finished := waitForJob(t, manager, job.ID)
+	if finished.Status != jobs.Interrupted || finished.Error != "任务已由管理员强制停止" {
+		t.Fatalf("finished=%#v", finished)
+	}
+	detail := authenticatedJSON(t, s, cookie, http.MethodGet, "/api/jobs/"+job.ID, "")
+	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"Kind":"interrupted"`) {
+		t.Fatalf("detail status=%d body=%s", detail.Code, detail.Body.String())
+	}
+}
+
+func TestJobCancellationRejectsMissingAndNonRunningJobs(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	manager := jobs.NewManager()
+	s = New(db, s.auth, WithOperations(nil, manager))
+	cookie := loginCookie(t, s)
+
+	missing := authenticatedJSON(t, s, cookie, http.MethodPost, "/api/jobs/missing/cancel", "")
+	if missing.Code != http.StatusNotFound || !strings.Contains(missing.Body.String(), `"code":"job_not_found"`) {
+		t.Fatalf("missing status=%d body=%s", missing.Code, missing.Body.String())
+	}
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	first, err := manager.Start(context.Background(), "same", "first", func(context.Context, jobs.Reporter) error {
+		close(started)
+		<-release
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	pending, err := manager.Start(context.Background(), "same", "second", func(context.Context, jobs.Reporter) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := authenticatedJSON(t, s, cookie, http.MethodPost, "/api/jobs/"+pending.ID+"/cancel", "")
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"job_not_running"`) {
+		t.Fatalf("pending status=%d body=%s", response.Code, response.Body.String())
+	}
+	close(release)
+	waitForJob(t, manager, first.ID)
+	waitForJob(t, manager, pending.ID)
 }
 
 func TestJobDetailIncludesEventsAndSummariesDoNot(t *testing.T) {

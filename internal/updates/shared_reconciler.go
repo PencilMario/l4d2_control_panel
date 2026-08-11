@@ -3,6 +3,7 @@ package updates
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
@@ -22,8 +23,9 @@ type SharedGameRebuilder struct {
 	Sources  interface {
 		GitHubSource(context.Context, string) (domain.GitHubSource, error)
 	}
-	Deployer FullPackageApplier
-	Private  PrivateApplier
+	Deployer    FullPackageApplier
+	Private     PrivateApplier
+	Accelerator AcceleratorEnsurer
 }
 
 func (r SharedGameRebuilder) Unmount(ctx context.Context, instance domain.Instance, releaseID string) error {
@@ -83,5 +85,13 @@ func (r SharedGameRebuilder) Switch(ctx context.Context, instance domain.Instanc
 	if err := r.Deployer.Apply(ctx, instance.ID, item.ArchivePath, item.Version, Full); err != nil {
 		return err
 	}
-	return r.Private.Apply(ctx, instance.ID)
+	if err := r.Private.Apply(ctx, instance.ID); err != nil {
+		return err
+	}
+	if r.Accelerator != nil {
+		if err := r.Accelerator.Ensure(ctx, instance); err != nil {
+			return fmt.Errorf("ensure Accelerator after shared game rebuild: %w", err)
+		}
+	}
+	return nil
 }

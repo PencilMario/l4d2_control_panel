@@ -46,6 +46,16 @@ type fakeDeployer struct {
 	commitFail bool
 }
 
+type fakeAccelerator struct {
+	events *[]string
+	err    error
+}
+
+func (a fakeAccelerator) Ensure(_ context.Context, instance domain.Instance) error {
+	*a.events = append(*a.events, "accelerator:"+instance.ID)
+	return a.err
+}
+
 type fakeDeployment struct {
 	life       *fakeLifecycle
 	commitFail bool
@@ -73,12 +83,12 @@ func (f fakeDeployer) Begin(context.Context, string, string, string, Mode) (Depl
 func TestFullCoordinatorStopsDeploysAndStarts(t *testing.T) {
 	life := &fakeLifecycle{}
 	repo := &packageRepo{instance: domain.Instance{ID: "abc", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}}
-	coordinator := Coordinator{Instances: repo, Lifecycle: life, Deployer: fakeDeployer{life: life}}
+	coordinator := Coordinator{Instances: repo, Lifecycle: life, Deployer: fakeDeployer{life: life}, Accelerator: fakeAccelerator{events: &life.events}}
 	err := coordinator.ApplyPackage(context.Background(), "abc", content.PackageVersion{ID: "pkg-v1", ArchivePath: "p.zip", Version: "v1"}, Full)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(life.events, ","); got != "stop,deploy,start,commit" {
+	if got := strings.Join(life.events, ","); got != "stop,deploy,start,commit,accelerator:abc" {
 		t.Fatalf("events=%s", got)
 	}
 	if repo.instance.SelectedPackageID != "pkg-v1" || repo.instance.PackageVersion != "pkg-v1" {

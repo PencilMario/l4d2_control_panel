@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"math"
 	"net"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -82,6 +83,42 @@ func TestInfoAcceptsDirectResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	if info.Name != "Test Server" || info.Map != "c2m1_highway" || info.Players != 4 || info.MaxPlayers != 8 {
+		t.Fatalf("info=%#v", info)
+	}
+}
+
+func TestInfoAcceptsResponseFromDifferentSource(t *testing.T) {
+	target, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	port := target.LocalAddr().(*net.UDPAddr).Port
+	peer, err := net.ListenPacket("udp4", net.JoinHostPort("127.0.0.2", strconv.Itoa(port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+	go func() {
+		buffer := make([]byte, 1400)
+		for attempt := 0; attempt < 2; attempt++ {
+			n, addr, readErr := target.ReadFrom(buffer)
+			if readErr != nil || n < 5 || buffer[4] != 0x54 {
+				return
+			}
+			_, _ = peer.WriteTo([]byte{0xff, 0xff, 0xff, 0xff, 0x41, 1, 2, 3, 4}, addr)
+		}
+		n, addr, readErr := peer.ReadFrom(buffer)
+		if readErr == nil && n >= 5 && buffer[4] == 0x54 {
+			_, _ = peer.WriteTo(infoResponse(), addr)
+		}
+	}()
+
+	info, err := (Client{Timeout: time.Second}).Info(target.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Name != "Test Server" || info.Map != "c2m1_highway" {
 		t.Fatalf("info=%#v", info)
 	}
 }

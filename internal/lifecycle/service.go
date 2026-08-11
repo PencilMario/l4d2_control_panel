@@ -124,6 +124,9 @@ type SpaceChecker interface{ Available(string) (uint64, error) }
 type Provisioner interface {
 	Prepare(context.Context, domain.Instance) error
 }
+type AcceleratorEnsurer interface {
+	Ensure(context.Context, domain.Instance) error
+}
 type LogPreparer interface {
 	Prepare(context.Context, string) error
 }
@@ -142,6 +145,7 @@ type Service struct {
 	minimumInstallBytes uint64
 	maintenanceGate     *maintenance.Gate
 	defenseGate         DefenseGate
+	accelerator         AcceleratorEnsurer
 }
 type Option func(*Service)
 
@@ -159,6 +163,9 @@ func WithMaintenanceGate(gate *maintenance.Gate) Option {
 	return func(s *Service) { s.maintenanceGate = gate }
 }
 func WithDefenseGate(gate DefenseGate) Option { return func(s *Service) { s.defenseGate = gate } }
+func WithAccelerator(ensurer AcceleratorEnsurer) Option {
+	return func(s *Service) { s.accelerator = ensurer }
+}
 
 func New(repo Repository, engine Engine, ports PortChecker, dataRoot string, options ...Option) *Service {
 	service := &Service{repo: repo, engine: engine, ports: ports, dataRoot: dataRoot}
@@ -208,6 +215,7 @@ func (s *Service) Start(ctx context.Context, id string) error {
 		}
 		jobs.Logf(ctx, "lifecycle", joblogs.Info, "A2S defense preflight completed instance=%s game_port=%d sourcetv_port=%d", id, v.GamePort, v.SourceTVPort)
 	}
+	acceleratorEnsured := false
 	if v.ContainerID == "" {
 		base := filepath.Join(s.dataRoot, "instances", v.ID)
 		for _, dir := range []string{"game", "private", "backups", "console"} {
@@ -242,6 +250,12 @@ func (s *Service) Start(ctx context.Context, id string) error {
 				return s.fault(ctx, v, err)
 			}
 		}
+		if s.accelerator != nil {
+			if err := s.accelerator.Ensure(ctx, v); err != nil {
+				return s.fault(ctx, v, fmt.Errorf("ensure Accelerator before container creation: %w", err))
+			}
+			acceleratorEnsured = true
+		}
 		spec, err := docker.BuildContainerSpec(s.dataRoot, v)
 		if err != nil {
 			return s.fault(ctx, v, err)
@@ -254,6 +268,11 @@ func (s *Service) Start(ctx context.Context, id string) error {
 		jobs.Logf(ctx, "lifecycle", joblogs.Info, "container created instance=%s container=%s image=%s", id, containerID, v.RuntimeImage)
 		if err := s.repo.UpdateInstance(ctx, v); err != nil {
 			return err
+		}
+	}
+	if v.ContainerID != "" && s.accelerator != nil && !acceleratorEnsured {
+		if err := s.accelerator.Ensure(ctx, v); err != nil {
+			return s.fault(ctx, v, fmt.Errorf("ensure Accelerator before container start: %w", err))
 		}
 	}
 	if err := s.engine.Start(ctx, v.ContainerID); err != nil {
@@ -366,6 +385,11 @@ func (s *Service) Rebuild(ctx context.Context, id string) error {
 	if s.logPreparer != nil {
 		if err := s.logPreparer.Prepare(ctx, instance.ID); err != nil {
 			return s.fault(ctx, instance, err)
+		}
+	}
+	if s.accelerator != nil {
+		if err := s.accelerator.Ensure(ctx, instance); err != nil {
+			return s.fault(ctx, instance, fmt.Errorf("ensure Accelerator before rebuilt container creation: %w", err))
 		}
 	}
 	spec, err := docker.BuildContainerSpec(s.dataRoot, instance)

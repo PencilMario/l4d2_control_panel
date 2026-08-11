@@ -35,6 +35,10 @@ type SharedOverlay interface {
 	Ensure(context.Context, string, string) error
 }
 
+type AcceleratorEnsurer interface {
+	Ensure(context.Context, domain.Instance) error
+}
+
 type Service struct {
 	Root     string
 	Packages PackageSource
@@ -45,6 +49,7 @@ type Service struct {
 	Instances   InstanceRepository
 	SharedState SharedStateSource
 	Overlay     SharedOverlay
+	Accelerator AcceleratorEnsurer
 }
 
 func (s Service) RecoverOverlays(ctx context.Context) error {
@@ -145,6 +150,11 @@ func (s Service) Prepare(ctx context.Context, instance domain.Instance) error {
 	}
 	if err := s.Deployer.Apply(ctx, instance.ID, item.ArchivePath, item.Version, updates.Full); err != nil {
 		return err
+	}
+	if s.Accelerator != nil {
+		if err := s.Accelerator.Ensure(ctx, instance); err != nil {
+			return fmt.Errorf("ensure Accelerator after package deployment: %w", err)
+		}
 	}
 	latest, err := s.Instances.Instance(ctx, instance.ID)
 	if err != nil {

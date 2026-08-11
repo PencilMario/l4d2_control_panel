@@ -70,7 +70,7 @@ docker compose --env-file .env --profile images build runtime-image
 docker compose --env-file .env up -d --build
 ```
 
-Panel 对外发布 `0.0.0.0:${L4D2_PANEL_HTTP_PORT:-18081}`，容器内监听 `8080`。受限 Docker 代理只通过命名卷中的 `/run/l4d2-panel/proxy.sock` 与 Panel 通信，不开放 TCP 监听。
+Panel 使用 host network，直接监听 `0.0.0.0:${L4D2_PANEL_HTTP_PORT:-18081}`，不使用 Docker `ports` 映射。受限 Docker 代理只通过命名卷中的 `/run/l4d2-panel/proxy.sock` 与 Panel 通信，不开放 TCP 监听。
 
 ## 必要配置
 
@@ -81,15 +81,77 @@ Panel 对外发布 `0.0.0.0:${L4D2_PANEL_HTTP_PORT:-18081}`，容器内监听 `8
 | `L4D2_PANEL_ADMIN_PASSWORD` | 管理员密码，首次启动必须提供 | 无 |
 | `L4D2_PANEL_DATA_ROOT` | Panel 与游戏实例持久数据根目录 | `/srv/l4d2-panel` |
 | `L4D2_PANEL_HTTP_PORT` | 宿主机 HTTP 端口 | `18081` |
+| `L4D2_PANEL_ACCELERATOR_PORT` | 写入 Accelerator 的宿主机 loopback 上传端口，默认跟随 HTTP 端口 | `L4D2_PANEL_HTTP_PORT` |
 | `L4D2_PANEL_GAME_HOST` | Panel 发起 A2S 查询时使用的宿主机地址 | `host.docker.internal` |
+| `L4D2_PANEL_CRASH_REPORT_TOKEN` | Accelerator 接收端共享 token；为空时关闭接收端 | 空 |
+| `L4D2_PANEL_CRASH_RETENTION_DAYS` | dump 与 metadata 保留天数，范围 `1..3650` | `90` |
+| `L4D2_PANEL_STACKWALK_PATH` | Panel 容器内 `minidump_stackwalk` 可执行文件路径 | `/usr/local/bin/minidump_stackwalk` |
 | `L4D2_PANEL_DOWNLOAD_PROXY` | GitHub Release、SteamCMD 等下载代理 | 空 |
 | `L4D2_PANEL_SECURE_COOKIE` | 是否只通过 HTTPS 发送会话 Cookie | `true` |
 
-`L4D2_PANEL_GAME_HOST` 是必填项。使用仓库提供的 Compose 配置时应保留 `host.docker.internal`；Panel 通过默认桥接网络访问使用宿主机网络的 SRCDS。不要改成 `127.0.0.1`，回环地址通常无法从 Panel 容器返回正确的 A2S 数据。
+`L4D2_PANEL_GAME_HOST` 是必填项。使用仓库提供的 Compose 配置时可保留 `host.docker.internal`，也可以填写 SRCDS 实际响应的宿主机地址。Panel 与游戏服务使用 host network；不要改成 `127.0.0.1`，除非 SRCDS 确实在该回环地址响应 A2S 数据。
 
 如需代理下载，在 `.env` 中设置 `L4D2_PANEL_DOWNLOAD_PROXY`。该值会同时作为 `HTTP_PROXY` 和 `HTTPS_PROXY` 传入 Panel 与 SteamCMD 维护容器；仅在确有额外内网地址时覆盖 `L4D2_PANEL_NO_PROXY`。
 
 如需仅加速 GitHub Release 文件下载，可在“系统设置 > GitHub Release 下载”中填写 HTTPS 加速地址；默认留空并直连 GitHub。GitHub API 查询仍保持直连；加速器只接收公开 Release 文件 URL，GitHub token 不会转发给加速器。
+
+Accelerator 下载设置没有保存记录时，默认使用官方 Linux 包 URL：`https://builds.limetech.io/files/accelerator-2.6.0-git165-dcf3449-linux.zip`。可以在“系统设置 > Accelerator 下载”中替换为自建或 fork 的 HTTPS 包地址；显式保存空地址会关闭自动安装。
+
+## Accelerator 崩溃报告接收与分析
+
+Panel 内置完整的 Accelerator 兼容接收端，不依赖 Throttle。必须设置 `L4D2_PANEL_CRASH_REPORT_TOKEN`；未设置时公开接收路径返回 `503`。Accelerator URL 使用 query token，并且必须通过宿主机 loopback 访问：
+
+```text
+http://127.0.0.1:${L4D2_PANEL_ACCELERATOR_PORT:-${L4D2_PANEL_HTTP_PORT:-18081}}/submit?token=<L4D2_PANEL_CRASH_REPORT_TOKEN>
+http://127.0.0.1:${L4D2_PANEL_ACCELERATOR_PORT:-${L4D2_PANEL_HTTP_PORT:-18081}}/symbols/submit?token=<L4D2_PANEL_CRASH_REPORT_TOKEN>
+http://127.0.0.1:${L4D2_PANEL_ACCELERATOR_PORT:-${L4D2_PANEL_HTTP_PORT:-18081}}/binary/submit?token=<L4D2_PANEL_CRASH_REPORT_TOKEN>
+```
+
+接收端只接受 `127.0.0.0/8` 或 `::1` 的来源，不信任 `X-Forwarded-For`。Compose 中 Panel 与游戏实例使用 host network，因此 Accelerator 应配置为 `127.0.0.1`；直接通过宿主机其他地址或公网地址上传会被拒绝。反向代理只有在它连接 Panel 时仍使用 loopback 才能通过来源校验。
+
+三个端点都可用：
+
+- `/submit` 接收预提交、minidump 和 metadata。
+- `/symbols/submit` 接收 Breakpad symbol 文件。
+- `/binary/submit` 接收 Accelerator 的 `code_file` 模块二进制；内容会经过大小限制、SHA-256 内容寻址和报告模块关联校验，不会把调用方文件名当作服务器路径，也不是任意文件上传接口。
+
+Accelerator 安装后，Panel 会把三个上传 URL、预提交和 symbol/binary 上传开关写入 SourceMod `core.cfg`，其中 `MinidumpBinaryUpload` 必须为 `yes` 才能保持完整协议兼容：
+
+```text
+MinidumpUrl          http://127.0.0.1:${L4D2_PANEL_ACCELERATOR_PORT:-${L4D2_PANEL_HTTP_PORT:-18081}}/submit?token=<token>
+MinidumpSymbolUrl    http://127.0.0.1:${L4D2_PANEL_ACCELERATOR_PORT:-${L4D2_PANEL_HTTP_PORT:-18081}}/symbols/submit?token=<token>
+MinidumpBinaryUrl    http://127.0.0.1:${L4D2_PANEL_ACCELERATOR_PORT:-${L4D2_PANEL_HTTP_PORT:-18081}}/binary/submit?token=<token>
+MinidumpPresubmit    yes
+MinidumpSymbolUpload 3
+MinidumpBinaryUpload yes
+```
+
+每次上传还必须匹配本项目已登记实例的 Accelerator `ServerID`。Panel 会查询 managed instances，并校验对应文件：
+
+```text
+<data-root>/instances/<instance-id>/game/left4dead2/addons/sourcemod/data/dumps/server-id.txt
+```
+
+文件内容必须与请求的 `ServerID` 相同，`GameDirectory` 必须为空或 `left4dead2`。因此仅持有 token、伪造 `ServerID` 或使用其他项目的游戏实例都不能上传。
+
+报告存储在 `panel/crash-dumps/`，包括 minidump、原始 metadata、模块二进制、pending token 和受控 symbol 文件；默认保留 90 天，过期报告由 Panel 启动时及每天清理一次。报告和其派生的 stackwalk/AI 文件遵循同一保留策略，内置 SourceMod/Metamod 符号不会随报告清理。metadata 可能包含命令行、路径或服务器环境信息，只能通过已登录的管理员 API 查看：
+
+```text
+GET /api/crash-reports
+GET /api/crash-reports/<crash-id>
+GET /api/crash-reports/<crash-id>/download?file=minidump
+GET /api/crash-reports/<crash-id>/download?file=metadata
+GET /api/crash-reports/<crash-id>/download?file=stackwalk
+GET /api/crash-reports/<crash-id>/download?file=ai
+GET /api/crash-reports/<crash-id>/download?file=binary&artifact=<artifact-id>
+POST /api/crash-reports/<crash-id>/analyze
+```
+
+Panel 的标准镜像在构建阶段从可配置的 Breakpad 仓库构建并内置 `minidump_stackwalk`，默认路径由 `L4D2_PANEL_STACKWALK_PATH` 指定；自定义镜像或该变量可以提供其它绝对路径。工具缺失、符号不足或 stackwalk 失败只会把分析状态标为失败，不会使 Accelerator 上传失败。仓库只内置 SourceMod 和 Metamod 符号，不分发 Valve/L4D2 游戏符号。
+
+在实例设置中可分别开启“安装 Accelerator”和“自动分析崩溃”。开启后，首次部署、插件重装/更新、游戏重装和容器重建都会重新对账并安装 Accelerator 文件；下载地址以及是否使用 GitHub Release 加速链接在“系统设置 > Accelerator 下载”中配置，不锁定目标仓库或版本。AI 在“系统设置 > 崩溃 AI”中配置 OpenAI-compatible endpoint、model 和 API key；密钥加密保存，发送前只保留脱敏后的崩溃签名、metadata 摘要和 stackwalk 文本。
+
+URL 中包含共享 token，生产环境应使用 HTTPS 或受信任的本机网络，并避免把 token 写入公共日志。
 
 ## HTTPS 与安全边界
 
@@ -198,6 +260,7 @@ instances/<id>/backups/
 instances/<id>/console/
 instances/<id>/logs/game/
 instances/<id>/logs/sourcemod/
+panel/crash-dumps/
 shared-vpk/
 ```
 

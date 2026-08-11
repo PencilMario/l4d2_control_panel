@@ -42,6 +42,8 @@ type Instance struct {
 	PluginPorts                                       []int `json:"plugin_ports"`
 	Tickrate, MaxPlayers                              int
 	DesiredState, ActualState                         InstanceState
+	AcceleratorEnabled                                bool `json:"accelerator_enabled"`
+	AutoCrashAnalysis                                 bool `json:"auto_crash_analysis"`
 	CreatedAt, UpdatedAt                              time.Time
 }
 

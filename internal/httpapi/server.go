@@ -24,6 +24,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/a2sdefense"
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
+	"github.com/not0721here/l4d2-control-panel/internal/crashreports"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/gamelogs"
@@ -80,6 +81,8 @@ type Server struct {
 	sharedGamePath   string
 	a2sDefense       A2SDefenseReconciler
 	a2sSettings      A2SDefenseSettingsController
+	crashReports     *crashreports.Manager
+	crashAnalysis    CrashAnalyzer
 }
 
 type A2SDefenseReconciler interface {
@@ -120,6 +123,10 @@ type Lifecycle interface {
 	Delete(context.Context, string, bool) error
 }
 type Option func(*Server)
+
+type CrashAnalyzer interface {
+	Analyze(context.Context, string, bool) error
+}
 
 type VPKRestartRegistrar interface {
 	Register(context.Context, string) (int, error)
@@ -216,6 +223,14 @@ func WithSystem(provider SystemProvider) Option { return func(s *Server) { s.sys
 
 func WithSecureCookie(secure bool) Option { return func(s *Server) { s.secureCookie = secure } }
 
+func WithCrashReports(manager *crashreports.Manager) Option {
+	return func(s *Server) { s.crashReports = manager }
+}
+
+func WithCrashAnalysis(analyzer CrashAnalyzer) Option {
+	return func(s *Server) { s.crashAnalysis = analyzer }
+}
+
 func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 	s := &Server{store: db, auth: a, secureCookie: true}
 	for _, option := range options {
@@ -227,6 +242,9 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 	r := chi.NewRouter()
 	r.Post("/api/auth/login", s.login)
 	r.Get("/api/health", s.health)
+	r.Post("/submit", s.acceleratorSubmit)
+	r.Post("/symbols/submit", s.acceleratorSymbol)
+	r.Post("/binary/submit", s.acceleratorBinary)
 	r.Get("/api/self-service/vpk/status", s.selfServiceVPKStatus)
 	r.Post("/api/self-service/vpk/authorize", s.authorizeSelfServiceVPK)
 	r.Get("/api/self-service/vpk", s.listSelfServiceVPK)
@@ -244,6 +262,10 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Get("/api/session", func(w http.ResponseWriter, _ *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]bool{"authenticated": true})
 		})
+		r.Get("/api/crash-reports", s.listCrashReports)
+		r.Get("/api/crash-reports/{id}", s.getCrashReport)
+		r.Get("/api/crash-reports/{id}/download", s.downloadCrashReport)
+		r.Post("/api/crash-reports/{id}/analyze", s.analyzeCrashReport)
 		r.Get("/api/instances", s.listInstances)
 		r.Get("/api/game", s.gameStatus)
 		r.Post("/api/game/update", s.updateSharedGame)
@@ -255,6 +277,10 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Get("/api/settings/game-logs", s.getGameLogSettings)
 		r.Put("/api/settings/game-logs", s.putGameLogSettings)
 		r.Post("/api/settings/game-logs/cleanup", s.cleanupGameLogs)
+		r.Get("/api/settings/accelerator", s.getAcceleratorSettings)
+		r.Put("/api/settings/accelerator", s.putAcceleratorSettings)
+		r.Get("/api/settings/crash-analysis", s.getCrashAnalysisSettings)
+		r.Put("/api/settings/crash-analysis", s.putCrashAnalysisSettings)
 		r.Get("/api/settings/a2s-defense", s.getA2SDefenseSettings)
 		r.Put("/api/settings/a2s-defense", s.putA2SDefenseSettings)
 		r.Get("/api/instances/{id}/performance-history", s.instancePerformanceHistory)
@@ -263,6 +289,7 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Delete("/api/instances/{id}", s.deleteInstance)
 		r.Post("/api/instances/{id}/actions", s.instanceAction)
 		r.Get("/api/jobs/{id}", s.getJob)
+		r.Post("/api/jobs/{id}/cancel", s.cancelJob)
 		r.Get("/api/jobs/{id}/logs", s.jobLogHistory)
 		r.Get("/api/jobs/{id}/logs/stream", s.jobLogStream)
 		r.Get("/api/jobs/{id}/logs/download", s.downloadJobLog)
@@ -983,17 +1010,19 @@ func unhealthyObservationState(current domain.InstanceState) domain.InstanceStat
 }
 
 type instanceInput struct {
-	Name            string `json:"name"`
-	GamePort        int    `json:"game_port"`
-	SourceTVPort    int    `json:"sourcetv_port"`
-	PluginPorts     []int  `json:"plugin_ports"`
-	StartMap        string `json:"start_map"`
-	GameMode        string `json:"game_mode"`
-	Tickrate        int    `json:"tickrate"`
-	MaxPlayers      int    `json:"max_players"`
-	ExtraArgs       string `json:"extra_args"`
-	PackageID       string `json:"package_id"`
-	PackageSourceID string `json:"source_id"`
+	Name               string `json:"name"`
+	GamePort           int    `json:"game_port"`
+	SourceTVPort       int    `json:"sourcetv_port"`
+	PluginPorts        []int  `json:"plugin_ports"`
+	StartMap           string `json:"start_map"`
+	GameMode           string `json:"game_mode"`
+	Tickrate           int    `json:"tickrate"`
+	MaxPlayers         int    `json:"max_players"`
+	ExtraArgs          string `json:"extra_args"`
+	PackageID          string `json:"package_id"`
+	PackageSourceID    string `json:"source_id"`
+	AcceleratorEnabled bool   `json:"accelerator_enabled"`
+	AutoCrashAnalysis  bool   `json:"auto_crash_analysis"`
 }
 
 func (s *Server) validateInstanceInput(input *instanceInput) (content.PackageVersion, error) {
@@ -1035,6 +1064,8 @@ func (input instanceInput) apply(instance domain.Instance) domain.Instance {
 	instance.SelectedPackageID = input.PackageID
 	instance.PackageSourceID = input.PackageSourceID
 	instance.PackageSourceRepository = ""
+	instance.AcceleratorEnabled = input.AcceleratorEnabled
+	instance.AutoCrashAnalysis = input.AutoCrashAnalysis
 	return instance
 }
 
@@ -1070,13 +1101,14 @@ func (s *Server) updateInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	next := input.apply(instance)
 	runtimeChanged := runtimeConfigurationChanged(instance, next)
+	acceleratorChanged := instance.AcceleratorEnabled != next.AcceleratorEnabled
 	packageNeedsApply := instance.SelectedPackageID != input.PackageID || instance.PackageSourceID != input.PackageSourceID || (input.PackageSourceID == "" && instance.PackageVersion != input.PackageID)
-	requiresJob := instance.ContainerID != "" && (runtimeChanged || packageNeedsApply)
+	requiresJob := instance.ContainerID != "" && (runtimeChanged || packageNeedsApply || acceleratorChanged)
 	if requiresJob && s.jobs == nil {
 		writeError(w, 503, "operations_unavailable", "job manager unavailable")
 		return
 	}
-	if instance.ContainerID != "" && runtimeChanged && s.lifecycle == nil {
+	if instance.ContainerID != "" && (runtimeChanged || acceleratorChanged) && s.lifecycle == nil {
 		writeError(w, 503, "operations_unavailable", "lifecycle unavailable")
 		return
 	}
@@ -1094,7 +1126,7 @@ func (s *Server) updateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job, ok := s.startJob(w, r, instance.ID, "reconfigure", func(ctx context.Context, reporter jobs.Reporter) error {
-		jobs.Logf(ctx, "request", joblogs.Info, "instance reconfigure requested instance=%s package_changed=%t runtime_changed=%t package_id=%s source_id=%s", instance.ID, packageNeedsApply, runtimeChanged, input.PackageID, input.PackageSourceID)
+		jobs.Logf(ctx, "request", joblogs.Info, "instance reconfigure requested instance=%s package_changed=%t runtime_changed=%t accelerator_changed=%t package_id=%s source_id=%s", instance.ID, packageNeedsApply, runtimeChanged, acceleratorChanged, input.PackageID, input.PackageSourceID)
 		if packageNeedsApply {
 			reporter.Progress("package", 20, "deploying selected package")
 			if input.PackageSourceID != "" {
@@ -1108,7 +1140,7 @@ func (s *Server) updateInstance(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 		}
-		if runtimeChanged {
+		if runtimeChanged || acceleratorChanged {
 			reporter.Progress("container", 70, "rebuilding game container")
 			return s.lifecycle.Rebuild(ctx, instance.ID)
 		}
@@ -2200,6 +2232,195 @@ func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
 		Events []domain.JobEvent
 	}{Job: job, Events: events})
 }
+
+func (s *Server) cancelJob(w http.ResponseWriter, r *http.Request) {
+	if s.jobs == nil {
+		writeError(w, http.StatusServiceUnavailable, "jobs_unavailable", "job manager unavailable")
+		return
+	}
+	job, err := s.jobs.Cancel(chi.URLParam(r, "id"))
+	switch {
+	case errors.Is(err, jobs.ErrJobNotFound):
+		writeError(w, http.StatusNotFound, "job_not_found", "job not found")
+	case errors.Is(err, jobs.ErrJobNotRunning):
+		writeError(w, http.StatusConflict, "job_not_running", "only running jobs can be force-stopped")
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "jobs_error", err.Error())
+	default:
+		writeJSON(w, http.StatusAccepted, job)
+	}
+}
+
+func (s *Server) acceleratorSubmit(w http.ResponseWriter, r *http.Request) {
+	if s.crashReports == nil {
+		writeError(w, http.StatusServiceUnavailable, "crash_reports_unavailable", "crash report receiver unavailable")
+		return
+	}
+	s.crashReports.SubmitHandler(w, r)
+}
+
+func (s *Server) acceleratorSymbol(w http.ResponseWriter, r *http.Request) {
+	if s.crashReports == nil {
+		writeError(w, http.StatusServiceUnavailable, "crash_reports_unavailable", "crash report receiver unavailable")
+		return
+	}
+	s.crashReports.SymbolHandler(w, r)
+}
+
+func (s *Server) acceleratorBinary(w http.ResponseWriter, r *http.Request) {
+	if s.crashReports == nil {
+		writeError(w, http.StatusServiceUnavailable, "crash_reports_unavailable", "crash report receiver unavailable")
+		return
+	}
+	s.crashReports.BinaryHandler(w, r)
+}
+
+func (s *Server) AcceleratorSubmitHandler() http.Handler {
+	return http.HandlerFunc(s.acceleratorSubmit)
+}
+func (s *Server) AcceleratorSymbolHandler() http.Handler {
+	return http.HandlerFunc(s.acceleratorSymbol)
+}
+func (s *Server) AcceleratorBinaryHandler() http.Handler {
+	return http.HandlerFunc(s.acceleratorBinary)
+}
+
+func (s *Server) listCrashReports(w http.ResponseWriter, r *http.Request) {
+	if s.crashReports == nil {
+		writeError(w, http.StatusServiceUnavailable, "crash_reports_unavailable", "crash report manager unavailable")
+		return
+	}
+	reports, err := s.crashReports.List(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "crash_reports_error", "crash report listing unavailable")
+		return
+	}
+	filtered := make([]crashreports.Report, 0, len(reports))
+	for _, report := range reports {
+		if !matchesCrashReportQuery(report, r) {
+			continue
+		}
+		filtered = append(filtered, report)
+	}
+	if filtered == nil {
+		filtered = []crashreports.Report{}
+	}
+	writeJSON(w, http.StatusOK, filtered)
+}
+
+func (s *Server) getCrashReport(w http.ResponseWriter, r *http.Request) {
+	if s.crashReports == nil {
+		writeError(w, http.StatusServiceUnavailable, "crash_reports_unavailable", "crash report manager unavailable")
+		return
+	}
+	report, err := s.crashReports.Get(r.Context(), chi.URLParam(r, "id"))
+	if errors.Is(err, crashreports.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "crash_report_not_found", "crash report not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "crash_reports_error", "crash report details unavailable")
+		return
+	}
+	metadata, metadataReport, metadataErr := s.crashReports.ReadMetadata(r.Context(), report.ID)
+	if metadataErr != nil {
+		if errors.Is(metadataErr, crashreports.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "crash_report_not_found", "crash report metadata not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "crash_reports_error", "crash report metadata unavailable")
+		}
+		return
+	}
+	if metadataReport.ID != "" {
+		report = metadataReport
+	}
+	writeJSON(w, http.StatusOK, crashReportDetails{Report: report, Metadata: string(metadata)})
+}
+
+func (s *Server) downloadCrashReport(w http.ResponseWriter, r *http.Request) {
+	if s.crashReports == nil {
+		writeError(w, http.StatusServiceUnavailable, "crash_reports_unavailable", "crash report manager unavailable")
+		return
+	}
+	var kind crashreports.FileKind
+	switch r.URL.Query().Get("file") {
+	case string(crashreports.FileKindMinidump):
+		kind = crashreports.FileKindMinidump
+	case string(crashreports.FileKindMetadata):
+		kind = crashreports.FileKindMetadata
+	case string(crashreports.FileKindStackwalk):
+		kind = crashreports.FileKindStackwalk
+	case string(crashreports.FileKindAI):
+		kind = crashreports.FileKindAI
+	case "binary":
+		artifactID := strings.TrimSpace(r.URL.Query().Get("artifact"))
+		if artifactID == "" {
+			writeError(w, http.StatusUnprocessableEntity, "artifact_required", "binary downloads require an artifact id")
+			return
+		}
+		report, reportErr := s.crashReports.Get(r.Context(), chi.URLParam(r, "id"))
+		if errors.Is(reportErr, crashreports.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "crash_report_not_found", "crash report not found")
+			return
+		}
+		if reportErr != nil {
+			writeError(w, http.StatusInternalServerError, "crash_reports_error", "crash report details unavailable")
+			return
+		}
+		if !crashReportReferencesBinary(report, artifactID) {
+			writeError(w, http.StatusForbidden, "artifact_not_referenced", "artifact is not referenced by this crash report")
+			return
+		}
+		file, artifact, openErr := s.crashReports.OpenArtifact(r.Context(), crashreports.ArtifactKindBinary, artifactID)
+		if errors.Is(openErr, crashreports.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "artifact_not_found", "crash report artifact not found")
+			return
+		}
+		if openErr != nil {
+			writeError(w, http.StatusInternalServerError, "crash_reports_error", "crash report artifact unavailable")
+			return
+		}
+		defer file.Close()
+		name := artifact.Basename
+		if name == "" {
+			name = artifact.ID + ".bin"
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, name))
+		http.ServeContent(w, r, name, report.UpdatedAt, file)
+		return
+	default:
+		writeError(w, http.StatusUnprocessableEntity, "invalid_crash_report_file", "file must be minidump, metadata, stackwalk, ai or binary")
+		return
+	}
+	file, report, err := s.crashReports.Open(r.Context(), chi.URLParam(r, "id"), kind)
+	if errors.Is(err, crashreports.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "crash_report_not_found", "crash report file not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "crash_reports_error", "crash report download unavailable")
+		return
+	}
+	defer file.Close()
+	name := report.ID + ".dmp"
+	contentType := "application/octet-stream"
+	switch kind {
+	case crashreports.FileKindMetadata:
+		name = report.ID + ".metadata.txt"
+		contentType = "text/plain; charset=utf-8"
+	case crashreports.FileKindStackwalk:
+		name = report.ID + ".stackwalk.txt"
+		contentType = "text/plain; charset=utf-8"
+	case crashreports.FileKindAI:
+		name = report.ID + ".ai-analysis.md"
+		contentType = "text/markdown; charset=utf-8"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, name))
+	http.ServeContent(w, r, name, report.UpdatedAt, file)
+}
+
 func (s *Server) Handler() http.Handler { return s.router }
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -2395,6 +2616,18 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	d.DisallowUnknownFields()
 	if err := d.Decode(v); err != nil {
+		writeError(w, 400, "invalid_json", err.Error())
+		return err
+	}
+	return nil
+}
+func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, v any) error {
+	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	d.DisallowUnknownFields()
+	if err := d.Decode(v); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
 		writeError(w, 400, "invalid_json", err.Error())
 		return err
 	}

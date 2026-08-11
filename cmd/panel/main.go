@@ -5,10 +5,13 @@ import (
 	"errors"
 	"github.com/not0721here/l4d2-control-panel/internal/a2s"
 	"github.com/not0721here/l4d2-control-panel/internal/a2sdefense"
+	"github.com/not0721here/l4d2-control-panel/internal/accelerator"
 	"github.com/not0721here/l4d2-control-panel/internal/auth"
 	"github.com/not0721here/l4d2-control-panel/internal/automation"
 	"github.com/not0721here/l4d2-control-panel/internal/config"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
+	"github.com/not0721here/l4d2-control-panel/internal/crashanalysis"
+	"github.com/not0721here/l4d2-control-panel/internal/crashreports"
 	"github.com/not0721here/l4d2-control-panel/internal/disk"
 	"github.com/not0721here/l4d2-control-panel/internal/docker"
 	"github.com/not0721here/l4d2-control-panel/internal/gamelogs"
@@ -36,6 +39,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -99,6 +103,37 @@ func main() {
 		log.Fatal(err)
 	}
 	defer db.Close()
+	var analysisWorker *crashanalysis.Worker
+	crashReportManager, err := crashreports.New(crashreports.Config{
+		Root:            cfg.CrashReportsDir,
+		Token:           cfg.CrashReportToken,
+		RetentionDays:   cfg.CrashRetentionDays,
+		ResolveInstance: newCrashReportInstanceResolver(cfg.DataRoot, db),
+		EnqueueAnalysis: func(ctx context.Context, report crashreports.Report) error {
+			if report.InstanceID == "" {
+				return nil
+			}
+			instance, err := db.Instance(ctx, report.InstanceID)
+			if errors.Is(err, store.ErrNotFound) || err != nil || !instance.AutoCrashAnalysis {
+				return err
+			}
+			if analysisWorker == nil {
+				return errors.New("crash analysis worker is not started")
+			}
+			return analysisWorker.Enqueue(ctx, report.ID, true)
+		},
+		AnalysisEnqueueError: func(err error) { log.Printf("crash analysis enqueue: %v", err) },
+		ReportCleanupError:   func(err error) { log.Printf("crash report cleanup: %v", err) },
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if result, cleanupErr := crashReportManager.Cleanup(context.Background()); cleanupErr != nil {
+		log.Printf("crash report cleanup: %v", cleanupErr)
+	} else if result.ReportsRemoved > 0 || result.PendingRemoved > 0 {
+		log.Printf("crash report cleanup: reports=%d pending=%d bytes=%d", result.ReportsRemoved, result.PendingRemoved, result.BytesReleased)
+	}
+	stopCrashReportCleanup := crashReportManager.StartCleanup(context.Background())
 	sessions, err := auth.NewPersistentService(db)
 	if err != nil {
 		log.Fatal(err)
@@ -118,6 +153,40 @@ func main() {
 	}
 	secretService, err := secrets.New(db, secretKey)
 	if err != nil {
+		log.Fatal(err)
+	}
+	stackwalker, err := crashanalysis.NewStackwalker(crashanalysis.StackwalkConfig{
+		Path:       cfg.StackwalkPath,
+		SymbolRoot: filepath.Join(cfg.CrashReportsDir, "symbols"),
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	analysisWorker, err = crashanalysis.NewWorker(crashanalysis.WorkerConfig{
+		Store:       crashReportManager,
+		Stackwalker: stackwalker,
+		AIProvider: func(ctx context.Context) (crashanalysis.AIAnalyzer, string, error) {
+			settings, err := db.CrashAnalysisSettings(ctx)
+			if err != nil {
+				return nil, "", err
+			}
+			if strings.TrimSpace(settings.Endpoint) == "" || strings.TrimSpace(settings.Model) == "" {
+				return nil, settings.Model, nil
+			}
+			apiKey, _, err := secretService.Get(ctx, "accelerator_ai_api_key")
+			if err != nil {
+				return nil, settings.Model, err
+			}
+			client, err := crashanalysis.NewOpenAIClient(crashanalysis.OpenAIConfig{
+				Endpoint: settings.Endpoint, Model: settings.Model, APIKey: apiKey,
+			})
+			return client, settings.Model, err
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := analysisWorker.Start(context.Background()); err != nil {
 		log.Fatal(err)
 	}
 	jobLogManager, err := joblogs.Open(filepath.Join(cfg.PanelDir, "job-logs"), joblogs.Options{Redactor: joblogs.NewRedactor(func() []string {
@@ -166,6 +235,33 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	acceleratorManager, err := accelerator.New(accelerator.Config{
+		InstancesRoot: cfg.InstancesDir,
+		CacheRoot:     filepath.Join(cfg.PanelDir, "accelerator-cache"),
+		DownloadURLProvider: func(ctx context.Context) (string, error) {
+			settings, err := db.AcceleratorSettings(ctx)
+			if err != nil {
+				return "", err
+			}
+			if strings.TrimSpace(settings.DownloadURL) == "" {
+				return "", errors.New("Accelerator download URL is not configured")
+			}
+			return settings.DownloadURL, nil
+		},
+		GitHubProxyProvider: func(context.Context) (string, error) {
+			settings, err := db.AcceleratorSettings(context.Background())
+			if err != nil || !settings.UseGitHubProxy {
+				return "", err
+			}
+			return db.GitHubReleasesAccelerator()
+		},
+		Token:          cfg.CrashReportToken,
+		PanelPort:      cfg.AcceleratorPort,
+		TargetPlatform: runtime.GOOS,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
 	overlaySocket := os.Getenv("L4D2_PANEL_OVERLAY_SOCKET")
 	if overlaySocket == "" {
 		overlaySocket = "/run/l4d2-panel-overlay/overlay.sock"
@@ -187,12 +283,12 @@ func main() {
 		return ports.Reservations(instances), nil
 	}, Listening: ports.IsListening}
 	healthChecker := health.Checker{Host: cfg.GameHost, Query: a2s.Client{}, Probe: engine}
-	instanceProvisioner := provisioning.Service{Root: cfg.DataRoot, Packages: packageManager, Sources: db, Deployer: updatePipeline, Instances: db, SharedState: db, Overlay: overlayClient}
+	instanceProvisioner := provisioning.Service{Root: cfg.DataRoot, Packages: packageManager, Sources: db, Deployer: updatePipeline, Instances: db, SharedState: db, Overlay: overlayClient, Accelerator: acceleratorManager}
 	sharedGate := maintenance.NewGate()
 	gameLogManager := gamelogs.NewManager(cfg.DataRoot, gamelogs.Options{})
 	a2sEventLogger := a2sdefense.NewEventLogger(a2sDefenseClient, db, gameLogManager, time.Second, func(err error) { log.Printf("A2S defense event log: %v", err) })
 	stopA2SEventLogger := startA2SEventLogger(context.Background(), a2sEventLogger)
-	life := lifecycle.New(db, engine, portChecker, cfg.DataRoot, lifecycle.WithHealth(healthChecker), lifecycle.WithSpace(disk.Checker{}, startMinimumFreeBytes), lifecycle.WithProvisioner(instanceProvisioner), lifecycle.WithMaintenanceGate(sharedGate), lifecycle.WithLogPreparer(gameLogManager), lifecycle.WithDefenseGate(a2sDefenseCoordinator))
+	life := lifecycle.New(db, engine, portChecker, cfg.DataRoot, lifecycle.WithHealth(healthChecker), lifecycle.WithSpace(disk.Checker{}, startMinimumFreeBytes), lifecycle.WithProvisioner(instanceProvisioner), lifecycle.WithMaintenanceGate(sharedGate), lifecycle.WithLogPreparer(gameLogManager), lifecycle.WithDefenseGate(a2sDefenseCoordinator), lifecycle.WithAccelerator(acceleratorManager))
 	if recoverErr := instanceProvisioner.RecoverOverlays(context.Background()); recoverErr != nil {
 		log.Printf("container reconciliation deferred: recover overlays: %v", recoverErr)
 	} else if unknown, reconcileErr := life.Reconcile(context.Background()); reconcileErr != nil {
@@ -223,16 +319,16 @@ func main() {
 	if err := privateUploadManager.RecoverAll(); err != nil {
 		log.Printf("private upload recovery: %v", err)
 	}
-	updateCoordinator := &updates.Coordinator{Lifecycle: life, Deployer: updatePipeline, Instances: db}
+	updateCoordinator := &updates.Coordinator{Lifecycle: life, Deployer: updatePipeline, Instances: db, Accelerator: acceleratorManager}
 	releaseClient := releases.Client{
 		ReleaseDownloadAcceleratorProvider: func(context.Context) (string, error) {
 			return db.GitHubReleasesAccelerator()
 		},
 	}
 	sourceSynchronizer := releases.Synchronizer{Client: releaseClient, Sources: db, Packages: packageManager, Secrets: secretService}
-	gameCoordinator := &updates.GameCoordinator{Root: cfg.DataRoot, Instances: db, Lifecycle: life, Updater: engine, Private: privateManager, Packages: packageManager, Sources: sourceSynchronizer, Deployer: updatePipeline}
+	gameCoordinator := &updates.GameCoordinator{Root: cfg.DataRoot, Instances: db, Lifecycle: life, Updater: engine, Private: privateManager, Packages: packageManager, Sources: sourceSynchronizer, Deployer: updatePipeline, Accelerator: acceleratorManager}
 	sharedPublisher := updates.FilesystemGamePublisher{Root: cfg.DataRoot}
-	sharedRebuilder := updates.SharedGameRebuilder{Overlay: overlayClient, Packages: packageManager, Sources: db, Deployer: updatePipeline, Private: privateManager}
+	sharedRebuilder := updates.SharedGameRebuilder{Overlay: overlayClient, Packages: packageManager, Sources: db, Deployer: updatePipeline, Private: privateManager, Accelerator: acceleratorManager}
 	sharedGameCoordinator := &updates.SharedGameCoordinator{Root: cfg.DataRoot, Instances: db, Players: playerService, Installer: engine, Reconciler: sharedRebuilder, Lifecycle: life, Gate: sharedGate}
 	sharedGameMigration := &sharedmigration.SharedGameService{Root: cfg.DataRoot, Instances: db, Installer: engine, Publisher: sharedPublisher, Layout: sharedmigration.FilesystemLayout{Root: cfg.DataRoot}, Reconciler: sharedRebuilder, Gate: sharedGate}
 	dispatcher := automation.Dispatcher{Jobs: jobManager, Players: playerService, Packages: packageManager, PackagesUpdate: updateCoordinator, GameUpdate: gameCoordinator, SharedGameUpdate: sharedGameCoordinator, Releases: releaseClient, Sources: db, Instances: db, Maintenance: maintenance.New(cfg.DataRoot, maintenance.WithPackageCleanup(db, packageManager)), Gate: sharedGate, Secrets: secretService}
@@ -244,8 +340,12 @@ func main() {
 			log.Fatal("L4D2_PANEL_SECURE_COOKIE must be true or false")
 		}
 	}
-	api := httpapi.New(db, sessions, httpapi.WithGameLogs(gameLogManager, gameLogScheduler), httpapi.WithOperations(life, jobManager), httpapi.WithMaintenanceGate(sharedGate), httpapi.WithJobLogs(jobLogManager), httpapi.WithConsole(engine), httpapi.WithPlayers(playerService), httpapi.WithContent(uploadManager, privateManager, packageManager, updatePipeline, updateCoordinator), httpapi.WithReleases(releaseClient), httpapi.WithSelfServiceVPK(selfServiceVPKManager), httpapi.WithSelfServiceVPKKey(secretKey), httpapi.WithVPKRestartRegistrar(vpkRestartCoordinator), httpapi.WithPrivateUploads(privateUploadManager), httpapi.WithGameUpdates(gameCoordinator), httpapi.WithSharedGameUpdates(sharedGameCoordinator), httpapi.WithSharedGameMigration(sharedGameMigration), httpapi.WithSharedGamePath(cfg.GameCurrentPath), httpapi.WithScheduler(scheduleService), httpapi.WithSecrets(secretService), httpapi.WithResources(engine), httpapi.WithPerformance(performanceSampler), httpapi.WithSystem(engine), httpapi.WithA2SDefenseMutations(a2sDefenseCoordinator), httpapi.WithA2SDefenseSettings(a2sDefenseCoordinator), httpapi.WithSecureCookie(secureCookie))
+	api := httpapi.New(db, sessions, httpapi.WithGameLogs(gameLogManager, gameLogScheduler), httpapi.WithOperations(life, jobManager), httpapi.WithMaintenanceGate(sharedGate), httpapi.WithJobLogs(jobLogManager), httpapi.WithConsole(engine), httpapi.WithPlayers(playerService), httpapi.WithContent(uploadManager, privateManager, packageManager, updatePipeline, updateCoordinator), httpapi.WithReleases(releaseClient), httpapi.WithSelfServiceVPK(selfServiceVPKManager), httpapi.WithSelfServiceVPKKey(secretKey), httpapi.WithVPKRestartRegistrar(vpkRestartCoordinator), httpapi.WithPrivateUploads(privateUploadManager), httpapi.WithGameUpdates(gameCoordinator), httpapi.WithSharedGameUpdates(sharedGameCoordinator), httpapi.WithSharedGameMigration(sharedGameMigration), httpapi.WithSharedGamePath(cfg.GameCurrentPath), httpapi.WithScheduler(scheduleService), httpapi.WithSecrets(secretService), httpapi.WithResources(engine), httpapi.WithPerformance(performanceSampler), httpapi.WithSystem(engine), httpapi.WithA2SDefenseMutations(a2sDefenseCoordinator), httpapi.WithA2SDefenseSettings(a2sDefenseCoordinator), httpapi.WithCrashReports(crashReportManager), httpapi.WithCrashAnalysis(analysisWorker), httpapi.WithSecureCookie(secureCookie))
 	stopBackground := func() {
+		if err := analysisWorker.Stop(context.Background()); err != nil {
+			log.Printf("stop crash analysis worker: %v", err)
+		}
+		stopCrashReportCleanup()
 		stopA2SEventLogger()
 		a2sDefenseCoordinator.Stop()
 		vpkRestartCoordinator.Stop()
@@ -255,6 +355,9 @@ func main() {
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/api/", api.Handler())
+	mux.Handle("/submit", api.AcceleratorSubmitHandler())
+	mux.Handle("/symbols/submit", api.AcceleratorSymbolHandler())
+	mux.Handle("/binary/submit", api.AcceleratorBinaryHandler())
 	web := os.Getenv("L4D2_PANEL_WEB_ROOT")
 	if web == "" {
 		web = "web/dist"

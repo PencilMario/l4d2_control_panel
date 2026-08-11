@@ -22,6 +22,8 @@ export type InstanceConfigValues = {
   extra_args: string;
   package_id: string;
   source_id?: string;
+  accelerator_enabled?: boolean;
+  auto_crash_analysis?: boolean;
 };
 
 export type ConfigurableInstance = InstanceConfigValues & {
@@ -106,6 +108,8 @@ export function InstanceConfigModal({
           extra_args: instance.extra_args,
           package_id: packages.some((item) => item.id === instance.package_id) ? instance.package_id : "",
           source_id: instance.source_id || "",
+          accelerator_enabled: instance.accelerator_enabled ?? false,
+          auto_crash_analysis: instance.auto_crash_analysis ?? false,
         }
       : createDefaults(packages),
   );
@@ -297,6 +301,36 @@ export function InstanceConfigModal({
                 value={values.extra_args}
                 onChange={(event) => setValue("extra_args", event.target.value)}
               />
+            </label>
+            <label className="settings-toggle instance-accelerator-toggle">
+              <input
+                type="checkbox"
+                checked={values.accelerator_enabled ?? false}
+                onChange={(event) => {
+                  const enabled = event.target.checked;
+                  setValues((current) => ({
+                    ...current,
+                    accelerator_enabled: enabled,
+                    auto_crash_analysis: enabled ? current.auto_crash_analysis : false,
+                  }));
+                }}
+              />
+              <span>
+                <b>安装 Accelerator</b>
+                <small>为此实例安装崩溃收集扩展并接入面板</small>
+              </span>
+            </label>
+            <label className="settings-toggle instance-accelerator-toggle">
+              <input
+                type="checkbox"
+                checked={values.auto_crash_analysis ?? false}
+                disabled={!values.accelerator_enabled}
+                onChange={(event) => setValue("auto_crash_analysis", event.target.checked)}
+              />
+              <span>
+                <b>自动分析崩溃</b>
+                <small>新转储上传后自动执行 stackwalk 与 AI 诊断</small>
+              </span>
             </label>
           </div>
           <section className="command-section">

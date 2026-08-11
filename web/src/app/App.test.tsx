@@ -1307,6 +1307,37 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
+  it("accepts an HTTP Accelerator download source", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/settings/accelerator") {
+        if (init?.method === "PUT") return Response.json(JSON.parse(String(init.body)));
+        return Response.json({ download_url: "", use_github_proxy: false });
+      }
+      if (path === "/api/settings/jobs") return Response.json({ successful_job_limit: 25 });
+      if (path === "/api/settings/game-logs") return Response.json({ retention_days: 14, max_file_size_mb: 10 });
+      return Response.json({ configured: false });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "系统设置" }));
+    const input = await screen.findByRole("textbox", { name: "Accelerator 下载地址" });
+    await userEvent.type(input, "http://downloads.example.test/accelerator.zip");
+    await userEvent.click(screen.getByRole("button", { name: "保存 Accelerator 下载设置" }));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/settings/accelerator",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({
+          download_url: "http://downloads.example.test/accelerator.zip",
+          use_github_proxy: false,
+        }),
+      }),
+    );
+  });
+
   it("loads, saves, and clears the GitHub releases accelerator", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);

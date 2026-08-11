@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "symbols": [
+    {
+      "name": "sourcemod.2.l4d2.so",
+      "platform": "linux",
+      "architecture": "x86",
+      "debug_identifier": "82F610A214789C43E883D413E3D5D89E0",
+      "source_url": "https://crash.alliedmods.net/symbols/sourcemod/sourcemod.2.l4d2.so/82F610A214789C43E883D413E3D5D89E0/sourcemod.2.l4d2.so.sym.gz",
+      "gzip_sha256": "7ab8e58431662d6f8c6ef3028b0ffc7c4a96a88caadd8ab48015e54b12687150",
+      "raw_sha256": "b68a0fedbca140132e5326d00b9525c508f782efa33f80fd08975ae3931f4bd0",
+      "embedded_path": "internal/crashreports/builtin_symbols/sourcemod.2.l4d2.so.sym"
+    },
+    {
+      "name": "metamod.2.l4d2.so",
+      "platform": "linux",
+      "architecture": "x86",
+      "debug_identifier": "F75F0D6FF28DC359537F6E44559F9FDE0",
+      "source_url": "https://crash.alliedmods.net/symbols/sourcemod/metamod.2.l4d2.so/F75F0D6FF28DC359537F6E44559F9FDE0/metamod.2.l4d2.so.sym.gz",
+      "gzip_sha256": "7a595cf6cb8258788dae9f6852fb23c439088f4f49473b39519280879bb3052d",
+      "raw_sha256": "0da46270ded6270082bbc91a8a75c88e8bfcfd6d859f86377e047e648e3ca6b7",
+      "embedded_path": "internal/crashreports/builtin_symbols/metamod.2.l4d2.so.sym"
+    }
+  ]
+}

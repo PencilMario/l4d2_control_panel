@@ -2,6 +2,7 @@ package config
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -44,5 +45,140 @@ func TestLoadRejectsRelativeDataRoot(t *testing.T) {
 	t.Setenv("L4D2_PANEL_DATA_ROOT", "relative")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected relative data root to be rejected")
+	}
+}
+
+func TestLoadConfiguresCrashReportDefaults(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("L4D2_PANEL_DATA_ROOT", filepath.Join(root, "panel-data"))
+	t.Setenv("L4D2_PANEL_GAME_HOST", "192.0.2.10")
+	t.Setenv("L4D2_PANEL_CRASH_REPORT_TOKEN", "")
+	t.Setenv("L4D2_PANEL_CRASH_RETENTION_DAYS", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CrashReportsDir != filepath.Join(cfg.PanelDir, "crash-dumps") {
+		t.Fatalf("CrashReportsDir=%q", cfg.CrashReportsDir)
+	}
+	if cfg.CrashRetentionDays != 90 {
+		t.Fatalf("CrashRetentionDays=%d", cfg.CrashRetentionDays)
+	}
+	if cfg.CrashReportToken != "" {
+		t.Fatalf("CrashReportToken=%q", cfg.CrashReportToken)
+	}
+}
+
+func TestLoadParsesCrashReportRetentionAndToken(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value string
+		valid bool
+		want  int
+	}{
+		{name: "minimum", value: "1", valid: true, want: 1},
+		{name: "default", value: "90", valid: true, want: 90},
+		{name: "maximum", value: "3650", valid: true, want: 3650},
+		{name: "zero", value: "0"},
+		{name: "negative", value: "-1"},
+		{name: "too large", value: "3651"},
+		{name: "not a number", value: "many"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("L4D2_PANEL_DATA_ROOT", t.TempDir())
+			t.Setenv("L4D2_PANEL_GAME_HOST", "192.0.2.10")
+			t.Setenv("L4D2_PANEL_CRASH_REPORT_TOKEN", "crash-secret")
+			t.Setenv("L4D2_PANEL_CRASH_RETENTION_DAYS", test.value)
+			cfg, err := Load()
+			if !test.valid {
+				if err == nil {
+					t.Fatalf("retention %q was accepted", test.value)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.CrashRetentionDays != test.want || cfg.CrashReportToken != "crash-secret" {
+				t.Fatalf("config=%#v", cfg)
+			}
+		})
+	}
+}
+
+func TestLoadParsesPanelPortAndStackwalkPath(t *testing.T) {
+	t.Setenv("L4D2_PANEL_DATA_ROOT", t.TempDir())
+	t.Setenv("L4D2_PANEL_GAME_HOST", "192.0.2.10")
+	t.Setenv("L4D2_PANEL_LISTEN", "127.0.0.1:9090")
+	t.Setenv("L4D2_PANEL_STACKWALK_PATH", "/opt/tools/minidump_stackwalk")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PanelPort != 9090 || cfg.StackwalkPath != "/opt/tools/minidump_stackwalk" {
+		t.Fatalf("config=%+v", cfg)
+	}
+}
+
+func TestLoadUsesDedicatedAcceleratorPort(t *testing.T) {
+	t.Setenv("L4D2_PANEL_DATA_ROOT", t.TempDir())
+	t.Setenv("L4D2_PANEL_GAME_HOST", "192.0.2.10")
+	t.Setenv("L4D2_PANEL_LISTEN", "0.0.0.0:8080")
+	t.Setenv("L4D2_PANEL_ACCELERATOR_PORT", "18081")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	field := reflect.ValueOf(cfg).FieldByName("AcceleratorPort")
+	if !field.IsValid() {
+		t.Fatal("Config is missing AcceleratorPort")
+	}
+	if got := int(field.Int()); got != 18081 {
+		t.Fatalf("AcceleratorPort=%d, want 18081", got)
+	}
+}
+
+func TestLoadRejectsInvalidAcceleratorPort(t *testing.T) {
+	t.Setenv("L4D2_PANEL_DATA_ROOT", t.TempDir())
+	t.Setenv("L4D2_PANEL_GAME_HOST", "192.0.2.10")
+	t.Setenv("L4D2_PANEL_ACCELERATOR_PORT", "70000")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("accepted invalid Accelerator port")
+	}
+}
+
+func TestLoadUsesStackwalkDefaultAndRejectsInvalidListenOrToolPath(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		listen  string
+		tool    string
+		valid   bool
+		port    int
+		toolOut string
+	}{
+		{name: "default", listen: ":8080", valid: true, port: 8080, toolOut: "/usr/local/bin/minidump_stackwalk"},
+		{name: "bad listen", listen: "not-a-listen-address"},
+		{name: "bad port", listen: ":70000"},
+		{name: "url tool", listen: ":8080", tool: "https://example.test/stackwalk"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("L4D2_PANEL_DATA_ROOT", t.TempDir())
+			t.Setenv("L4D2_PANEL_GAME_HOST", "192.0.2.10")
+			t.Setenv("L4D2_PANEL_LISTEN", test.listen)
+			t.Setenv("L4D2_PANEL_STACKWALK_PATH", test.tool)
+			cfg, err := Load()
+			if !test.valid {
+				if err == nil {
+					t.Fatalf("accepted invalid config: %+v", cfg)
+				}
+				return
+			}
+			if err != nil || cfg.PanelPort != test.port || cfg.StackwalkPath != test.toolOut {
+				t.Fatalf("config=%+v err=%v", cfg, err)
+			}
+		})
 	}
 }

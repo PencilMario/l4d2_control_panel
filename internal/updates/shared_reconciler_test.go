@@ -36,13 +36,20 @@ func (p rebuildPrivate) Apply(_ context.Context, id string) error {
 	return nil
 }
 
+type rebuildAccelerator struct{ events *[]string }
+
+func (a rebuildAccelerator) Ensure(_ context.Context, instance domain.Instance) error {
+	*a.events = append(*a.events, "accelerator:"+instance.ID)
+	return nil
+}
+
 func TestSharedGameRebuilderRecreatesManagedLayers(t *testing.T) {
 	events := []string{}
-	r := SharedGameRebuilder{Overlay: rebuildOverlay{&events}, Packages: rebuildPackages{}, Deployer: rebuildDeployer{&events}, Private: rebuildPrivate{&events}}
+	r := SharedGameRebuilder{Overlay: rebuildOverlay{&events}, Packages: rebuildPackages{}, Deployer: rebuildDeployer{&events}, Private: rebuildPrivate{&events}, Accelerator: rebuildAccelerator{&events}}
 	if err := r.Switch(context.Background(), domain.Instance{ID: "abc", SelectedPackageID: "pkg"}, "old", "new"); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(events, ","); got != "reset:abc:new,package:abc:full,private:abc" {
+	if got := strings.Join(events, ","); got != "reset:abc:new,package:abc:full,private:abc,accelerator:abc" {
 		t.Fatalf("events=%s", got)
 	}
 }
