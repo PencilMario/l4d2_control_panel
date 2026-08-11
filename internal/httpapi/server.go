@@ -2250,7 +2250,6 @@ func (s *Server) cancelJob(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusAccepted, job)
 	}
 }
-
 func (s *Server) acceleratorSubmit(w http.ResponseWriter, r *http.Request) {
 	if s.crashReports == nil {
 		writeError(w, http.StatusServiceUnavailable, "crash_reports_unavailable", "crash report receiver unavailable")
@@ -2420,7 +2419,6 @@ func (s *Server) downloadCrashReport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, name))
 	http.ServeContent(w, r, name, report.UpdatedAt, file)
 }
-
 func (s *Server) Handler() http.Handler { return s.router }
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var in struct {

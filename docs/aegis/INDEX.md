@@ -4,6 +4,7 @@
 
 - [Accelerator management, crash viewing, and AI analysis](specs/2026-08-10-accelerator-management-analysis-design.md)
 - [Accelerator crash report receiver](specs/2026-08-09-accelerator-crash-report-receiver-design.md)
+- [后台任务强制停止](specs/2026-08-08-job-force-stop-design.md)
 - [Per-instance A2S defense logs](specs/2026-08-05-a2s-defense-instance-logs-design.md)
 - [IPv4 A2S defense helper and system setting](specs/2026-08-05-a2s-defense-helper-design.md)
 - [L4D2 Control Panel design](specs/2026-07-14-l4d2-control-panel-design.md)
@@ -41,6 +42,7 @@
 
 - [Accelerator management, crash viewing, and AI analysis](work/2026-08-10-accelerator-management-analysis/20-checkpoint.md)
 - [Accelerator crash report receiver (historical slice)](work/2026-08-09-accelerator-crash-reports/20-checkpoint.md)
+- [后台任务强制停止](work/2026-08-08-job-force-stop/00-intent.md)
 - [IPv4 A2S defense helper evidence](work/2026-08-05-a2s-defense-helper/50-evidence.md)
 - [Self-service VPK upload evidence](work/2026-08-02-self-service-vpk-upload/50-evidence.md)
 - [Game log layout alignment](work/2026-07-19-game-log-layout-alignment/30-plan.md)
