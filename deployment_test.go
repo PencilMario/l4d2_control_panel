@@ -147,6 +147,7 @@ func TestPanelImageContainsConfiguredStackwalkTool(t *testing.T) {
 	dockerfile := string(raw)
 	assertContains(t, dockerfile, "FROM ${ALPINE_IMAGE} AS breakpad", "Breakpad build stage")
 	assertContains(t, dockerfile, "git clone --depth 1 --branch", "configurable Breakpad source")
+	assertContains(t, dockerfile, "build-base ca-certificates git libtool linux-headers zlib-dev", "Breakpad zlib headers")
 	assertContains(t, dockerfile, "make -j2 src/processor/minidump_stackwalk", "Breakpad stackwalk build")
 	assertContains(t, dockerfile, "COPY assets/breakpad/stab.h /usr/local/include/stab.h", "Alpine STABS compatibility header")
 	assertContains(t, dockerfile, "COPY --from=breakpad /src/breakpad/src/processor/minidump_stackwalk", "Breakpad stackwalk installation")

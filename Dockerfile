@@ -19,7 +19,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/panel ./cmd/panel
 FROM ${ALPINE_IMAGE} AS breakpad
 ARG BREAKPAD_REPOSITORY=https://github.com/google/breakpad.git
 ARG BREAKPAD_REF=main
-RUN apk add --no-cache autoconf automake build-base ca-certificates git libtool linux-headers
+RUN apk add --no-cache autoconf automake build-base ca-certificates git libtool linux-headers zlib-dev
 WORKDIR /src/breakpad
 RUN git clone --depth 1 --branch "${BREAKPAD_REF}" --recurse-submodules --shallow-submodules "${BREAKPAD_REPOSITORY}" .
 COPY assets/breakpad/stab.h /usr/local/include/stab.h
