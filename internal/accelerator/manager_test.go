@@ -223,6 +223,13 @@ func TestReinstallAcceptsPanelDeploymentAndRefreshesCoreConfigOwnership(t *testi
 		{name: "addons/sourcemod/extensions/accelerator.ext.so", data: "extension"},
 		{name: "addons/sourcemod/gamedata/accelerator.games.txt", data: "gamedata"},
 	})
+	preexistingGamedata := filepath.Join(gameRoot, "addons", "sourcemod", "gamedata", "accelerator.games.txt")
+	if err := os.MkdirAll(filepath.Dir(preexistingGamedata), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(preexistingGamedata, []byte("package accelerator"), 0o640); err != nil {
+		t.Fatal(err)
+	}
 	archiveBytes, err := os.ReadFile(archive)
 	if err != nil {
 		t.Fatal(err)
@@ -250,6 +257,9 @@ func TestReinstallAcceptsPanelDeploymentAndRefreshesCoreConfigOwnership(t *testi
 	if err := os.WriteFile(managedPath, []byte("package accelerator"), 0o640); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(preexistingGamedata, []byte("package gamedata"), 0o640); err != nil {
+		t.Fatal(err)
+	}
 	if err := manager.Reinstall(context.Background(), instance); err != nil {
 		t.Fatalf("trusted reinstall: %v", err)
 	}
@@ -272,8 +282,14 @@ func TestReinstallAcceptsPanelDeploymentAndRefreshesCoreConfigOwnership(t *testi
 	if manifest.CoreConfigSHA256 != hashBytes(patched) {
 		t.Fatalf("manifest core hash=%s want=%s", manifest.CoreConfigSHA256, hashBytes(patched))
 	}
+	if len(manifest.PreservedFiles) != 0 {
+		t.Fatalf("trusted reinstall must take ownership, preserved_files=%v", manifest.PreservedFiles)
+	}
 	if got, err := os.ReadFile(managedPath); err != nil || string(got) != "extension" {
 		t.Fatalf("managed extension=%q err=%v", got, err)
+	}
+	if got, err := os.ReadFile(preexistingGamedata); err != nil || string(got) != "gamedata" {
+		t.Fatalf("managed gamedata=%q err=%v", got, err)
 	}
 
 	instance.AcceleratorEnabled = false

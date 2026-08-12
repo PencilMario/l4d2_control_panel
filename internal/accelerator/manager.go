@@ -133,7 +133,7 @@ func (m *Manager) ensureArchive(ctx context.Context, instance domain.Instance, a
 	for _, file := range staged {
 		files[file.Relative] = ManagedFile{SHA256: file.Hash, Size: file.Size}
 	}
-	if manifest != nil {
+	if manifest != nil && !replacePanelDeployment {
 		for relative := range manifest.PreservedFiles {
 			if _, stillPresent := files[relative]; stillPresent {
 				preservedFiles[relative] = true
