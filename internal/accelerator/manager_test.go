@@ -206,6 +206,130 @@ func TestEnsureBootstrapsStaticExtensionPackage(t *testing.T) {
 	}
 }
 
+func TestReinstallAcceptsPanelDeploymentAndRefreshesCoreConfigOwnership(t *testing.T) {
+	root := t.TempDir()
+	instanceRoot := filepath.Join(root, "instances", "instance-a")
+	gameRoot := filepath.Join(instanceRoot, "game", "left4dead2")
+	corePath := filepath.Join(gameRoot, "addons", "sourcemod", "configs", "core.cfg")
+	if err := os.MkdirAll(filepath.Dir(corePath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	initialCore := []byte("\"Core\"\n{\n\t\"Initial\" \"value\"\n}\n")
+	if err := os.WriteFile(corePath, initialCore, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	archive := makeTestArchive(t, []testZipEntry{
+		{name: "addons/sourcemod/extensions/accelerator.autoload", data: "autoload"},
+		{name: "addons/sourcemod/extensions/accelerator.ext.so", data: "extension"},
+		{name: "addons/sourcemod/gamedata/accelerator.games.txt", data: "gamedata"},
+	})
+	archiveBytes, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(archiveBytes) }))
+	defer server.Close()
+	manager, err := New(Config{
+		InstancesRoot: filepath.Join(root, "instances"), CacheRoot: filepath.Join(root, "cache"),
+		DownloadURLProvider: func(context.Context) (string, error) { return server.URL, nil },
+		Token:               "secret", PanelPort: 8080, HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance := domain.Instance{ID: "instance-a", AcceleratorEnabled: true}
+	if err := manager.Ensure(context.Background(), instance); err != nil {
+		t.Fatal(err)
+	}
+
+	deployedCore := []byte("\"Core\"\n{\n\t\"PackageValue\" \"new\"\n\t\"MinidumpUrl\" \"https://package.example/submit\"\n}\n")
+	if err := os.WriteFile(corePath, deployedCore, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	managedPath := filepath.Join(gameRoot, "addons", "sourcemod", "extensions", "accelerator.ext.so")
+	if err := os.WriteFile(managedPath, []byte("package accelerator"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Reinstall(context.Background(), instance); err != nil {
+		t.Fatalf("trusted reinstall: %v", err)
+	}
+
+	patched, err := os.ReadFile(corePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(patched), `"PackageValue" "new"`) || !strings.Contains(string(patched), `"MinidumpUrl" "http://127.0.0.1:8080/submit?token=secret"`) {
+		t.Fatalf("core.cfg=%s", patched)
+	}
+	manifestRaw, err := os.ReadFile(filepath.Join(instanceRoot, "accelerator-manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(manifestRaw, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.CoreConfigSHA256 != hashBytes(patched) {
+		t.Fatalf("manifest core hash=%s want=%s", manifest.CoreConfigSHA256, hashBytes(patched))
+	}
+	if got, err := os.ReadFile(managedPath); err != nil || string(got) != "extension" {
+		t.Fatalf("managed extension=%q err=%v", got, err)
+	}
+
+	instance.AcceleratorEnabled = false
+	if err := manager.Ensure(context.Background(), instance); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(corePath); err != nil || !bytes.Equal(got, deployedCore) {
+		t.Fatalf("core restored=%q err=%v want=%q", got, err, deployedCore)
+	}
+}
+
+func TestEnsureRejectsCoreConfigModifiedOutsidePanelOwnership(t *testing.T) {
+	root := t.TempDir()
+	gameRoot := filepath.Join(root, "instances", "instance-a", "game", "left4dead2")
+	corePath := filepath.Join(gameRoot, "addons", "sourcemod", "configs", "core.cfg")
+	if err := os.MkdirAll(filepath.Dir(corePath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(corePath, []byte("\"Core\" {}\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	archive := makeTestArchive(t, []testZipEntry{
+		{name: "addons/sourcemod/extensions/accelerator.autoload", data: "autoload"},
+		{name: "addons/sourcemod/extensions/accelerator.ext.so", data: "extension"},
+		{name: "addons/sourcemod/gamedata/accelerator.games.txt", data: "gamedata"},
+	})
+	archiveBytes, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(archiveBytes) }))
+	defer server.Close()
+	manager, err := New(Config{
+		InstancesRoot: filepath.Join(root, "instances"), CacheRoot: filepath.Join(root, "cache"),
+		DownloadURLProvider: func(context.Context) (string, error) { return server.URL, nil },
+		Token:               "secret", PanelPort: 8080, HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance := domain.Instance{ID: "instance-a", AcceleratorEnabled: true}
+	if err := manager.Ensure(context.Background(), instance); err != nil {
+		t.Fatal(err)
+	}
+	externalCore := []byte("\"Core\" { \"External\" \"change\" }\n")
+	if err := os.WriteFile(corePath, externalCore, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Ensure(context.Background(), instance); !errors.Is(err, ErrManagedConflict) {
+		t.Fatalf("ensure error=%v", err)
+	}
+	if got, err := os.ReadFile(corePath); err != nil || !bytes.Equal(got, externalCore) {
+		t.Fatalf("external core=%q err=%v", got, err)
+	}
+}
+
 func TestEnsureDisabledRestoresOnlyPanelOwnedChanges(t *testing.T) {
 	root := t.TempDir()
 	gameRoot := filepath.Join(root, "instances", "instance-a", "game", "left4dead2")

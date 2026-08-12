@@ -53,6 +53,11 @@ func (a gameAccelerator) Ensure(_ context.Context, instance domain.Instance) err
 	return a.err
 }
 
+func (a gameAccelerator) Reinstall(_ context.Context, instance domain.Instance) error {
+	*a.events = append(*a.events, "accelerator-reinstall:"+instance.ID)
+	return a.err
+}
+
 type orderedLife struct{ events *[]string }
 
 func (l orderedLife) Stop(context.Context, string) error {
@@ -62,6 +67,18 @@ func (l orderedLife) Stop(context.Context, string) error {
 func (l orderedLife) Start(context.Context, string) error {
 	*l.events = append(*l.events, "start")
 	return nil
+}
+
+type failingGameLife struct{ events *[]string }
+
+func (l failingGameLife) Stop(context.Context, string) error {
+	*l.events = append(*l.events, "stop")
+	return nil
+}
+
+func (l failingGameLife) Start(context.Context, string) error {
+	*l.events = append(*l.events, "start")
+	return errors.New("health check failed")
 }
 
 type gamePackages struct {
@@ -119,11 +136,30 @@ func TestGameReinstallPackageOnlyForcesFullDeployment(t *testing.T) {
 	if err := coordinator.Reinstall(context.Background(), "abc", ReinstallOptions{Package: true}); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(events, ","); got != "deploy:full,commit,accelerator:abc" {
+	if got := strings.Join(events, ","); got != "deploy:full,accelerator-reinstall:abc,commit" {
 		t.Fatalf("events=%s", got)
 	}
 	if repo.instance.PackageVersion != "pkg" {
 		t.Fatalf("applied package=%q", repo.instance.PackageVersion)
+	}
+}
+
+func TestGameReinstallRestoresAcceleratorOwnershipWhenRestartFails(t *testing.T) {
+	events := []string{}
+	repo := &gameRepo{instance: domain.Instance{ID: "abc", ContainerID: "game", SelectedPackageID: "pkg", PackageVersion: "pkg", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}}
+	coordinator := GameCoordinator{
+		Instances:   repo,
+		Lifecycle:   failingGameLife{&events},
+		Private:     privateApplier{&events},
+		Packages:    gamePackages{item: content.PackageVersion{ID: "pkg", ArchivePath: "package.zip", Version: "v1"}},
+		Deployer:    gameDeployer{events: &events},
+		Accelerator: gameAccelerator{events: &events},
+	}
+	if err := coordinator.Reinstall(context.Background(), "abc", ReinstallOptions{Package: true}); err == nil {
+		t.Fatal("expected health failure")
+	}
+	if got := strings.Join(events, ","); got != "stop,deploy:full,accelerator-reinstall:abc,start,rollback,accelerator-reinstall:abc" {
+		t.Fatalf("events=%s", got)
 	}
 }
 
@@ -185,17 +221,18 @@ func TestGameReinstallRollsBackCommittedPackageFailureWhileStopped(t *testing.T)
 	want := errors.New("commit failed")
 	repo := &gameRepo{instance: domain.Instance{ID: "abc", SelectedPackageID: "pkg", PackageVersion: "pkg", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}}
 	coordinator := GameCoordinator{
-		Instances: repo,
-		Lifecycle: orderedLife{&events},
-		Private:   privateApplier{&events},
-		Packages:  gamePackages{item: content.PackageVersion{ID: "pkg", ArchivePath: "package.zip", Version: "v1"}},
-		Deployer:  gameDeployer{events: &events, commitErr: want},
+		Instances:   repo,
+		Lifecycle:   orderedLife{&events},
+		Private:     privateApplier{&events},
+		Packages:    gamePackages{item: content.PackageVersion{ID: "pkg", ArchivePath: "package.zip", Version: "v1"}},
+		Deployer:    gameDeployer{events: &events, commitErr: want},
+		Accelerator: gameAccelerator{events: &events},
 	}
 	err := coordinator.Reinstall(context.Background(), "abc", ReinstallOptions{Package: true})
 	if !errors.Is(err, want) {
 		t.Fatalf("err=%v", err)
 	}
-	if got := strings.Join(events, ","); got != "stop,deploy:full,start,commit,stop,rollback,start" {
+	if got := strings.Join(events, ","); got != "stop,deploy:full,accelerator-reinstall:abc,start,commit,stop,rollback,accelerator-reinstall:abc,start" {
 		t.Fatalf("events=%s", got)
 	}
 }
@@ -217,6 +254,18 @@ func TestGameUpdateStopsValidatesReappliesAndStarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := strings.Join(events, ","); got != "stop,steamcmd,private,start" {
+		t.Fatalf("events=%s", got)
+	}
+}
+
+func TestGameUpdatePrivateDeploymentUsesEnsure(t *testing.T) {
+	events := []string{}
+	repo := &gameRepo{instance: domain.Instance{ID: "abc", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}}
+	coordinator := GameCoordinator{Root: "/data", Instances: repo, Lifecycle: orderedLife{&events}, Updater: gameUpdater{events: &events}, Private: privateApplier{&events}, Accelerator: gameAccelerator{events: &events}}
+	if err := coordinator.Update(context.Background(), "abc"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(events, ","); got != "stop,steamcmd,private,accelerator:abc,start" {
 		t.Fatalf("events=%s", got)
 	}
 }

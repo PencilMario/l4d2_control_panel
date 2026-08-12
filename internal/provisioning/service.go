@@ -37,6 +37,7 @@ type SharedOverlay interface {
 
 type AcceleratorEnsurer interface {
 	Ensure(context.Context, domain.Instance) error
+	Reinstall(context.Context, domain.Instance) error
 }
 
 type Service struct {
@@ -152,8 +153,8 @@ func (s Service) Prepare(ctx context.Context, instance domain.Instance) error {
 		return err
 	}
 	if s.Accelerator != nil {
-		if err := s.Accelerator.Ensure(ctx, instance); err != nil {
-			return fmt.Errorf("ensure Accelerator after package deployment: %w", err)
+		if err := s.Accelerator.Reinstall(ctx, instance); err != nil {
+			return fmt.Errorf("reinstall Accelerator after package deployment: %w", err)
 		}
 	}
 	latest, err := s.Instances.Instance(ctx, instance.ID)

@@ -37,6 +37,17 @@ type fileBackup struct {
 }
 
 func (m *Manager) Ensure(ctx context.Context, instance domain.Instance) error {
+	return m.install(ctx, instance, false)
+}
+
+// Reinstall refreshes Accelerator after a Panel-controlled full deployment has
+// replaced SourceMod files. It must only be called by deployment workflows;
+// ordinary lifecycle operations use Ensure so external edits remain protected.
+func (m *Manager) Reinstall(ctx context.Context, instance domain.Instance) error {
+	return m.install(ctx, instance, true)
+}
+
+func (m *Manager) install(ctx context.Context, instance domain.Instance, replacePanelDeployment bool) error {
 	if !instance.AcceleratorEnabled {
 		return m.Remove(ctx, instance.ID)
 	}
@@ -64,10 +75,10 @@ func (m *Manager) Ensure(ctx context.Context, instance domain.Instance) error {
 	if err != nil {
 		return err
 	}
-	return m.ensureArchive(ctx, instance, archive, archiveURL, proxy)
+	return m.ensureArchive(ctx, instance, archive, archiveURL, proxy, replacePanelDeployment)
 }
 
-func (m *Manager) ensureArchive(ctx context.Context, instance domain.Instance, archive DownloadedArchive, sourceURL, proxy string) error {
+func (m *Manager) ensureArchive(ctx context.Context, instance domain.Instance, archive DownloadedArchive, sourceURL, proxy string, replacePanelDeployment bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -103,7 +114,7 @@ func (m *Manager) ensureArchive(ctx context.Context, instance domain.Instance, a
 	if err != nil {
 		return err
 	}
-	if manifest != nil && manifest.CoreConfigSHA256 != hashBytes(coreOriginal) {
+	if !replacePanelDeployment && manifest != nil && manifest.CoreConfigSHA256 != hashBytes(coreOriginal) {
 		return &ConflictError{Paths: []string{manifest.CoreConfigPath}}
 	}
 	patchedCore, currentChanges, err := patchCoreConfig(coreOriginal, m.panelPort, m.token)
@@ -111,10 +122,10 @@ func (m *Manager) ensureArchive(ctx context.Context, instance domain.Instance, a
 		return err
 	}
 	coreChanges := currentChanges
-	if manifest != nil {
+	if manifest != nil && !replacePanelDeployment {
 		coreChanges = mergeCoreConfigChanges(manifest.CoreConfigChanges, currentChanges, patchedCore)
 	}
-	preservedFiles, err := validateExistingManagedFiles(gameRoot, manifest, staged)
+	preservedFiles, err := validateExistingManagedFiles(gameRoot, manifest, staged, replacePanelDeployment)
 	if err != nil {
 		return err
 	}
@@ -431,7 +442,7 @@ func stagedFilesFromDirectory(stage string, manifestFiles map[string]ManagedFile
 	return files, nil
 }
 
-func validateExistingManagedFiles(gameRoot string, previous *Manifest, staged []stagedFile) (map[string]bool, error) {
+func validateExistingManagedFiles(gameRoot string, previous *Manifest, staged []stagedFile, replacePanelDeployment bool) (map[string]bool, error) {
 	allowed := make(map[string]stagedFile, len(staged))
 	preserved := make(map[string]bool)
 	for _, file := range staged {
@@ -463,15 +474,21 @@ func validateExistingManagedFiles(gameRoot string, previous *Manifest, staged []
 				conflicts = append(conflicts, file.Relative)
 				continue
 			}
+			if replacePanelDeployment {
+				continue
+			}
 			preserved[file.Relative] = true
 			continue
 		}
 		if previous != nil && previous.PreservedFiles[file.Relative] {
+			if replacePanelDeployment {
+				continue
+			}
 			preserved[file.Relative] = true
 			continue
 		}
 		hash, hashErr := hashFile(target)
-		if hashErr != nil || hash != owned.SHA256 {
+		if hashErr != nil || (!replacePanelDeployment && hash != owned.SHA256) {
 			conflicts = append(conflicts, file.Relative)
 		}
 	}
@@ -484,7 +501,7 @@ func validateExistingManagedFiles(gameRoot string, previous *Manifest, staged []
 			if err != nil {
 				return nil, err
 			}
-			if previous.PreservedFiles[relative] {
+			if previous.PreservedFiles[relative] && !replacePanelDeployment {
 				continue
 			}
 			info, statErr := os.Lstat(target)
@@ -496,7 +513,7 @@ func validateExistingManagedFiles(gameRoot string, previous *Manifest, staged []
 				continue
 			}
 			hash, hashErr := hashFile(target)
-			if hashErr != nil || hash != previous.Files[relative].SHA256 {
+			if hashErr != nil || (!replacePanelDeployment && hash != previous.Files[relative].SHA256) {
 				conflicts = append(conflicts, relative)
 			}
 		}

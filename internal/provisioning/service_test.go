@@ -58,6 +58,11 @@ func (a fakeAccelerator) Ensure(_ context.Context, instance domain.Instance) err
 	return a.err
 }
 
+func (a fakeAccelerator) Reinstall(_ context.Context, instance domain.Instance) error {
+	*a.events = append(*a.events, "accelerator-reinstall:"+instance.ID)
+	return a.err
+}
+
 type sharedStateRepo struct{ state domain.SharedGameState }
 
 func (r sharedStateRepo) SharedGameState(context.Context) (domain.SharedGameState, error) {
@@ -152,7 +157,7 @@ func TestPrepareDeploysSelectedPackage(t *testing.T) {
 	if err := service.Prepare(context.Background(), repo.instance); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(events, ",") != "ensure:one:release-1,deploy,accelerator:one" {
+	if strings.Join(events, ",") != "ensure:one:release-1,deploy,accelerator-reinstall:one" {
 		t.Fatalf("events=%v", events)
 	}
 	if repo.instance.PackageVersion != "pkg" {

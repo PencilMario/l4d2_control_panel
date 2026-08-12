@@ -118,6 +118,19 @@ func (c GameCoordinator) Reinstall(ctx context.Context, id string, options Reins
 		if err != nil {
 			return c.fault(ctx, id, err)
 		}
+		latest, latestErr := c.Instances.Instance(ctx, id)
+		if latestErr != nil {
+			return latestErr
+		}
+		if c.Accelerator != nil {
+			if err := c.Accelerator.Reinstall(ctx, latest); err != nil {
+				rollbackErr := transaction.Rollback()
+				if resume {
+					rollbackErr = errors.Join(rollbackErr, c.Lifecycle.Start(ctx, id))
+				}
+				return c.fault(ctx, id, errors.Join(fmt.Errorf("reinstall Accelerator after package deployment: %w", err), rollbackErr))
+			}
+		}
 	} else if err := c.Private.Apply(ctx, id); err != nil {
 		return c.fault(ctx, id, err)
 	} else if c.Accelerator != nil {
@@ -133,7 +146,11 @@ func (c GameCoordinator) Reinstall(ctx context.Context, id string, options Reins
 		jobs.Logf(ctx, "update", joblogs.Info, "restarting instance after reinstall instance=%s", id)
 		if err := c.Lifecycle.Start(ctx, id); err != nil {
 			if transaction != nil {
-				_ = transaction.Rollback()
+				rollbackErr := transaction.Rollback()
+				if c.Accelerator != nil {
+					rollbackErr = errors.Join(rollbackErr, c.Accelerator.Reinstall(ctx, latest))
+				}
+				return c.fault(ctx, id, errors.Join(err, rollbackErr))
 			}
 			return c.fault(ctx, id, err)
 		}
@@ -154,19 +171,21 @@ func (c GameCoordinator) Reinstall(ctx context.Context, id string, options Reins
 					return c.fault(ctx, id, errors.Join(err, stopErr))
 				}
 				rollbackErr := transaction.Rollback()
+				if c.Accelerator != nil {
+					rollbackErr = errors.Join(rollbackErr, c.Accelerator.Reinstall(ctx, latest))
+				}
 				startErr := c.Lifecycle.Start(ctx, id)
 				return c.fault(ctx, id, errors.Join(err, rollbackErr, startErr))
 			}
-			return c.fault(ctx, id, errors.Join(err, transaction.Rollback()))
+			rollbackErr := transaction.Rollback()
+			if c.Accelerator != nil {
+				rollbackErr = errors.Join(rollbackErr, c.Accelerator.Reinstall(ctx, latest))
+			}
+			return c.fault(ctx, id, errors.Join(err, rollbackErr))
 		}
 		latest, err = c.Instances.Instance(ctx, id)
 		if err != nil {
 			return err
-		}
-		if c.Accelerator != nil {
-			if err := c.Accelerator.Ensure(ctx, latest); err != nil {
-				return c.fault(ctx, id, fmt.Errorf("ensure Accelerator after package deployment: %w", err))
-			}
 		}
 		latest.PackageVersion = item.ID
 		if err := c.Instances.UpdateInstance(ctx, latest); err != nil {

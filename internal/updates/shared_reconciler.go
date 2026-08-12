@@ -89,8 +89,8 @@ func (r SharedGameRebuilder) Switch(ctx context.Context, instance domain.Instanc
 		return err
 	}
 	if r.Accelerator != nil {
-		if err := r.Accelerator.Ensure(ctx, instance); err != nil {
-			return fmt.Errorf("ensure Accelerator after shared game rebuild: %w", err)
+		if err := r.Accelerator.Reinstall(ctx, instance); err != nil {
+			return fmt.Errorf("reinstall Accelerator after shared game rebuild: %w", err)
 		}
 	}
 	return nil

@@ -23,6 +23,7 @@ type PackageInstanceRepository interface {
 }
 type AcceleratorEnsurer interface {
 	Ensure(context.Context, domain.Instance) error
+	Reinstall(context.Context, domain.Instance) error
 }
 type Coordinator struct {
 	Lifecycle   Lifecycle
@@ -68,6 +69,13 @@ func (c Coordinator) ApplyPackage(ctx context.Context, instanceID string, item c
 		}
 		return deployErr
 	}
+	if err := c.reinstallAccelerator(ctx, instance); err != nil {
+		rollbackErr := transaction.Rollback()
+		if resume {
+			return errors.Join(err, rollbackErr, c.Lifecycle.Start(ctx, instanceID))
+		}
+		return errors.Join(err, rollbackErr)
+	}
 	if resume {
 		if startErr := c.Lifecycle.Start(ctx, instanceID); startErr != nil {
 			return c.rollbackStarted(ctx, instanceID, transaction, startErr)
@@ -77,10 +85,15 @@ func (c Coordinator) ApplyPackage(ctx context.Context, instanceID string, item c
 		if resume {
 			return c.rollbackStarted(ctx, instanceID, transaction, commitErr)
 		}
-		return errors.Join(commitErr, transaction.Rollback())
-	}
-	if err := c.ensureAccelerator(ctx, instance); err != nil {
-		return err
+		rollbackErr := transaction.Rollback()
+		if rollbackErr != nil {
+			return errors.Join(commitErr, rollbackErr)
+		}
+		instance, instanceErr := c.Instances.Instance(ctx, instanceID)
+		if instanceErr != nil {
+			return errors.Join(commitErr, instanceErr)
+		}
+		return errors.Join(commitErr, c.reinstallAccelerator(ctx, instance))
 	}
 	return c.markApplied(ctx, instanceID, item.ID)
 }
@@ -95,6 +108,16 @@ func (c Coordinator) ensureAccelerator(ctx context.Context, instance domain.Inst
 	return nil
 }
 
+func (c Coordinator) reinstallAccelerator(ctx context.Context, instance domain.Instance) error {
+	if c.Accelerator == nil {
+		return nil
+	}
+	if err := c.Accelerator.Reinstall(ctx, instance); err != nil {
+		return fmt.Errorf("reinstall Accelerator after full package deployment: %w", err)
+	}
+	return nil
+}
+
 func (c Coordinator) rollbackStarted(ctx context.Context, instanceID string, transaction Deployment, cause error) error {
 	jobs.Logf(ctx, "package", joblogs.Warn, "rolling back started package deployment instance=%s error=%q", instanceID, cause.Error())
 	stopErr := c.Lifecycle.Stop(ctx, instanceID)
@@ -105,7 +128,12 @@ func (c Coordinator) rollbackStarted(ctx context.Context, instanceID string, tra
 	if rollbackErr != nil {
 		return errors.Join(cause, rollbackErr)
 	}
-	return errors.Join(cause, c.Lifecycle.Start(ctx, instanceID))
+	instance, instanceErr := c.Instances.Instance(ctx, instanceID)
+	if instanceErr != nil {
+		return errors.Join(cause, instanceErr)
+	}
+	reinstallErr := c.reinstallAccelerator(ctx, instance)
+	return errors.Join(cause, reinstallErr, c.Lifecycle.Start(ctx, instanceID))
 }
 
 func (c Coordinator) markApplied(ctx context.Context, instanceID, packageID string) error {

@@ -52,7 +52,12 @@ type fakeAccelerator struct {
 }
 
 func (a fakeAccelerator) Ensure(_ context.Context, instance domain.Instance) error {
-	*a.events = append(*a.events, "accelerator:"+instance.ID)
+	*a.events = append(*a.events, "ensure:"+instance.ID)
+	return a.err
+}
+
+func (a fakeAccelerator) Reinstall(_ context.Context, instance domain.Instance) error {
+	*a.events = append(*a.events, "reinstall:"+instance.ID)
 	return a.err
 }
 
@@ -88,7 +93,7 @@ func TestFullCoordinatorStopsDeploysAndStarts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(life.events, ","); got != "stop,deploy,start,commit,accelerator:abc" {
+	if got := strings.Join(life.events, ","); got != "stop,deploy,reinstall:abc,start,commit" {
 		t.Fatalf("events=%s", got)
 	}
 	if repo.instance.SelectedPackageID != "pkg-v1" || repo.instance.PackageVersion != "pkg-v1" {
@@ -129,11 +134,11 @@ func TestHotCoordinatorMarksPackageAfterCommit(t *testing.T) {
 func TestFullCoordinatorRollsBackWhenRestartHealthFails(t *testing.T) {
 	life := &fakeLifecycle{startFailures: 1}
 	repo := &packageRepo{instance: domain.Instance{ID: "abc", DesiredState: domain.StateRunning, ActualState: domain.StateRunning, SelectedPackageID: "pkg-v2", PackageVersion: "pkg-v1"}}
-	coordinator := Coordinator{Instances: repo, Lifecycle: life, Deployer: fakeDeployer{life: life}}
+	coordinator := Coordinator{Instances: repo, Lifecycle: life, Deployer: fakeDeployer{life: life}, Accelerator: fakeAccelerator{events: &life.events}}
 	if err := coordinator.ApplyPackage(context.Background(), "abc", content.PackageVersion{ID: "pkg-v2", ArchivePath: "p.zip", Version: "v2"}, Full); err == nil {
 		t.Fatal("expected health failure")
 	}
-	if got := strings.Join(life.events, ","); got != "stop,deploy,start,stop,rollback,start" {
+	if got := strings.Join(life.events, ","); got != "stop,deploy,reinstall:abc,start,stop,rollback,reinstall:abc,start" {
 		t.Fatalf("events=%s", got)
 	}
 	if repo.instance.PackageVersion != "pkg-v1" {
@@ -143,11 +148,23 @@ func TestFullCoordinatorRollsBackWhenRestartHealthFails(t *testing.T) {
 func TestFullCoordinatorRollsBackWhenJournalCommitFails(t *testing.T) {
 	life := &fakeLifecycle{}
 	repo := &packageRepo{instance: domain.Instance{ID: "abc", DesiredState: domain.StateRunning, ActualState: domain.StateRunning, SelectedPackageID: "pkg-v2", PackageVersion: "pkg-v1"}}
-	coordinator := Coordinator{Instances: repo, Lifecycle: life, Deployer: fakeDeployer{life: life, commitFail: true}}
+	coordinator := Coordinator{Instances: repo, Lifecycle: life, Deployer: fakeDeployer{life: life, commitFail: true}, Accelerator: fakeAccelerator{events: &life.events}}
 	if err := coordinator.ApplyPackage(context.Background(), "abc", content.PackageVersion{ID: "pkg-v2", ArchivePath: "p.zip", Version: "v2"}, Full); err == nil {
 		t.Fatal("expected commit failure")
 	}
-	if got := strings.Join(life.events, ","); got != "stop,deploy,start,commit,stop,rollback,start" {
+	if got := strings.Join(life.events, ","); got != "stop,deploy,reinstall:abc,start,commit,stop,rollback,reinstall:abc,start" {
+		t.Fatalf("events=%s", got)
+	}
+}
+
+func TestFullCoordinatorRestoresAcceleratorOwnershipAfterStoppedCommitFailure(t *testing.T) {
+	life := &fakeLifecycle{}
+	repo := &packageRepo{instance: domain.Instance{ID: "abc", DesiredState: domain.StateStopped, ActualState: domain.StateStopped}}
+	coordinator := Coordinator{Instances: repo, Lifecycle: life, Deployer: fakeDeployer{life: life, commitFail: true}, Accelerator: fakeAccelerator{events: &life.events}}
+	if err := coordinator.ApplyPackage(context.Background(), "abc", content.PackageVersion{ID: "pkg-v2", ArchivePath: "p.zip", Version: "v2"}, Full); err == nil {
+		t.Fatal("expected commit failure")
+	}
+	if got := strings.Join(life.events, ","); got != "deploy,reinstall:abc,commit,rollback,reinstall:abc" {
 		t.Fatalf("events=%s", got)
 	}
 }
