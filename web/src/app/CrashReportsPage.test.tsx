@@ -120,13 +120,12 @@ describe("CrashReportsPage", () => {
     });
     render(<CrashReportsPage instances={[{ id: "i1", name: "一号" }, { id: "i2", name: "二号" }]} apiRequest={request} textRequest={vi.fn().mockResolvedValue("")} />);
 
-    await screen.findByText("一号");
     const list = screen.getByRole("region", { name: "崩溃报告列表" });
-    expect(within(list).getAllByRole("listitem")).toHaveLength(2);
+    await waitFor(() => expect(within(list).getAllByRole("listitem")).toHaveLength(2));
     fireEvent.change(screen.getByRole("combobox", { name: "筛选实例" }), { target: { value: "i2" } });
-    expect(within(list).getAllByRole("listitem")).toHaveLength(1);
+    await waitFor(() => expect(within(list).getAllByRole("listitem")).toHaveLength(1));
     fireEvent.change(screen.getByRole("searchbox", { name: "搜索崩溃签名" }), { target: { value: "ACCESS_VIOLATION" } });
-    expect(within(list).getAllByRole("listitem")).toHaveLength(1);
+    await waitFor(() => expect(within(list).getAllByRole("listitem")).toHaveLength(1));
     const metadata = await screen.findByRole("listitem", { name: /上传元数据/ });
     fireEvent.click(within(metadata).getByRole("button", { name: "展开上传元数据" }));
     expect(await screen.findByText("second")).toBeVisible();
