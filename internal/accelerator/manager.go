@@ -40,11 +40,32 @@ func (m *Manager) Ensure(ctx context.Context, instance domain.Instance) error {
 	return m.install(ctx, instance, false)
 }
 
-// Reinstall refreshes Accelerator after a Panel-controlled full deployment has
-// replaced SourceMod files. It must only be called by deployment workflows;
+// Reinstall reconciles Accelerator after a Panel-controlled full deployment
+// has replaced SourceMod files. It must only be called by deployment workflows;
 // ordinary lifecycle operations use Ensure so external edits remain protected.
 func (m *Manager) Reinstall(ctx context.Context, instance domain.Instance) error {
+	if !instance.AcceleratorEnabled {
+		return m.forgetManifestAfterPanelDeployment(ctx, instance.ID)
+	}
 	return m.install(ctx, instance, true)
+}
+
+// forgetManifestAfterPanelDeployment drops stale ownership metadata after a
+// full package deployment while Accelerator is disabled. The deployment owns
+// the current game files, so restoring or validating against the previous
+// Accelerator manifest would incorrectly reject its core.cfg.
+func (m *Manager) forgetManifestAfterPanelDeployment(ctx context.Context, instanceID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	instanceRoot, _, err := m.instanceGameRoot(instanceID)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(manifestPath(instanceRoot)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func (m *Manager) install(ctx context.Context, instance domain.Instance, replacePanelDeployment bool) error {
