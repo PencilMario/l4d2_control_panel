@@ -15,7 +15,7 @@
 - `npx tsc --noEmit -p tsconfig.json` passed.
 - `npm run build` completed successfully; Vite emitted only the existing chunk-size warning.
 - `git diff --check` passed.
-- Regression coverage includes the upload Stackwalk-only composition, Worker Stackwalk-only execution without AI calls, empty analyze requests, explicit `ai=true`, and frontend no-request-until-click behavior.
+- Regression coverage includes the upload Stackwalk-only composition helper, Worker Stackwalk-only execution without AI calls, existing crash-report receiver/protocol tests, empty analyze requests, explicit `ai=true`, and frontend no-request-until-click behavior.
 
 The aggregate Windows `go test ./...` command remains subject to unrelated temporary-directory cleanup races observed in existing tests. The affected tests are outside the changed crash behavior; the crash-related packages passed independently. `go test -race` was not run because CGO is unavailable in this environment.
 

@@ -6,7 +6,7 @@
 - [x] Run the focused UI regression for the setting copy.
 - [x] Make the manual analysis API default to Stackwalk-only unless `ai=true` is explicit.
 - [x] Add Worker coverage for Stackwalk-only execution without AI calls.
-- [x] Run focused and full local verification.
+- [x] Run focused and available local verification.
 - [x] Commit the fix without unrelated worktree changes.
 - [x] Deploy only Panel to 安可服 and verify health plus manual-analysis behavior.
 - [x] Record evidence and residual risk.
