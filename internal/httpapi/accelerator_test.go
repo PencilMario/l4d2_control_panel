@@ -338,7 +338,7 @@ func TestCrashReportManagementAPIFiltersDetailsAndDownloadsArtifacts(t *testing.
 	}
 }
 
-func TestCrashReportAnalyzeAcceptsEmptyBody(t *testing.T) {
+func TestCrashReportAnalyzeDefaultsToStackwalkOnly(t *testing.T) {
 	s, db := testServer(t)
 	defer db.Close()
 	manager, err := crashreports.New(crashreports.Config{Root: t.TempDir(), Token: "secret"})
@@ -365,7 +365,7 @@ func TestCrashReportAnalyzeAcceptsEmptyBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForJob(t, jobManager, job.ID)
-	if queue.reportID != report.ID || !queue.requestAI {
+	if queue.reportID != report.ID || queue.requestAI {
 		t.Fatalf("analysis queue=%+v", queue)
 	}
 }

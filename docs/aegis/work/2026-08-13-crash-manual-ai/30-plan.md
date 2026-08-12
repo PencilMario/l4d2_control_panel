@@ -4,7 +4,7 @@
 
 **Goal:** Prevent every Accelerator upload from creating an AI report while keeping AI generation available from the explicit manual analysis action.
 
-**Architecture:** Keep the production `EnqueueAnalysis` callback as the upload-side Stackwalk entry point, but call the shared analysis Worker with `requestAI=false`. Manual API requests continue to call the same Worker with `requestAI=true`, so only the explicit action generates AI output. Existing instance auto-analysis storage remains for compatibility but is no longer an upload trigger.
+**Architecture:** Keep the production `EnqueueAnalysis` callback as the upload-side Stackwalk entry point, but call the shared analysis Worker with `requestAI=false`. The manual UI action explicitly sends `ai=true`; omitted or `ai=false` requests remain Stackwalk-only, so only an explicit AI request generates AI output. Existing instance auto-analysis storage remains for compatibility but is no longer an upload trigger.
 
 **Tech Stack:** Go, SQLite-backed crash report manager, persistent Jobs, React/Vitest frontend tests, Docker Compose deployment.
 
@@ -25,7 +25,7 @@
 
 **Why this task exists:** The user needs upload to be cheap and deterministic while retaining an explicit AI action. Tests must distinguish the upload path from the manual path.
 
-**Impact / Compatibility:** Tests must prove an upload with an instance configured for old automatic analysis does not invoke an enqueue callback or create a `crash_analysis` Job, while the existing manual API still submits `requestAI=true` and the frontend still calls the API only after button activation.
+**Impact / Compatibility:** Tests must prove an upload with an instance configured for old automatic analysis does not request AI, while the existing manual API still submits `requestAI=true` only for the explicit AI action and the frontend still calls the API only after button activation.
 
 **Verification:** Run the focused Go and Vitest tests and observe the new upload test fail before production code changes.
 
@@ -39,7 +39,7 @@
 
 - [ ] **Step 2: Add the API/manual analysis assertion**
 
-  Keep the existing `POST /api/crash-reports/{id}/analyze` assertions and add an explicit assertion that the queued request has `requestAI == true`; this guards the retained manual path.
+  Keep the existing `POST /api/crash-reports/{id}/analyze` assertions and add explicit assertions that `ai=true` queues `requestAI == true` while an omitted `ai` field remains Stackwalk-only; this guards both manual modes.
 
 - [ ] **Step 3: Add the frontend explicit-action assertion**
 
@@ -57,7 +57,7 @@
 
 **Why this task exists:** `cmd/panel/main.go` is the production owner that translates `AutoCrashAnalysis` into an upload-side `analysisWorker.Enqueue(..., true)` call.
 
-**Impact / Compatibility:** Keep the upload enqueue callback so automatic Stackwalk remains intact, but force its Worker request to `false`. Manual HTTP analysis still receives the Worker with `true`.
+**Impact / Compatibility:** Keep the upload enqueue callback so automatic Stackwalk remains intact, but force its Worker request to `false`. Manual HTTP analysis receives `true` only when the request explicitly asks for AI.
 
 **Verification:** Focused tests pass, and a source-level search confirms no upload initialization path calls `analysisWorker.Enqueue` based on `AutoCrashAnalysis`.
 
