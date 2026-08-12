@@ -22,7 +22,8 @@
 - 访问带缓存参数的首页后，`index-DGEHwafY.js` 与 `index-BAhLgeZK.css` 均返回 200，页面渲染出控制面板，控制台错误为 0。
 - 进入“崩溃报告”页后，`GET /api/crash-reports`、报告详情和 `download?file=stackwalk` 均返回 200；页面显示已有 1 条报告，控制台错误为 0。
 - 首次页面加载出现旧资源指纹 404，是 Playwright 浏览器缓存复用了旧 HTML/资源组合；带查询参数重新加载后资源指纹一致，未修改产品代码。
-- 移动端检查未计入通过项：浏览器桥接未实际应用 390px 视口，最终测得 `innerWidth=1028`。
+- 重新建立浏览器目标页后，390x844 视口实际生效：`innerWidth=390`、`scrollWidth=375`，首页与“崩溃报告”页面均无控制台错误。
+- 移动端“崩溃报告”页面确认显示报告列表与详情；`GET /api/crash-reports`、详情与 stackwalk 下载请求均为 200。
 
 ## Worktree and scope
 
