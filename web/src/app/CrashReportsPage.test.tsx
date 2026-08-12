@@ -30,7 +30,7 @@ const report: CrashReport = {
   stackwalk_tool: "minidump_stackwalk",
   ai_status: "succeeded",
   ai_model: "local-model",
-  ai_analysis: "# Left 4 Dead 2 崩溃分析\n\n建议检查最近部署的插件。\n\n<mark data-testid=\"unsafe-html\">不应作为 HTML 执行</mark>\n\n- 核对 `server.so` 符号\n- 回退最近插件\n\n```text\n#0 server!Crash+0x10\n```",
+  ai_analysis: "# Left 4 Dead 2 崩溃分析\n\n建议检查最近部署的插件。\n\n<mark data-testid=\"unsafe-html\">不应作为 HTML 执行</mark>\n\n![远程图片](https://tracker.invalid/crash-analysis.png)\n\n- 核对 `server.so` 符号\n- 回退最近插件\n\n```text\n#0 server!Crash+0x10\n```",
 };
 
 describe("CrashReportsPage", () => {
@@ -76,15 +76,17 @@ describe("CrashReportsPage", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "查看 AI 分析" }));
     expect(await screen.findByRole("heading", { name: "Left 4 Dead 2 崩溃分析", level: 1 })).toBeVisible();
+    expect(screen.getByRole("button", { name: "返回崩溃详情" })).toHaveFocus();
     expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
     expect(screen.getByRole("list")).toHaveTextContent("核对 server.so 符号");
     expect(screen.getByText("#0 server!Crash+0x10")).toBeVisible();
     expect(screen.queryByTestId("unsafe-html")).not.toBeInTheDocument();
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "上传元数据", level: 3 })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "返回崩溃详情" }));
     expect(await screen.findByRole("heading", { name: "上传元数据", level: 3 })).toBeVisible();
-    expect(screen.getByRole("button", { name: "查看 AI 分析" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "查看 AI 分析" })).toHaveFocus();
   });
 
   it("filters reports by instance and signature", async () => {

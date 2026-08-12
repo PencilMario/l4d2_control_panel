@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { ArrowLeft, Bot } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -12,10 +13,16 @@ type Props = {
 const shortID = (value: string) => `${value.slice(0, 10)}…${value.slice(-8)}`;
 
 export function CrashAnalysisReader({ analysis, instanceName, reportID, onBack }: Props) {
+  const backButton = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    backButton.current?.focus();
+  }, []);
+
   return (
     <section className="crash-analysis-reader" aria-label="AI 分析阅读器">
       <header className="crash-analysis-reader-head">
-        <button className="crash-analysis-back" type="button" onClick={onBack}>
+        <button ref={backButton} className="crash-analysis-back" type="button" onClick={onBack}>
           <ArrowLeft />
           <span>返回崩溃详情</span>
         </button>
@@ -29,7 +36,7 @@ export function CrashAnalysisReader({ analysis, instanceName, reportID, onBack }
         </div>
       </header>
       <article className="crash-analysis-markdown">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{analysis}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: () => null }}>{analysis}</ReactMarkdown>
       </article>
     </section>
   );

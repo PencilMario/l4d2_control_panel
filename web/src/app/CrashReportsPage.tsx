@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   AlertTriangle,
   Bot,
@@ -145,6 +145,7 @@ export function CrashReportsPage({ instances, apiRequest, textRequest, blobReque
   const [detailLoading, setDetailLoading] = useState(false);
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [analysisReaderOpen, setAnalysisReaderOpen] = useState(false);
+  const analysisReaderTrigger = useRef<HTMLButtonElement>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -260,6 +261,10 @@ export function CrashReportsPage({ instances, apiRequest, textRequest, blobReque
   const selectedSummary = reports.find((report) => report.id === selectedID) || details;
   const selectedModules = details?.modules || details?.parsed_signature?.modules || [];
   const canAnalyze = Boolean(details && terminalStatuses.has(details.ai_status || "") || details && details.ai_status !== "running" && details.ai_status !== "queued");
+  const closeAnalysisReader = () => {
+    setAnalysisReaderOpen(false);
+    requestAnimationFrame(() => analysisReaderTrigger.current?.focus());
+  };
 
   if (analysisReaderOpen && details?.ai_analysis) {
     return (
@@ -267,7 +272,7 @@ export function CrashReportsPage({ instances, apiRequest, textRequest, blobReque
         analysis={details.ai_analysis}
         instanceName={instanceNames.get(details.instance_id || "") || details.instance_id || "未关联实例"}
         reportID={details.id}
-        onBack={() => setAnalysisReaderOpen(false)}
+        onBack={closeAnalysisReader}
       />
     );
   }
@@ -362,7 +367,7 @@ export function CrashReportsPage({ instances, apiRequest, textRequest, blobReque
                   {stackwalk ? <pre className="crash-code-view">{stackwalk}</pre> : <div className="crash-inline-empty">暂无 stackwalk 输出</div>}
                 </AnalysisCard>
                 <AnalysisCard title="AI 诊断" icon={<Bot />} status={details.ai_status} error={details.ai_error}>
-                  {details.ai_analysis ? <div className="crash-ai-action"><p>AI 已生成诊断报告，可在独立阅读页查看完整 Markdown 内容。</p><button type="button" onClick={() => setAnalysisReaderOpen(true)}><Bot />查看 AI 分析</button></div> : <div className="crash-inline-empty">暂无 AI 诊断结果</div>}
+                  {details.ai_analysis ? <div className="crash-ai-action"><p>AI 已生成诊断报告，可在独立阅读页查看完整 Markdown 内容。</p><button ref={analysisReaderTrigger} type="button" onClick={() => setAnalysisReaderOpen(true)}><Bot />查看 AI 分析</button></div> : <div className="crash-inline-empty">暂无 AI 诊断结果</div>}
                 </AnalysisCard>
               </div>
               <div className="crash-data-grid">
