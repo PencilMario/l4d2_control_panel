@@ -14,7 +14,8 @@
 - `dump_syms --help` 输出 `Usage: dump_syms [OPTION] <binary-with-debugging-info> [directories-for-debug-file]`。
 - Panel 启动日志：`scanned=105543 candidates=396 generated=248 skipped=0 duplicates=142 failed=6`。
 - 失败项均为 `libcef.so` 或 `steamclient.so`，错误为 `Breakpad symbol output exceeds the size limit`；这属于已声明的单文件符号大小限制，不影响其余模块生成。
-- 安可当前数据目录没有可供本次收尾重新生成的完整游戏模块变更；运行时启动扫描已经实际读取 release 与实例 overlay 路径。
+- 本次收尾未重新触发游戏实例安装；Panel 启动扫描已实际读取 release 与实例 overlay 路径，并将结果写入 `/home/steam/l4d2-panel-data/panel/crash-dumps`。
+- 运行时文件检查确认 `engine_srv.so`、`server_srv.so`、`srcds_linux`、`sourcemod.2.l4d2.so`、`metamod.2.l4d2.so` 的 Breakpad lookup 文件均存在；目录统计为 250 个 manifest、500 个 `.sym` 文件（含内置/历史重复对象）。
 
 ## Browser verification
 
