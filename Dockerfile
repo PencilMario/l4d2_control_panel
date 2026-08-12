@@ -21,7 +21,7 @@ ARG BREAKPAD_REPOSITORY=https://github.com/google/breakpad.git
 ARG BREAKPAD_REF=main
 RUN apk add --no-cache autoconf automake build-base ca-certificates git libtool linux-headers zlib-dev
 WORKDIR /src/breakpad
-RUN git clone --depth 1 --branch "${BREAKPAD_REF}" --recurse-submodules --shallow-submodules "${BREAKPAD_REPOSITORY}" .
+RUN git clone --depth 1 --branch "${BREAKPAD_REF}" "${BREAKPAD_REPOSITORY}" .
 COPY assets/breakpad/stab.h /usr/local/include/stab.h
 RUN ./configure --disable-silent-rules
 RUN make -j2 src/processor/minidump_stackwalk
