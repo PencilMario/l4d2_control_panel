@@ -4,6 +4,7 @@
 .gotmp-merge/
 .env
 .tmp-accelerator-fix-*/
+.tmp-symbol-deployment-*/
 accelerator-crash-test-*.tar.gz
 accelerator-upstream-inspect-*/
 accelerator-staging-jobs-*.png
