@@ -317,19 +317,7 @@ export function InstanceConfigModal({
               />
               <span>
                 <b>安装 Accelerator</b>
-                <small>为此实例安装崩溃收集扩展并接入面板</small>
-              </span>
-            </label>
-            <label className="settings-toggle instance-accelerator-toggle">
-              <input
-                type="checkbox"
-                checked={values.auto_crash_analysis ?? false}
-                disabled={!values.accelerator_enabled}
-                onChange={(event) => setValue("auto_crash_analysis", event.target.checked)}
-              />
-              <span>
-                <b>自动分析崩溃</b>
-                <small>新转储上传后自动执行 stackwalk 与 AI 诊断</small>
+                <small>为此实例安装崩溃收集扩展并接入面板；上传后自动执行 Stackwalk，AI 诊断请在崩溃报告详情中手动触发</small>
               </span>
             </label>
           </div>

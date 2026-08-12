@@ -76,6 +76,8 @@ describe("CrashReportsPage", () => {
     expect(screen.getByRole("table", { name: "崩溃模块" })).toBeVisible();
     expect(screen.getByRole("button", { name: "查看 AI 分析" })).toBeVisible();
 
+    expect(request.mock.calls.filter(([path]) => path.endsWith("/analyze"))).toHaveLength(0);
+
     fireEvent.click(screen.getByRole("button", { name: "重新分析" }));
     await waitFor(() => expect(request).toHaveBeenCalledWith(
       `/api/crash-reports/${report.id}/analyze`,

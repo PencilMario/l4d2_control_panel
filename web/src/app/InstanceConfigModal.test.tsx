@@ -39,6 +39,21 @@ const instance: ConfigurableInstance = {
 };
 
 describe("InstanceConfigModal", () => {
+  it("explains that crash AI analysis is manual after Accelerator upload", () => {
+    render(
+      <InstanceConfigModal
+        mode="edit"
+        instance={{ ...instance, accelerator_enabled: true, auto_crash_analysis: true }}
+        packages={[packageA]}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("为此实例安装崩溃收集扩展并接入面板；上传后自动执行 Stackwalk，AI 诊断请在崩溃报告详情中手动触发")).toBeInTheDocument();
+    expect(screen.queryByText("自动分析崩溃")).not.toBeInTheDocument();
+  });
+
   it("prevents duplicate submissions while save is pending", () => {
     const submit = vi.fn(() => new Promise<void>(() => undefined));
     render(

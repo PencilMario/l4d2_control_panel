@@ -63,6 +63,17 @@ type a2sEventRunner interface {
 	Run(context.Context)
 }
 
+type crashAnalysisEnqueuer interface {
+	Enqueue(context.Context, string, bool) error
+}
+
+func enqueueCrashReportStackwalk(ctx context.Context, worker crashAnalysisEnqueuer, report crashreports.Report) error {
+	if worker == nil {
+		return errors.New("crash analysis worker is not started")
+	}
+	return worker.Enqueue(ctx, report.ID, false)
+}
+
 func startA2SEventLogger(parent context.Context, logger a2sEventRunner) func() {
 	ctx, cancel := context.WithCancel(parent)
 	done := make(chan struct{})
@@ -114,14 +125,7 @@ func main() {
 			if report.InstanceID == "" {
 				return nil
 			}
-			instance, err := db.Instance(ctx, report.InstanceID)
-			if errors.Is(err, store.ErrNotFound) || err != nil || !instance.AutoCrashAnalysis {
-				return err
-			}
-			if analysisWorker == nil {
-				return errors.New("crash analysis worker is not started")
-			}
-			return analysisWorker.Enqueue(ctx, report.ID, true)
+			return enqueueCrashReportStackwalk(ctx, analysisWorker, report)
 		},
 		AnalysisEnqueueError: func(err error) { log.Printf("crash analysis enqueue: %v", err) },
 		ReportCleanupError:   func(err error) { log.Printf("crash report cleanup: %v", err) },
