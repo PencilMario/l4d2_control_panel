@@ -42,7 +42,7 @@ describe("CrashReportsPage", () => {
       throw new Error(`unexpected request ${path}`);
     });
     const textRequest = vi.fn(async (path: string) => {
-      if (path.includes("file=stackwalk")) return "#0 server!Crash+0x10\n#1 engine!Run+0x20";
+      if (path.includes("file=stackwalk")) return "#0 server!Crash+0x10\n#1 engine!Run+0x20\n    Found by: stack scanning";
       throw new Error(`unexpected text request ${path}`);
     });
 
@@ -50,12 +50,31 @@ describe("CrashReportsPage", () => {
 
     expect(screen.getByRole("heading", { name: "崩溃报告", level: 1 })).toBeVisible();
     expect(await screen.findByRole("button", { name: /死亡中心/ })).toBeVisible();
-    const metadata = (await screen.findByRole("heading", { name: "上传元数据", level: 3 })).closest("section");
-    expect(metadata?.querySelector("pre")?.textContent).toContain("hostname coop");
-    const stackwalk = (await screen.findByRole("heading", { name: "Stackwalk", level: 3 })).closest("section");
-    expect(stackwalk?.querySelector("pre")?.textContent).toContain("#0 server!Crash+0x10");
-    expect(screen.getByRole("button", { name: "查看 AI 分析" })).toBeVisible();
+    const diagnostics = await screen.findByRole("list", { name: "崩溃诊断" });
+    expect(diagnostics.querySelectorAll(":scope > .crash-diagnostic-row")).toHaveLength(4);
+    expect(screen.queryByRole("list", { name: "崩溃诊断" })?.querySelector(".crash-analysis-grid")).not.toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "崩溃诊断" })?.querySelector(".crash-data-grid")).not.toBeInTheDocument();
+    expect(within(diagnostics).getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual([
+      "Stackwalk",
+      "AI 诊断",
+      "上传元数据",
+      "崩溃模块",
+    ]);
+    const stackwalk = within(diagnostics).getByRole("listitem", { name: /Stackwalk/ });
+    expect(within(stackwalk).getAllByRole("listitem")).toHaveLength(2);
+    expect(within(stackwalk).getByText("server")).toBeVisible();
+    expect(within(stackwalk).getByText("Crash")).toBeVisible();
+    expect(within(stackwalk).getByText("0x10")).toBeVisible();
+    expect(within(stackwalk).getByText("来源：stack scanning")).toBeVisible();
+    const metadata = within(diagnostics).getByRole("listitem", { name: /上传元数据/ });
+    expect(metadata).toHaveAttribute("data-expanded", "false");
+    fireEvent.click(within(metadata).getByRole("button", { name: "展开上传元数据" }));
+    expect(metadata.querySelector("pre")).toHaveTextContent("hostname coop");
+    const modules = within(diagnostics).getByRole("listitem", { name: /崩溃模块/ });
+    expect(modules).toHaveAttribute("data-expanded", "false");
+    fireEvent.click(within(modules).getByRole("button", { name: "展开崩溃模块" }));
     expect(screen.getByRole("table", { name: "崩溃模块" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "查看 AI 分析" })).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "重新分析" }));
     await waitFor(() => expect(request).toHaveBeenCalledWith(
@@ -106,6 +125,8 @@ describe("CrashReportsPage", () => {
     expect(within(list).getAllByRole("listitem")).toHaveLength(1);
     fireEvent.change(screen.getByRole("searchbox", { name: "搜索崩溃签名" }), { target: { value: "ACCESS_VIOLATION" } });
     expect(within(list).getAllByRole("listitem")).toHaveLength(1);
+    const metadata = await screen.findByRole("listitem", { name: /上传元数据/ });
+    fireEvent.click(within(metadata).getByRole("button", { name: "展开上传元数据" }));
     expect(await screen.findByText("second")).toBeVisible();
   });
 });

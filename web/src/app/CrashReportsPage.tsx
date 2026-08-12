@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   AlertTriangle,
   Bot,
-  CheckCircle2,
+  ChevronDown,
   Clock3,
   Code2,
   Download,
@@ -18,6 +18,8 @@ import {
 } from "lucide-react";
 import { api, apiBlob, apiText } from "../api/client";
 import { CrashAnalysisReader } from "./CrashAnalysisReader";
+import { StackwalkView } from "./StackwalkView";
+import { parseStackwalk } from "./stackwalk";
 
 export type CrashAnalysisStatus = "queued" | "running" | "succeeded" | "failed" | "unconfigured" | "";
 
@@ -145,6 +147,7 @@ export function CrashReportsPage({ instances, apiRequest, textRequest, blobReque
   const [detailLoading, setDetailLoading] = useState(false);
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [analysisReaderOpen, setAnalysisReaderOpen] = useState(false);
+  const [expandedDiagnostics, setExpandedDiagnostics] = useState<Record<string, boolean>>({ stackwalk: true });
   const analysisReaderTrigger = useRef<HTMLButtonElement>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -199,6 +202,7 @@ export function CrashReportsPage({ instances, apiRequest, textRequest, blobReque
     setDetails(null);
     setStackwalk("");
     setAnalysisReaderOpen(false);
+    setExpandedDiagnostics({ stackwalk: true });
     setError("");
     void request(`/api/crash-reports/${selectedID}`)
       .then(async (value) => {
@@ -260,7 +264,11 @@ export function CrashReportsPage({ instances, apiRequest, textRequest, blobReque
 
   const selectedSummary = reports.find((report) => report.id === selectedID) || details;
   const selectedModules = details?.modules || details?.parsed_signature?.modules || [];
+  const stackwalkFrameCount = useMemo(() => parseStackwalk(stackwalk).filter((entry) => entry.kind === "frame").length, [stackwalk]);
   const canAnalyze = Boolean(details && terminalStatuses.has(details.ai_status || "") || details && details.ai_status !== "running" && details.ai_status !== "queued");
+  const toggleDiagnostic = (key: string) => {
+    setExpandedDiagnostics((current) => ({ ...current, [key]: !current[key] }));
+  };
   const closeAnalysisReader = () => {
     setAnalysisReaderOpen(false);
     requestAnimationFrame(() => analysisReaderTrigger.current?.focus());
@@ -357,23 +365,53 @@ export function CrashReportsPage({ instances, apiRequest, textRequest, blobReque
                 <CrashDatum label="平台 / 架构" value={`${details.parsed_signature?.platform || "--"} / ${details.parsed_signature?.architecture || "--"}`} icon={<Code2 />} />
                 <CrashDatum label="扩展版本" value={details.extension_version || "--"} icon={<FileCode2 />} />
               </div>
-              <div className="crash-artifact-actions">
-                <button type="button" onClick={() => void download("metadata")}><FileText />metadata</button>
-                <button type="button" onClick={() => void download("stackwalk")} disabled={details.stackwalk_status !== "succeeded"}><Code2 />stackwalk</button>
-                <button type="button" onClick={() => void download("ai")} disabled={details.ai_status !== "succeeded"}><Bot />AI 分析</button>
-              </div>
-              <div className="crash-analysis-grid">
-                <AnalysisCard title="Stackwalk" icon={<Code2 />} status={details.stackwalk_status} error={details.stackwalk_error}>
-                  {stackwalk ? <pre className="crash-code-view">{stackwalk}</pre> : <div className="crash-inline-empty">暂无 stackwalk 输出</div>}
-                </AnalysisCard>
-                <AnalysisCard title="AI 诊断" icon={<Bot />} status={details.ai_status} error={details.ai_error}>
-                  {details.ai_analysis ? <div className="crash-ai-action"><p>AI 已生成诊断报告，可在独立阅读页查看完整 Markdown 内容。</p><button ref={analysisReaderTrigger} type="button" onClick={() => setAnalysisReaderOpen(true)}><Bot />查看 AI 分析</button></div> : <div className="crash-inline-empty">暂无 AI 诊断结果</div>}
-                </AnalysisCard>
-              </div>
-              <div className="crash-data-grid">
-                <section className="crash-subpanel"><div className="crash-subpanel-head"><h3>上传元数据</h3><small>{formatBytes(details.metadata_size)}</small></div><pre className="crash-metadata-view">{details.metadata || "暂无 metadata"}</pre></section>
-                <section className="crash-subpanel"><div className="crash-subpanel-head"><h3>崩溃模块</h3><small>{selectedModules.length} 个模块</small></div><ModuleTable modules={selectedModules} onDownload={(artifact) => void download("binary", artifact)} /></section>
-              </div>
+              <ol className="crash-diagnostics" aria-label="崩溃诊断">
+                <CrashDiagnosticRow
+                  id="stackwalk"
+                  title="Stackwalk"
+                  description={stackwalkFrameCount ? `${stackwalkFrameCount} 个调用栈帧${details.stackwalk_tool ? ` · ${details.stackwalk_tool}` : ""}` : "逐帧查看转储解析结果"}
+                  icon={<Code2 />}
+                  status={details.stackwalk_status}
+                  error={details.stackwalk_error}
+                  actions={<button type="button" className="crash-diagnostic-action" disabled={details.stackwalk_status !== "succeeded"} onClick={() => void download("stackwalk")}><Download />下载 stackwalk</button>}
+                  expanded={Boolean(expandedDiagnostics.stackwalk)}
+                  onToggle={() => toggleDiagnostic("stackwalk")}
+                >
+                  <StackwalkView value={stackwalk} />
+                </CrashDiagnosticRow>
+                <CrashDiagnosticRow
+                  id="ai"
+                  title="AI 诊断"
+                  description={details.ai_analysis ? `${details.ai_model || "未记录模型"}${details.ai_completed_at ? ` · ${formatDate(details.ai_completed_at)}` : ""}` : "等待分析任务生成中文 Markdown 报告"}
+                  icon={<Bot />}
+                  status={details.ai_status}
+                  error={details.ai_error}
+                  actions={details.ai_analysis ? <><button ref={analysisReaderTrigger} className="crash-diagnostic-action" type="button" onClick={() => setAnalysisReaderOpen(true)}><Bot />查看 AI 分析</button><button type="button" className="crash-diagnostic-action" onClick={() => void download("ai")}><Download />下载 AI 分析</button></> : undefined}
+                >
+                  <div className="crash-inline-empty">暂无 AI 诊断结果</div>
+                </CrashDiagnosticRow>
+                <CrashDiagnosticRow
+                  id="metadata"
+                  title="上传元数据"
+                  description={`上传时附带的信息 · ${formatBytes(details.metadata_size)}`}
+                  icon={<FileText />}
+                  actions={<button type="button" className="crash-diagnostic-action" onClick={() => void download("metadata")}><Download />下载 metadata</button>}
+                  expanded={Boolean(expandedDiagnostics.metadata)}
+                  onToggle={() => toggleDiagnostic("metadata")}
+                >
+                  <pre className="crash-metadata-view">{details.metadata || "暂无 metadata"}</pre>
+                </CrashDiagnosticRow>
+                <CrashDiagnosticRow
+                  id="modules"
+                  title="崩溃模块"
+                  description={`${selectedModules.length} 个模块 · 符号和二进制文件`}
+                  icon={<FileCode2 />}
+                  expanded={Boolean(expandedDiagnostics.modules)}
+                  onToggle={() => toggleDiagnostic("modules")}
+                >
+                  <ModuleTable modules={selectedModules} onDownload={(artifact) => void download("binary", artifact)} />
+                </CrashDiagnosticRow>
+              </ol>
               <dl className="crash-detail-meta"><div><dt>SHA-256</dt><dd><code>{details.sha256}</code></dd></div><div><dt>Server ID</dt><dd><code>{details.server_id || "--"}</code></dd></div><div><dt>游戏目录</dt><dd><code>{details.game_directory || "--"}</code></dd></div><div><dt>用户标识</dt><dd><code>{details.user_id || "--"}</code></dd></div></dl>
             </>
           ) : null}
@@ -387,8 +425,27 @@ function CrashDatum({ icon, label, value }: { icon: ReactNode; label: string; va
   return <div className="crash-datum"><span>{icon}</span><div><small>{label}</small><strong>{value}</strong></div></div>;
 }
 
-function AnalysisCard({ title, icon, status, error, children }: { title: string; icon: ReactNode; status?: CrashAnalysisStatus; error?: string; children: ReactNode }) {
-  return <section className="crash-analysis-card"><header><h3>{icon}{title}</h3><span className={`crash-status ${statusClass(status)}`}>{statusLabel(status)}</span></header>{error ? <p className="crash-analysis-error">{error}</p> : null}{children}</section>;
+function CrashDiagnosticRow({ id, title, description, icon, status, error, actions, expanded, onToggle, children }: { id: string; title: string; description: string; icon: ReactNode; status?: CrashAnalysisStatus; error?: string; actions?: ReactNode; expanded?: boolean; onToggle?: () => void; children: ReactNode }) {
+  const rowID = `crash-diagnostic-${id}`;
+  const contentID = `${rowID}-content`;
+  const expandable = Boolean(onToggle);
+  return (
+    <li className={`crash-diagnostic-row${expanded ? " expanded" : ""}`} data-expanded={expanded ? "true" : "false"} aria-labelledby={rowID}>
+      <div className="crash-diagnostic-summary">
+        <span className="crash-diagnostic-icon">{icon}</span>
+        <div className="crash-diagnostic-copy">
+          <h3 id={rowID}>{title}</h3>
+          <p>{description}</p>
+        </div>
+        <div className="crash-diagnostic-meta">
+          {status !== undefined ? <span className={`crash-status ${statusClass(status)}`}>{statusLabel(status)}</span> : null}
+          {actions ? <div className="crash-diagnostic-actions">{actions}</div> : null}
+        </div>
+        {expandable ? <button className="crash-diagnostic-toggle" type="button" aria-label={`${expanded ? "收起" : "展开"}${title}`} aria-expanded={expanded} aria-controls={contentID} onClick={onToggle}><ChevronDown /></button> : null}
+      </div>
+      {expanded ? <div id={contentID} className="crash-diagnostic-content" aria-labelledby={rowID}>{error ? <p className="crash-analysis-error">{error}</p> : null}{children}</div> : error ? <p className="crash-diagnostic-error">{error}</p> : null}
+    </li>
+  );
 }
 
 function ModuleTable({ modules, onDownload }: { modules: CrashModule[]; onDownload: (artifact: string) => void }) {
