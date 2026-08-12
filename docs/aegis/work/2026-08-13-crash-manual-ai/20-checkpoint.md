@@ -4,7 +4,7 @@
 
 - Active slice: final evidence and branch handoff.
 - Completed: user-approved design; isolated worktree created from `897937e`; upload now queues Stackwalk-only work; manual analysis is AI-enabled only when `ai=true`; stale instance setting copy removed; Worker and empty-request regressions added; implementation commits `491dd6f` and `61f87e3` deployed to 安可服.
-- Remaining: commit the final evidence-document changes and hand off the verified branch state.
+- Remaining: hand off the verified branch state.
 - Blocked on: nothing. Production upload end-to-end was not re-triggered during acceptance; this remains a bounded residual risk, not a deployment blocker.
 
 ## Evidence refs
