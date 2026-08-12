@@ -30,7 +30,7 @@ const report: CrashReport = {
   stackwalk_tool: "minidump_stackwalk",
   ai_status: "succeeded",
   ai_model: "local-model",
-  ai_analysis: "建议检查最近部署的插件。",
+  ai_analysis: "# Left 4 Dead 2 崩溃分析\n\n建议检查最近部署的插件。\n\n<mark data-testid=\"unsafe-html\">不应作为 HTML 执行</mark>\n\n- 核对 `server.so` 符号\n- 回退最近插件\n\n```text\n#0 server!Crash+0x10\n```",
 };
 
 describe("CrashReportsPage", () => {
@@ -54,7 +54,7 @@ describe("CrashReportsPage", () => {
     expect(metadata?.querySelector("pre")?.textContent).toContain("hostname coop");
     const stackwalk = (await screen.findByRole("heading", { name: "Stackwalk", level: 3 })).closest("section");
     expect(stackwalk?.querySelector("pre")?.textContent).toContain("#0 server!Crash+0x10");
-    expect(screen.getByText("建议检查最近部署的插件。")).toBeVisible();
+    expect(screen.getByRole("button", { name: "查看 AI 分析" })).toBeVisible();
     expect(screen.getByRole("table", { name: "崩溃模块" })).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "重新分析" }));
@@ -63,6 +63,28 @@ describe("CrashReportsPage", () => {
       expect.objectContaining({ method: "POST", body: JSON.stringify({ ai: true }) }),
     ));
     expect(await screen.findByText("分析任务已提交")).toBeVisible();
+  });
+
+  it("opens the full Markdown AI analysis reader and returns to the selected report", async () => {
+    const request = vi.fn(async (path: string) => {
+      if (path === "/api/crash-reports") return [report];
+      if (path === `/api/crash-reports/${report.id}`) return { ...report, metadata: "hostname coop" };
+      throw new Error(`unexpected request ${path}`);
+    });
+
+    render(<CrashReportsPage instances={[{ id: "i1", name: "死亡中心" }]} apiRequest={request} textRequest={vi.fn().mockResolvedValue("")} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "查看 AI 分析" }));
+    expect(await screen.findByRole("heading", { name: "Left 4 Dead 2 崩溃分析", level: 1 })).toBeVisible();
+    expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
+    expect(screen.getByRole("list")).toHaveTextContent("核对 server.so 符号");
+    expect(screen.getByText("#0 server!Crash+0x10")).toBeVisible();
+    expect(screen.queryByTestId("unsafe-html")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "上传元数据", level: 3 })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "返回崩溃详情" }));
+    expect(await screen.findByRole("heading", { name: "上传元数据", level: 3 })).toBeVisible();
+    expect(screen.getByRole("button", { name: "查看 AI 分析" })).toBeVisible();
   });
 
   it("filters reports by instance and signature", async () => {
