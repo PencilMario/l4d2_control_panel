@@ -49,6 +49,14 @@ const apiInstance = {
   CreatedAt: "2026-07-15T00:00:00Z",
   UpdatedAt: "2026-07-15T00:00:00Z",
 };
+
+describe("sharedGameVersionLabel", () => {
+  it("uses the game version without exposing the release ID", () => {
+    expect(sharedGameVersionLabel({ version: "2.2.4.3", active_release_id: "release-uuid" })).toBe("2.2.4.3");
+    expect(sharedGameVersionLabel({ active_release_id: "release-uuid" })).toBe("版本未知");
+    expect(sharedGameVersionLabel({})).toBe("未初始化");
+  });
+});
 const stoppedOverview = {
   actual_state: "stopped",
   container_running: false,
@@ -1200,6 +1208,14 @@ describe("App", () => {
     );
     expect(screen.getByRole("button", { name: "清理资源 maps.vpk" })).toBeVisible();
     vi.unstubAllGlobals();
+  });
+
+  it("styles the shared game update action", async () => {
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
+
+    expect(screen.getByRole("button", { name: "更新共享游戏本体" }))
+      .toHaveClass("shared-game-update");
   });
 
   it("reports the real control-node health", async () => {
