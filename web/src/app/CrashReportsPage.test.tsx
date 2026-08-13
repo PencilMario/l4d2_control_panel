@@ -42,7 +42,7 @@ describe("CrashReportsPage", () => {
       throw new Error(`unexpected request ${path}`);
     });
     const textRequest = vi.fn(async (path: string) => {
-      if (path.includes("file=stackwalk")) return "#0 server!Crash+0x10\n#1 engine!Run+0x20\n    Found by: stack scanning";
+      if (path.includes("file=stackwalk")) return "Thread 0 (crashed)\n#0 server!Crash+0x10\n#1 engine!Run+0x20\n    Found by: stack scanning\nminidump.cc:5573: INFO: ignored";
       throw new Error(`unexpected text request ${path}`);
     });
 
@@ -61,11 +61,14 @@ describe("CrashReportsPage", () => {
       "崩溃模块",
     ]);
     const stackwalk = within(diagnostics).getByRole("listitem", { name: /Stackwalk/ });
+    expect(await within(stackwalk).findByRole("list", { name: "调用栈" })).toBeVisible();
     expect(within(stackwalk).getAllByRole("listitem")).toHaveLength(2);
     expect(within(stackwalk).getByText("server")).toBeVisible();
     expect(within(stackwalk).getByText("Crash")).toBeVisible();
     expect(within(stackwalk).getByText("0x10")).toBeVisible();
     expect(within(stackwalk).getByText("来源：stack scanning")).toBeVisible();
+    expect(within(stackwalk).queryByText(/minidump\.cc/)).not.toBeInTheDocument();
+    expect(within(stackwalk).queryByRole("combobox", { name: "Stackwalk线程" })).not.toBeInTheDocument();
     const metadata = within(diagnostics).getByRole("listitem", { name: /上传元数据/ });
     expect(metadata).toHaveAttribute("data-expanded", "false");
     fireEvent.click(within(metadata).getByRole("button", { name: "展开上传元数据" }));
@@ -76,12 +79,111 @@ describe("CrashReportsPage", () => {
     expect(screen.getByRole("table", { name: "崩溃模块" })).toBeVisible();
     expect(screen.getByRole("button", { name: "查看 AI 分析" })).toBeVisible();
 
+    expect(request.mock.calls.filter(([path]) => path.endsWith("/analyze"))).toHaveLength(0);
+
     fireEvent.click(screen.getByRole("button", { name: "重新分析" }));
     await waitFor(() => expect(request).toHaveBeenCalledWith(
       `/api/crash-reports/${report.id}/analyze`,
       expect.objectContaining({ method: "POST", body: JSON.stringify({ ai: true }) }),
     ));
     expect(await screen.findByText("分析任务已提交")).toBeVisible();
+  });
+
+  it("switches Stackwalk threads and shows the crashed top call in the report list", async () => {
+    const threadedStackwalk = [
+      "Thread 0",
+      "0 worker.so!Idle + 0x8",
+      "Thread 2 (crashed)",
+      "0 server.so!Crash + 0x10",
+      "1 engine.so!Run + 0x20",
+      "minidump.cc:5573: INFO: ignored",
+    ].join("\n");
+    const request = vi.fn(async (path: string) => {
+      if (path === "/api/crash-reports") return [report];
+      if (path === `/api/crash-reports/${report.id}`) return { ...report, metadata: "hostname coop" };
+      throw new Error(`unexpected request ${path}`);
+    });
+    const textRequest = vi.fn(async (path: string) => {
+      if (path.includes("file=stackwalk")) return threadedStackwalk;
+      throw new Error(`unexpected text request ${path}`);
+    });
+
+    render(<CrashReportsPage instances={[{ id: "i1", name: "死亡中心" }]} apiRequest={request} textRequest={textRequest} />);
+
+    const listRow = await screen.findByRole("button", { name: /死亡中心/ });
+    expect(await within(listRow).findByText("#0 server.so!Crash + 0x10")).toBeVisible();
+    expect(within(listRow).queryByText(report.crash_signature!)).not.toBeInTheDocument();
+    const stackwalk = await screen.findByRole("list", { name: "调用栈" });
+    expect(within(stackwalk).getByText("Crash")).toBeVisible();
+    expect(within(stackwalk).queryByText("Idle")).not.toBeInTheDocument();
+    const threadSelect = screen.getByRole("combobox", { name: "Stackwalk线程" });
+    expect(threadSelect).toHaveValue("2");
+    fireEvent.change(threadSelect, { target: { value: "0" } });
+    expect(within(stackwalk).getByText("Idle")).toBeVisible();
+    expect(within(stackwalk).queryByText("Crash")).not.toBeInTheDocument();
+    expect(within(stackwalk).queryByText(/minidump\.cc/)).not.toBeInTheDocument();
+  });
+
+  it("shows a stable Chinese empty state when a report has no parsed calls", async () => {
+    const request = vi.fn(async (path: string) => {
+      if (path === "/api/crash-reports") return [report];
+      if (path === `/api/crash-reports/${report.id}`) return { ...report, metadata: "hostname coop" };
+      throw new Error(`unexpected request ${path}`);
+    });
+    const textRequest = vi.fn(async (path: string) => {
+      if (path.includes("file=stackwalk")) return "minidump.cc:5573: INFO: ignored";
+      throw new Error(`unexpected text request ${path}`);
+    });
+
+    render(<CrashReportsPage instances={[{ id: "i1", name: "死亡中心" }]} apiRequest={request} textRequest={textRequest} />);
+
+    const listRow = await screen.findByRole("button", { name: /死亡中心/ });
+    expect(within(listRow).getByText("暂无可用调用")).toBeVisible();
+    const stackwalk = await screen.findByRole("listitem", { name: /Stackwalk/ });
+    expect(within(stackwalk).getByRole("region", { name: "调用栈" })).toBeVisible();
+    expect(within(stackwalk).getByText("暂无可用调用栈")).toBeVisible();
+    expect(within(stackwalk).queryByText(/minidump\.cc/)).not.toBeInTheDocument();
+  });
+
+  it("does not cache a failed Stackwalk preview and allows retrying the read", async () => {
+    let stackwalkReads = 0;
+    const request = vi.fn(async (path: string) => {
+      if (path === "/api/crash-reports") return [report];
+      if (path === `/api/crash-reports/${report.id}`) return { ...report, metadata: "hostname coop" };
+      throw new Error(`unexpected request ${path}`);
+    });
+    const textRequest = vi.fn(async (path: string) => {
+      if (!path.includes("file=stackwalk")) throw new Error(`unexpected text request ${path}`);
+      stackwalkReads += 1;
+      if (stackwalkReads === 1) throw new Error("temporary read failure");
+      return "Thread 0 (crashed)\n0 server.so!Crash + 0x10";
+    });
+
+    render(<CrashReportsPage instances={[{ id: "i1", name: "死亡中心" }]} apiRequest={request} textRequest={textRequest} />);
+
+    const stackwalk = await screen.findByRole("region", { name: "调用栈" });
+    expect(within(stackwalk).getByText("读取调用失败")).toBeVisible();
+    const retry = within(stackwalk).getByRole("button", { name: "重新读取 Stackwalk" });
+    fireEvent.click(retry);
+    expect(await screen.findByText("Crash")).toBeVisible();
+    expect(textRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not show a loading state when the backend Stackwalk job is not successful", async () => {
+    const failedReport = { ...report, stackwalk_status: "failed" as const };
+    const request = vi.fn(async (path: string) => {
+      if (path === "/api/crash-reports") return [failedReport];
+      if (path === `/api/crash-reports/${report.id}`) return { ...failedReport, metadata: "hostname coop" };
+      throw new Error(`unexpected request ${path}`);
+    });
+    const textRequest = vi.fn().mockResolvedValue("");
+
+    render(<CrashReportsPage instances={[{ id: "i1", name: "死亡中心" }]} apiRequest={request} textRequest={textRequest} />);
+
+    const stackwalk = await screen.findByRole("region", { name: "调用栈" });
+    expect(within(stackwalk).getByText("暂无可用调用栈")).toBeVisible();
+    expect(within(stackwalk).queryByText("正在读取调用栈…")).not.toBeInTheDocument();
+    expect(textRequest).not.toHaveBeenCalled();
   });
 
   it("opens the full Markdown AI analysis reader and returns to the selected report", async () => {
@@ -118,13 +220,12 @@ describe("CrashReportsPage", () => {
     });
     render(<CrashReportsPage instances={[{ id: "i1", name: "一号" }, { id: "i2", name: "二号" }]} apiRequest={request} textRequest={vi.fn().mockResolvedValue("")} />);
 
-    await screen.findByText("一号");
     const list = screen.getByRole("region", { name: "崩溃报告列表" });
-    expect(within(list).getAllByRole("listitem")).toHaveLength(2);
+    await waitFor(() => expect(within(list).getAllByRole("listitem")).toHaveLength(2));
     fireEvent.change(screen.getByRole("combobox", { name: "筛选实例" }), { target: { value: "i2" } });
-    expect(within(list).getAllByRole("listitem")).toHaveLength(1);
+    await waitFor(() => expect(within(list).getAllByRole("listitem")).toHaveLength(1));
     fireEvent.change(screen.getByRole("searchbox", { name: "搜索崩溃签名" }), { target: { value: "ACCESS_VIOLATION" } });
-    expect(within(list).getAllByRole("listitem")).toHaveLength(1);
+    await waitFor(() => expect(within(list).getAllByRole("listitem")).toHaveLength(1));
     const metadata = await screen.findByRole("listitem", { name: /上传元数据/ });
     fireEvent.click(within(metadata).getByRole("button", { name: "展开上传元数据" }));
     expect(await screen.findByText("second")).toBeVisible();

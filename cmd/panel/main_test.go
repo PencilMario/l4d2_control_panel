@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/not0721here/l4d2-control-panel/internal/crashreports"
 )
 
 type fakeShutdowner struct{ events *[]string }
@@ -99,5 +101,28 @@ func TestShutdownPanelBoundsSchedulerStop(t *testing.T) {
 		close(release)
 		<-done
 		t.Fatal("scheduler stop ignored shutdown deadline")
+	}
+}
+
+type recordingCrashAnalysisEnqueuer struct {
+	reportID  string
+	requestAI bool
+}
+
+func (q *recordingCrashAnalysisEnqueuer) Enqueue(_ context.Context, reportID string, requestAI bool) error {
+	q.reportID = reportID
+	q.requestAI = requestAI
+	return nil
+}
+
+func TestEnqueueCrashReportStackwalkDoesNotRequestAI(t *testing.T) {
+	queue := &recordingCrashAnalysisEnqueuer{}
+	report := crashreports.Report{ID: "report-id"}
+
+	if err := enqueueCrashReportStackwalk(context.Background(), queue, report); err != nil {
+		t.Fatal(err)
+	}
+	if queue.reportID != report.ID || queue.requestAI {
+		t.Fatalf("queue=%+v want report=%q requestAI=false", queue, report.ID)
 	}
 }

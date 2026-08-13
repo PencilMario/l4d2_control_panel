@@ -208,7 +208,7 @@ func (s *Server) analyzeCrashReport(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	requestAI := true
+	requestAI := false
 	if input.AI != nil {
 		requestAI = *input.AI
 	}

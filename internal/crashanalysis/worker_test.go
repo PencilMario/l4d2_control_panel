@@ -169,6 +169,33 @@ func TestWorkerMarksAIUnconfiguredWithoutCallingClient(t *testing.T) {
 	}
 }
 
+func TestWorkerRunsStackwalkWithoutRequestingAI(t *testing.T) {
+	store := &workerStore{report: crashreports.Report{ID: strings.Repeat("f", 64)}, metadata: []byte("metadata"), done: make(chan struct{}, 1)}
+	stackwalk := &workerStackwalk{}
+	ai := &workerAI{}
+	worker, err := NewWorker(WorkerConfig{Store: store, Stackwalker: stackwalk, AI: ai, AIModel: "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop(context.Background())
+	if err := worker.Enqueue(context.Background(), store.report.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-store.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stackwalk-only analysis did not finish")
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if stackwalk.calls != 1 || store.stackwalkCalls != 1 || store.stackwalk.Status != crashreports.AnalysisStatusSucceeded || ai.calls != 0 || store.aiCalls != 0 || store.ai.Status != "" {
+		t.Fatalf("stackwalk_calls=%d stackwalk=%+v ai_calls=%d ai_client_calls=%d", store.stackwalkCalls, store.stackwalk, store.aiCalls, ai.calls)
+	}
+}
+
 func TestWorkerRecoversQueuedReportsOnStart(t *testing.T) {
 	store := &workerStore{report: crashreports.Report{ID: strings.Repeat("c", 64)}, metadata: []byte("metadata"), recovered: []crashreports.AnalysisRecovery{{ID: strings.Repeat("c", 64)}}, done: make(chan struct{}, 1)}
 	worker, err := NewWorker(WorkerConfig{Store: store, Stackwalker: &workerStackwalk{}})

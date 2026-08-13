@@ -19,7 +19,7 @@ import {
 import { api, apiBlob, apiText } from "../api/client";
 import { CrashAnalysisReader } from "./CrashAnalysisReader";
 import { StackwalkView } from "./StackwalkView";
-import { parseStackwalk } from "./stackwalk";
+import { formatStackwalkFrame, getCrashedThreadTopFrame, parseStackwalk } from "./stackwalk";
 
 export type CrashAnalysisStatus = "queued" | "running" | "succeeded" | "failed" | "unconfigured" | "";
 
@@ -132,6 +132,16 @@ const formatDate = (value: string | undefined) => {
 
 const shortID = (value: string) => `${value.slice(0, 10)}…${value.slice(-8)}`;
 
+function getReportTopCall(stackwalk?: string): string {
+  const topFrame = getCrashedThreadTopFrame(parseStackwalk(stackwalk || ""));
+  return topFrame ? `#${topFrame.index} ${formatStackwalkFrame(topFrame)}` : "暂无可用调用";
+}
+
+type StackwalkPreviewState = {
+  status: "loading" | "ready" | "error";
+  text?: string;
+};
+
 export function CrashReportsPage({ instances, apiRequest, textRequest, blobRequest }: Props) {
   const request = useMemo<APIRequest>(() => apiRequest || ((path, init) => api<unknown>(path, init)), [apiRequest]);
   const readText = useMemo(() => textRequest || ((path: string, init?: RequestInit) => apiText(path, init)), [textRequest]);
@@ -140,6 +150,7 @@ export function CrashReportsPage({ instances, apiRequest, textRequest, blobReque
   const [selectedID, setSelectedID] = useState("");
   const [details, setDetails] = useState<CrashReportDetails | null>(null);
   const [stackwalk, setStackwalk] = useState("");
+  const [stackwalkPreviews, setStackwalkPreviews] = useState<Record<string, StackwalkPreviewState>>({});
   const [instanceFilter, setInstanceFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [signatureFilter, setSignatureFilter] = useState("");
@@ -151,6 +162,8 @@ export function CrashReportsPage({ instances, apiRequest, textRequest, blobReque
   const analysisReaderTrigger = useRef<HTMLButtonElement>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const stackwalkCache = useRef(new Map<string, string>());
+  const stackwalkRequests = useRef(new Map<string, Promise<string>>());
 
   const instanceNames = useMemo(() => new Map(instances.map((item) => [item.id, item.name])), [instances]);
   const filteredReports = useMemo(() => {
@@ -180,6 +193,38 @@ export function CrashReportsPage({ instances, apiRequest, textRequest, blobReque
   useEffect(() => {
     void loadReports();
   }, [loadReports]);
+
+  const loadStackwalk = useCallback((reportID: string) => {
+    const cached = stackwalkCache.current.get(reportID);
+    if (cached !== undefined) {
+      setStackwalkPreviews((current) => current[reportID]?.status === "ready" ? current : { ...current, [reportID]: { status: "ready", text: cached } });
+      return Promise.resolve(cached);
+    }
+    const pending = stackwalkRequests.current.get(reportID);
+    if (pending) return pending;
+    setStackwalkPreviews((current) => ({ ...current, [reportID]: { status: "loading" } }));
+    const request = readText(`/api/crash-reports/${reportID}/download?file=stackwalk`)
+      .then((text) => {
+        stackwalkCache.current.set(reportID, text);
+        setStackwalkPreviews((current) => ({ ...current, [reportID]: { status: "ready", text } }));
+        return text;
+      })
+      .catch((reason) => {
+        setStackwalkPreviews((current) => ({ ...current, [reportID]: { status: "error" } }));
+        throw reason;
+      })
+      .finally(() => {
+        stackwalkRequests.current.delete(reportID);
+      });
+    stackwalkRequests.current.set(reportID, request);
+    return request;
+  }, [readText]);
+
+  useEffect(() => {
+    for (const report of reports) {
+      if (report.stackwalk_status === "succeeded") void loadStackwalk(report.id).catch(() => undefined);
+    }
+  }, [loadStackwalk, reports]);
 
   /* Keep the selected report stable when a background refresh returns the same list. */
   useEffect(() => {
@@ -211,7 +256,7 @@ export function CrashReportsPage({ instances, apiRequest, textRequest, blobReque
         setDetails(next);
         if (next.stackwalk_status !== "succeeded") return;
         try {
-          const text = await readText(`/api/crash-reports/${selectedID}/download?file=stackwalk`);
+          const text = await loadStackwalk(selectedID);
           if (active) setStackwalk(text);
         } catch {
           if (active) setStackwalk("");
@@ -224,7 +269,7 @@ export function CrashReportsPage({ instances, apiRequest, textRequest, blobReque
         if (active) setDetailLoading(false);
       });
     return () => { active = false; };
-  }, [readText, request, selectedID]);
+  }, [loadStackwalk, request, selectedID]);
 
   const download = async (file: string, artifact?: string) => {
     if (!selectedID) return;
@@ -264,7 +309,8 @@ export function CrashReportsPage({ instances, apiRequest, textRequest, blobReque
 
   const selectedSummary = reports.find((report) => report.id === selectedID) || details;
   const selectedModules = details?.modules || details?.parsed_signature?.modules || [];
-  const stackwalkFrameCount = useMemo(() => parseStackwalk(stackwalk).filter((entry) => entry.kind === "frame").length, [stackwalk]);
+  const selectedStackwalkState = stackwalkPreviews[selectedID];
+  const stackwalkFrameCount = useMemo(() => parseStackwalk(stackwalk).reduce((count, thread) => count + thread.frames.length, 0), [stackwalk]);
   const canAnalyze = Boolean(details && terminalStatuses.has(details.ai_status || "") || details && details.ai_status !== "running" && details.ai_status !== "queued");
   const toggleDiagnostic = (key: string) => {
     setExpandedDiagnostics((current) => ({ ...current, [key]: !current[key] }));
@@ -272,6 +318,13 @@ export function CrashReportsPage({ instances, apiRequest, textRequest, blobReque
   const closeAnalysisReader = () => {
     setAnalysisReaderOpen(false);
     requestAnimationFrame(() => analysisReaderTrigger.current?.focus());
+  };
+  const retryStackwalk = () => {
+    if (!selectedID) return;
+    setStackwalk("");
+    void loadStackwalk(selectedID)
+      .then((text) => setStackwalk(text))
+      .catch(() => undefined);
   };
 
   if (analysisReaderOpen && details?.ai_analysis) {
@@ -338,7 +391,13 @@ export function CrashReportsPage({ instances, apiRequest, textRequest, blobReque
                   <span className="crash-row-main">
                     <strong>{instanceNames.get(report.instance_id || "") || report.instance_id || "未关联实例"}</strong>
                     <small>{formatDate(report.received_at)} · {formatBytes(report.minidump_size)}</small>
-                    <code>{report.parsed_signature?.crash_reason || report.crash_signature || shortID(report.id)}</code>
+                    <code className="crash-row-call">
+                      {stackwalkPreviews[report.id]?.status === "loading"
+                        ? "正在读取调用…"
+                        : stackwalkPreviews[report.id]?.status === "error"
+                        ? "读取调用失败"
+                        : getReportTopCall(stackwalkPreviews[report.id]?.text)}
+                    </code>
                   </span>
                   <span className={`crash-row-status ${statusClass(report.ai_status || report.stackwalk_status)}`}>{statusLabel(report.ai_status || report.stackwalk_status)}</span>
                 </button>
@@ -377,7 +436,11 @@ export function CrashReportsPage({ instances, apiRequest, textRequest, blobReque
                   expanded={Boolean(expandedDiagnostics.stackwalk)}
                   onToggle={() => toggleDiagnostic("stackwalk")}
                 >
-                  <StackwalkView value={stackwalk} />
+                  <StackwalkView
+                    value={stackwalk}
+                    status={details.stackwalk_status === "succeeded" ? selectedStackwalkState?.status : "ready"}
+                    onRetry={retryStackwalk}
+                  />
                 </CrashDiagnosticRow>
                 <CrashDiagnosticRow
                   id="ai"
