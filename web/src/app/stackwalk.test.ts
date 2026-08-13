@@ -45,6 +45,37 @@ describe("parseStackwalk", () => {
     ]);
   });
 
+  it("drops numeric preamble lines when the stackwalk has explicit thread headings", () => {
+    expect(parseStackwalk([
+      "Operating system: Linux",
+      "CPU: x86",
+      "     1 CPU",
+      "Thread 0 (crashed)",
+      " 0  engine_srv.so + 0x16bea2",
+      "    Found by: given as instruction pointer in context",
+      " 1  metamod.2.l4d2.so + 0x2d480",
+      "    Found by: previous frame's frame pointer",
+      "Thread 1",
+      " 0  linux-gate.so + 0x579",
+    ].join("\n"))).toEqual([
+      {
+        id: "0",
+        crashed: true,
+        frames: [
+          { kind: "frame", index: "0", module: "engine_srv.so", offset: "0x16bea2", foundBy: "given as instruction pointer in context", raw: " 0  engine_srv.so + 0x16bea2\n    Found by: given as instruction pointer in context" },
+          { kind: "frame", index: "1", module: "metamod.2.l4d2.so", offset: "0x2d480", foundBy: "previous frame's frame pointer", raw: " 1  metamod.2.l4d2.so + 0x2d480\n    Found by: previous frame's frame pointer" },
+        ],
+      },
+      {
+        id: "1",
+        crashed: false,
+        frames: [
+          { kind: "frame", index: "0", module: "linux-gate.so", offset: "0x579", raw: " 0  linux-gate.so + 0x579" },
+        ],
+      },
+    ]);
+  });
+
   it("parses Breakpad source locations and keeps Found by after register continuations", () => {
     const [thread] = parseStackwalk([
       "Thread 0 (crashed)",

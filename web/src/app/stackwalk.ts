@@ -52,6 +52,7 @@ export function parseStackwalk(input: string): StackwalkThread[] {
   const threads: StackwalkThread[] = [];
   let current: StackwalkThread = { id: "0", crashed: false, frames: [] };
   let lastFrame: StackwalkFrame | undefined;
+  let foundThreadHeading = false;
 
   const commitCurrent = () => {
     if (current.frames.length) threads.push(current);
@@ -62,7 +63,8 @@ export function parseStackwalk(input: string): StackwalkThread[] {
 
     const thread = raw.match(threadPattern);
     if (thread) {
-      commitCurrent();
+      if (foundThreadHeading) commitCurrent();
+      foundThreadHeading = true;
       current = { id: thread[1], crashed: /\bcrashed\b/i.test(thread[2] || ""), frames: [] };
       lastFrame = undefined;
       continue;
