@@ -217,22 +217,22 @@ func TestHasActiveJobDistinguishesPendingAndRunningFromCompleted(t *testing.T) {
 	defer s.Close()
 	now := time.Now().UTC()
 	for _, tc := range []struct{ id, status string }{{"pending", "pending"}, {"running", "running"}, {"done", "succeeded"}} {
-		if err := s.SaveJobWithEvent(domain.JobRecord{ID: tc.id, InstanceID: "i", Type: "cleanup_game_logs", Status: tc.status, CreatedAt: now, UpdatedAt: now}, domain.JobEvent{JobID: tc.id, Kind: "test", CreatedAt: now}); err != nil {
+		if err := s.SaveJobWithEvent(domain.JobRecord{ID: tc.id, InstanceID: "i", Type: "test_job", Status: tc.status, CreatedAt: now, UpdatedAt: now}, domain.JobEvent{JobID: tc.id, Kind: "test", CreatedAt: now}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	active, err := s.HasActiveJob(context.Background(), "i", "cleanup_game_logs")
+	active, err := s.HasActiveJob(context.Background(), "i", "test_job")
 	if err != nil || !active {
 		t.Fatalf("active=%v err=%v", active, err)
 	}
-	active, err = s.HasActiveJob(context.Background(), "other", "cleanup_game_logs")
+	active, err = s.HasActiveJob(context.Background(), "other", "test_job")
 	if err != nil || active {
 		t.Fatalf("other active=%v err=%v", active, err)
 	}
 	if _, err := s.DB().Exec(`UPDATE jobs SET status='succeeded' WHERE instance_id='i'`); err != nil {
 		t.Fatal(err)
 	}
-	active, err = s.HasActiveJob(context.Background(), "i", "cleanup_game_logs")
+	active, err = s.HasActiveJob(context.Background(), "i", "test_job")
 	if err != nil || active {
 		t.Fatalf("completed active=%v err=%v", active, err)
 	}
@@ -859,45 +859,45 @@ func TestCompletedJobLimitRejectsOutOfRangeValues(t *testing.T) {
 	}
 }
 
-func TestGameLogRetentionDaysDefaultsPersistsAndAcceptsBoundaries(t *testing.T) {
+func TestGameLogSettingsPersistOnlyMaxFileSize(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
 
-	days, err := s.GameLogRetentionDays()
-	if err != nil || days != DefaultGameLogRetentionDays {
-		t.Fatalf("default days=%d err=%v", days, err)
+	size, err := s.GameLogMaxFileSizeMB()
+	if err != nil || size != DefaultGameLogMaxFileSizeMB {
+		t.Fatalf("default size=%d err=%v", size, err)
 	}
-	for _, want := range []int{MinGameLogRetentionDays, 23, MaxGameLogRetentionDays} {
-		if err := s.SetGameLogRetentionDays(want); err != nil {
-			t.Fatalf("SetGameLogRetentionDays(%d): %v", want, err)
+	for _, want := range []int{MinGameLogMaxFileSizeMB, 23, MaxGameLogMaxFileSizeMB} {
+		if err := s.SetGameLogSettings(want); err != nil {
+			t.Fatalf("SetGameLogSettings(%d): %v", want, err)
 		}
-		got, err := s.GameLogRetentionDays()
+		got, err := s.GameLogMaxFileSizeMB()
 		if err != nil || got != want {
-			t.Fatalf("days=%d err=%v, want %d", got, err, want)
+			t.Fatalf("size=%d err=%v, want %d", got, err, want)
 		}
 	}
 }
 
-func TestGameLogRetentionDaysRejectsInvalidWithoutChangingValue(t *testing.T) {
+func TestGameLogSettingsRejectInvalidSizeWithoutChangingValue(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if err := s.SetGameLogRetentionDays(30); err != nil {
+	if err := s.SetGameLogSettings(30); err != nil {
 		t.Fatal(err)
 	}
-	for _, value := range []int{0, 366} {
-		if err := s.SetGameLogRetentionDays(value); err == nil {
-			t.Fatalf("days %d was accepted", value)
+	for _, value := range []int{0, 1025} {
+		if err := s.SetGameLogSettings(value); err == nil {
+			t.Fatalf("size %d was accepted", value)
 		}
 	}
-	days, err := s.GameLogRetentionDays()
-	if err != nil || days != 30 {
-		t.Fatalf("days=%d err=%v; want preserved value 30", days, err)
+	size, err := s.GameLogMaxFileSizeMB()
+	if err != nil || size != 30 {
+		t.Fatalf("size=%d err=%v; want preserved value 30", size, err)
 	}
 }
 
@@ -943,7 +943,7 @@ func TestGameLogMaxFileSizeMBRejectsInvalidWithoutChangingValue(t *testing.T) {
 	}
 }
 
-func TestGameLogRetentionDaysSettingIsIndependentFromCompletedJobLimit(t *testing.T) {
+func TestGameLogMaxFileSizeSettingIsIndependentFromCompletedJobLimit(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -952,20 +952,20 @@ func TestGameLogRetentionDaysSettingIsIndependentFromCompletedJobLimit(t *testin
 	if err := s.SetCompletedJobLimit(37); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetGameLogRetentionDays(21); err != nil {
+	if err := s.SetGameLogSettings(21); err != nil {
 		t.Fatal(err)
 	}
 	limit, limitErr := s.CompletedJobLimit()
-	days, daysErr := s.GameLogRetentionDays()
-	if limitErr != nil || daysErr != nil || limit != 37 || days != 21 {
-		t.Fatalf("completed limit=%d (%v), retention days=%d (%v)", limit, limitErr, days, daysErr)
+	size, sizeErr := s.GameLogMaxFileSizeMB()
+	if limitErr != nil || sizeErr != nil || limit != 37 || size != 21 {
+		t.Fatalf("completed limit=%d (%v), max size=%d (%v)", limit, limitErr, size, sizeErr)
 	}
 	if err := s.SetCompletedJobLimit(38); err != nil {
 		t.Fatal(err)
 	}
-	days, err = s.GameLogRetentionDays()
-	if err != nil || days != 21 {
-		t.Fatalf("retention changed with completed limit: days=%d err=%v", days, err)
+	size, err = s.GameLogMaxFileSizeMB()
+	if err != nil || size != 21 {
+		t.Fatalf("max size changed with completed limit: size=%d err=%v", size, err)
 	}
 }
 

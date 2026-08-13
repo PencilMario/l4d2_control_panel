@@ -207,7 +207,7 @@ test("real HTTP administration journey survives refresh and streams recovery sta
     const gameLogResponse = await fetch("/api/settings/game-logs", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ retention_days: 14 }),
+      body: JSON.stringify({ max_file_size_mb: 10 }),
     });
     if (!gameLogResponse.ok) {
       throw new Error(
@@ -675,48 +675,14 @@ test("real HTTP administration journey survives refresh and streams recovery sta
   await expect(page.locator(".log-viewer")).toContainText("plugin:fixture.smx");
 
   await page.getByRole("button", { name: "系统设置" }).click();
-  const gameLogRetention = page.getByRole("spinbutton", { name: "游戏日志保留天数" });
-  await expect(gameLogRetention).toHaveValue("14");
-  const cleanupResponse = page.waitForResponse((response) =>
-    response.request().method() === "POST" &&
-    new URL(response.url()).pathname === "/api/settings/game-logs/cleanup",
-  );
-  await page.getByRole("button", { name: "立即清理游戏日志" }).click();
-  const cleanupResult = await (await cleanupResponse).json() as { JobIDs: string[] };
-  await Promise.all(cleanupResult.JobIDs.map((id) => waitForJob(page, id)));
-  const cleanupJobID = await page.evaluate(async ({ ids, instanceID }) => {
-    for (const id of ids) {
-      const response = await fetch(`/api/jobs/${id}`);
-      const job = await response.json() as FixtureJob;
-      if (job.InstanceID === instanceID) return id;
-    }
-    throw new Error(`cleanup job missing for instance ${instanceID}`);
-  }, { ids: cleanupResult.JobIDs, instanceID: initiallySaved.id });
-  await expect(page.getByRole("status")).toContainText("清理任务已提交");
-  await expect.poll(() => page.evaluate(async (id) => {
-    const response = await fetch(`/api/instances/${id}/game-logs/tree`);
-    const entries = await response.json() as Array<{ path: string }>;
-    return {
-      aged: entries.some((entry) => entry.path === "errors/aged-error.log"),
-      recent: entries.some((entry) => entry.path === "errors/current-error.log"),
-    };
-  }, initiallySaved.id)).toEqual({ aged: false, recent: true });
-  await gameLogRetention.fill("30");
+  const gameLogSize = page.getByRole("spinbutton", { name: "单个日志文件最大大小（MB）" });
+  await expect(gameLogSize).toHaveValue("10");
+  await expect(page.getByRole("spinbutton", { name: "游戏日志保留天数" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "立即清理游戏日志" })).toHaveCount(0);
+  await gameLogSize.fill("20");
   await page.getByRole("button", { name: "保存游戏日志设置" }).click();
   await expect(page.getByRole("status")).toContainText("游戏日志设置已保存");
-  await expect(gameLogRetention).toHaveValue("30");
-  await page.getByRole("button", { name: "后台任务", exact: true }).click();
-  const cleanupJob = page.getByRole("button", {
-    name: `查看 cleanup_game_logs 任务日志，任务 ID ${cleanupJobID}`,
-  });
-  await expect(cleanupJob).toContainText("成功");
-  await cleanupJob.click();
-  const cleanupLog = page.getByRole("region", { name: "cleanup_game_logs 任务日志" });
-  await cleanupLog.getByRole("button", { name: "打开完整日志" }).click();
-  const cleanupOutput = page.locator(".task-log-output");
-  await expect(cleanupOutput).toContainText(/Scanned=\d+/);
-  await expect(cleanupOutput).toContainText(/Deleted=1/);
-  await expect(cleanupOutput).toContainText(/ReleasedBytes=\d+/);
+  await expect(gameLogSize).toHaveValue("20");
 
   await page.getByRole("button", { name: "私有文件" }).click();
   await expect(page.getByRole("heading", { name: "私有文件", exact: true })).toBeVisible();

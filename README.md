@@ -84,7 +84,6 @@ Panel 使用 host network，直接监听 `0.0.0.0:${L4D2_PANEL_HTTP_PORT:-18081}
 | `L4D2_PANEL_ACCELERATOR_PORT` | 写入 Accelerator 的宿主机 loopback 上传端口，默认跟随 HTTP 端口 | `L4D2_PANEL_HTTP_PORT` |
 | `L4D2_PANEL_GAME_HOST` | Panel 发起 A2S 查询时使用的宿主机地址 | `host.docker.internal` |
 | `L4D2_PANEL_CRASH_REPORT_TOKEN` | Accelerator 接收端共享 token；为空时关闭接收端 | 空 |
-| `L4D2_PANEL_CRASH_RETENTION_DAYS` | dump 与 metadata 保留天数，范围 `1..3650` | `90` |
 | `L4D2_PANEL_STACKWALK_PATH` | Panel 容器内 `minidump_stackwalk` 可执行文件路径 | `/usr/local/bin/minidump_stackwalk` |
 | `L4D2_PANEL_DUMP_SYMS_PATH` | Panel 容器内 Breakpad `dump_syms` 可执行文件路径 | `/usr/local/bin/dump_syms` |
 | `L4D2_PANEL_DOWNLOAD_PROXY` | GitHub Release、SteamCMD 等下载代理 | 空 |
@@ -135,7 +134,7 @@ MinidumpBinaryUpload yes
 
 文件内容必须与请求的 `ServerID` 相同，`GameDirectory` 必须为空或 `left4dead2`。因此仅持有 token、伪造 `ServerID` 或使用其他项目的游戏实例都不能上传。
 
-报告存储在 `panel/crash-dumps/`，包括 minidump、原始 metadata、模块二进制、pending token 和受控 symbol 文件；默认保留 90 天，过期报告由 Panel 启动时及每天清理一次。报告和其派生的 stackwalk/AI 文件遵循同一保留策略，内置 SourceMod/Metamod 符号不会随报告清理。metadata 可能包含命令行、路径或服务器环境信息，只能通过已登录的管理员 API 查看：
+报告存储在 `panel/crash-dumps/`，包括 minidump、原始 metadata、模块二进制、pending token 和受控 symbol 文件；报告及游戏日志的保留期限统一跟随 `clear` 计划任务的 `retention_days` 参数。执行该计划任务时，Panel 会同时清理过期报告、游戏日志和维护文件；未启用该计划任务时，这些组件不会自行按保留期清理。报告和其派生的 stackwalk/AI 文件遵循同一保留策略，内置 SourceMod/Metamod 符号不会随报告清理。metadata 可能包含命令行、路径或服务器环境信息，只能通过已登录的管理员 API 查看：
 
 ```text
 GET /api/crash-reports
@@ -267,7 +266,7 @@ shared-vpk/
 
 重建或删除游戏容器不会自动删除这些目录。只有在永久删除实例时明确确认删除数据，相关实例目录才会被移除。
 
-游戏日志默认保留 14 天，可在“系统设置 > 游戏日志”调整为 1 至 365 天；私有文件应用快照默认尽力保留最近 20 份。性能历史仅保存在内存中，不属于长期监控或审计数据。
+游戏日志的过期保留期限跟随 `clear` 计划任务的 `retention_days` 参数；“系统设置 > 游戏日志清理策略”只配置单个日志文件的最大大小，超过上限的文件会在 `clear` 任务中截断。私有文件应用快照默认尽力保留最近 20 份。性能历史仅保存在内存中，不属于长期监控或审计数据。
 
 ## 本地开发
 

@@ -193,7 +193,7 @@ func TestCleanupContinuesAfterDeleteFailureAndReturnsAggregateError(t *testing.T
 
 func TestCleanupRejectsInvalidRetentionAndCancellation(t *testing.T) {
 	manager := NewManager(t.TempDir(), Options{})
-	for _, days := range []int{0, 366} {
+	for _, days := range []int{0, 3651} {
 		if _, err := manager.Cleanup(context.Background(), "i", days); err == nil {
 			t.Fatalf("retention %d accepted", days)
 		}

@@ -1867,12 +1867,10 @@ function SettingsPage() {
   const [jobSettingsReady, setJobSettingsReady] = useState(false);
   const [savingJobs, setSavingJobs] = useState(false);
   const [jobsNotice, setJobsNotice] = useState("");
-  const [confirmedGameLogDays, setConfirmedGameLogDays] = useState(14);
-  const [draftGameLogDays, setDraftGameLogDays] = useState("14");
   const [confirmedGameLogMaxFileSizeMB, setConfirmedGameLogMaxFileSizeMB] = useState(10);
   const [draftGameLogMaxFileSizeMB, setDraftGameLogMaxFileSizeMB] = useState("10");
   const [gameLogSettingsReady, setGameLogSettingsReady] = useState(false);
-  const [gameLogBusy, setGameLogBusy] = useState<"save" | "cleanup" | "">("");
+  const [gameLogBusy, setGameLogBusy] = useState<"save" | "">("");
   const [gameLogsNotice, setGameLogsNotice] = useState("");
   const gameLogRequestSequence = useRef(0);
   const settingsActions = useAsyncLocks();
@@ -1923,14 +1921,12 @@ function SettingsPage() {
       })
       .catch((reason) => setSettingsError(errorMessage(reason)));
     const gameLogLoadSequence = ++gameLogRequestSequence.current;
-    api<{ retention_days: number; max_file_size_mb: number }>("/api/settings/game-logs")
+    api<{ max_file_size_mb: number }>("/api/settings/game-logs")
       .then((settings) => {
         if (gameLogLoadSequence !== gameLogRequestSequence.current) return;
-        if (!Number.isInteger(settings.retention_days) || settings.retention_days < 1 || settings.retention_days > 365 || !Number.isInteger(settings.max_file_size_mb) || settings.max_file_size_mb < 1 || settings.max_file_size_mb > 1024) {
+        if (!Number.isInteger(settings.max_file_size_mb) || settings.max_file_size_mb < 1 || settings.max_file_size_mb > 1024) {
           throw new Error("游戏日志设置数据无效");
         }
-        setConfirmedGameLogDays(settings.retention_days);
-        setDraftGameLogDays(String(settings.retention_days));
         setConfirmedGameLogMaxFileSizeMB(settings.max_file_size_mb);
         setDraftGameLogMaxFileSizeMB(String(settings.max_file_size_mb));
         setGameLogSettingsReady(true);
@@ -2115,18 +2111,10 @@ function SettingsPage() {
       setSavingJobs(false);
     }
   };
-  type EnqueueStats = { Queued: number; Deduplicated: number; Failed: number };
-  const formatEnqueueStats = (stats: EnqueueStats) =>
-    `已排队 ${stats.Queued}，已去重 ${stats.Deduplicated}，失败 ${stats.Failed}`;
   const saveGameLogSettings = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (settingsActions.isLocked("game-logs")) return;
-    const days = Number(draftGameLogDays);
     const maxFileSizeMB = Number(draftGameLogMaxFileSizeMB);
-    if (!Number.isInteger(days) || days < 1 || days > 365) {
-      setSettingsError("游戏日志保留天数必须为 1 至 365 的整数");
-      return;
-    }
     if (!Number.isInteger(maxFileSizeMB) || maxFileSizeMB < 1 || maxFileSizeMB > 1024) {
       setSettingsError("单个日志文件最大大小必须为 1 至 1024 MB 的整数");
       return;
@@ -2137,45 +2125,19 @@ function SettingsPage() {
     const sequence = ++gameLogRequestSequence.current;
     try {
       await settingsActions.run("game-logs", async () => {
-        const saved = await api<{ retention_days: number; max_file_size_mb: number; enqueue: EnqueueStats }>(
+        const saved = await api<{ max_file_size_mb: number }>(
           "/api/settings/game-logs",
-          { method: "PUT", body: JSON.stringify({ retention_days: days, max_file_size_mb: maxFileSizeMB }) },
+          { method: "PUT", body: JSON.stringify({ max_file_size_mb: maxFileSizeMB }) },
         );
         if (sequence === gameLogRequestSequence.current) {
-          setConfirmedGameLogDays(saved.retention_days);
-          setDraftGameLogDays(String(saved.retention_days));
           setConfirmedGameLogMaxFileSizeMB(saved.max_file_size_mb);
           setDraftGameLogMaxFileSizeMB(String(saved.max_file_size_mb));
-          setGameLogsNotice(`游戏日志设置已保存；${formatEnqueueStats(saved.enqueue)}`);
+          setGameLogsNotice("游戏日志设置已保存");
         }
       });
     } catch (reason) {
       if (sequence === gameLogRequestSequence.current) {
-        setDraftGameLogDays(String(confirmedGameLogDays));
         setDraftGameLogMaxFileSizeMB(String(confirmedGameLogMaxFileSizeMB));
-        setSettingsError(errorMessage(reason));
-      }
-    } finally {
-      if (sequence === gameLogRequestSequence.current) setGameLogBusy("");
-    }
-  };
-  const cleanupGameLogs = async () => {
-    if (settingsActions.isLocked("game-logs")) return;
-    setSettingsError("");
-    setGameLogsNotice("");
-    setGameLogBusy("cleanup");
-    const sequence = ++gameLogRequestSequence.current;
-    try {
-      await settingsActions.run("game-logs", async () => {
-        const result = await api<EnqueueStats>("/api/settings/game-logs/cleanup", {
-          method: "POST",
-        });
-        if (sequence === gameLogRequestSequence.current) {
-          setGameLogsNotice(`清理任务已提交；${formatEnqueueStats(result)}`);
-        }
-      });
-    } catch (reason) {
-      if (sequence === gameLogRequestSequence.current) {
         setSettingsError(errorMessage(reason));
       }
     } finally {
@@ -2243,9 +2205,9 @@ function SettingsPage() {
           <footer><small>除正在运行的任务外，所有已结束任务共用此保留上限。</small><button className="settings-save" type="submit" aria-label="保存任务记录设置" disabled={!jobSettingsReady || savingJobs} aria-busy={savingJobs}>{savingJobs ? <RefreshCw /> : <Save />}<span>{savingJobs ? "保存中…" : "保存任务保留设置"}</span></button></footer>
         </form>
         <section className="settings-card" aria-labelledby="game-log-settings-title">
-          <div className="settings-card-title"><h3 id="game-log-settings-title"><Trash2 />游戏日志保留策略</h3></div>
-          <p>设定游戏控制台与 SourceMod 插件日志的保留时间和单文件上限。</p>
-          <form className="settings-fields" onSubmit={saveGameLogSettings}><label>游戏日志保留天数<input type="number" min={1} max={365} step={1} required value={draftGameLogDays} disabled={!gameLogSettingsReady || gameLogBusy !== ""} onChange={(event) => { const value = event.target.value; setDraftGameLogDays(value); setGameLogsNotice(""); const days = Number(value); setSettingsError(value !== "" && (!Number.isInteger(days) || days < 1 || days > 365) ? "游戏日志保留天数必须为 1 至 365 的整数" : ""); }} /></label><label>单个日志文件最大大小（MB）<input type="number" min={1} max={1024} step={1} required value={draftGameLogMaxFileSizeMB} disabled={!gameLogSettingsReady || gameLogBusy !== ""} onChange={(event) => { const value = event.target.value; setDraftGameLogMaxFileSizeMB(value); setGameLogsNotice(""); const size = Number(value); setSettingsError(value !== "" && (!Number.isInteger(size) || size < 1 || size > 1024) ? "单个日志文件最大大小必须为 1 至 1024 MB 的整数" : ""); }} /></label><p>当前确认值：{confirmedGameLogDays} 天 · {confirmedGameLogMaxFileSizeMB} MB</p><footer><button className="settings-cleanup" type="button" aria-label="立即清理游戏日志" disabled={!gameLogSettingsReady || gameLogBusy !== ""} aria-busy={gameLogBusy === "cleanup"} onClick={() => void cleanupGameLogs()}>{gameLogBusy === "cleanup" ? "提交中…" : "立即维护日志"}</button><button className="settings-save" type="submit" aria-label="保存游戏日志设置" disabled={!gameLogSettingsReady || gameLogBusy !== ""} aria-busy={gameLogBusy === "save"}>{gameLogBusy === "save" ? <RefreshCw /> : <Save />}<span>{gameLogBusy === "save" ? "保存中…" : "保存日志策略"}</span></button></footer></form>
+          <div className="settings-card-title"><h3 id="game-log-settings-title"><Trash2 />游戏日志清理策略</h3></div>
+          <p>单个日志文件超过上限时会在 <code>clear</code> 计划任务中截断；日志保留天数与该计划任务一致。</p>
+          <form className="settings-fields" onSubmit={saveGameLogSettings}><label>单个日志文件最大大小（MB）<input type="number" min={1} max={1024} step={1} required value={draftGameLogMaxFileSizeMB} disabled={!gameLogSettingsReady || gameLogBusy !== ""} onChange={(event) => { const value = event.target.value; setDraftGameLogMaxFileSizeMB(value); setGameLogsNotice(""); const size = Number(value); setSettingsError(value !== "" && (!Number.isInteger(size) || size < 1 || size > 1024) ? "单个日志文件最大大小必须为 1 至 1024 MB 的整数" : ""); }} /></label><p>当前确认值：{confirmedGameLogMaxFileSizeMB} MB</p><footer><button className="settings-save" type="submit" aria-label="保存游戏日志设置" disabled={!gameLogSettingsReady || gameLogBusy !== ""} aria-busy={gameLogBusy === "save"}>{gameLogBusy === "save" ? <RefreshCw /> : <Save />}<span>{gameLogBusy === "save" ? "保存中…" : "保存日志策略"}</span></button></footer></form>
           {gameLogsNotice ? <p className="settings-notice" role="status">{gameLogsNotice}</p> : null}
         </section>
         <SelfServiceVPKSettings />

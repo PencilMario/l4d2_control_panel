@@ -68,21 +68,20 @@ type Server struct {
 	sharedGameMigration interface {
 		Migrate(context.Context) error
 	}
-	schedules        *scheduler.Service
-	gameLogs         *gamelogs.Manager
-	gameLogScheduler *gamelogs.Scheduler
-	secrets          *secrets.Service
-	resources        ResourceProvider
-	performance      PerformanceProvider
-	system           SystemProvider
-	secureCookie     bool
-	vpkRestarts      VPKRestartRegistrar
-	maintenanceGate  *maintenance.Gate
-	sharedGamePath   string
-	a2sDefense       A2SDefenseReconciler
-	a2sSettings      A2SDefenseSettingsController
-	crashReports     *crashreports.Manager
-	crashAnalysis    CrashAnalyzer
+	schedules       *scheduler.Service
+	gameLogs        *gamelogs.Manager
+	secrets         *secrets.Service
+	resources       ResourceProvider
+	performance     PerformanceProvider
+	system          SystemProvider
+	secureCookie    bool
+	vpkRestarts     VPKRestartRegistrar
+	maintenanceGate *maintenance.Gate
+	sharedGamePath  string
+	a2sDefense      A2SDefenseReconciler
+	a2sSettings     A2SDefenseSettingsController
+	crashReports    *crashreports.Manager
+	crashAnalysis   CrashAnalyzer
 }
 
 type A2SDefenseReconciler interface {
@@ -192,8 +191,8 @@ func WithSharedGamePath(path string) Option {
 func WithScheduler(service *scheduler.Service) Option {
 	return func(s *Server) { s.schedules = service }
 }
-func WithGameLogs(manager *gamelogs.Manager, scheduler *gamelogs.Scheduler) Option {
-	return func(s *Server) { s.gameLogs = manager; s.gameLogScheduler = scheduler }
+func WithGameLogs(manager *gamelogs.Manager) Option {
+	return func(s *Server) { s.gameLogs = manager }
 }
 func WithSecrets(service *secrets.Service) Option { return func(s *Server) { s.secrets = service } }
 
@@ -276,7 +275,6 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Get("/api/instances/{id}/game-logs/download", s.gameLogsDownload)
 		r.Get("/api/settings/game-logs", s.getGameLogSettings)
 		r.Put("/api/settings/game-logs", s.putGameLogSettings)
-		r.Post("/api/settings/game-logs/cleanup", s.cleanupGameLogs)
 		r.Get("/api/settings/accelerator", s.getAcceleratorSettings)
 		r.Put("/api/settings/accelerator", s.putAcceleratorSettings)
 		r.Get("/api/settings/crash-analysis", s.getCrashAnalysisSettings)

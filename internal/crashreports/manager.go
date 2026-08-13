@@ -27,26 +27,17 @@ var tokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 type Manager struct {
 	root                 string
 	token                string
-	retention            time.Duration
 	now                  func() time.Time
 	authorizeInstance    InstanceAuthorizer
 	resolveInstance      InstanceResolver
 	enqueueAnalysis      func(context.Context, Report) error
 	analysisEnqueueError func(error)
-	reportCleanupError   func(error)
 	mu                   sync.Mutex
 }
 
 func New(config Config) (*Manager, error) {
 	if strings.TrimSpace(config.Root) == "" {
 		return nil, fmt.Errorf("%w: root is required", ErrInvalidConfig)
-	}
-	retentionDays := config.RetentionDays
-	if retentionDays == 0 {
-		retentionDays = DefaultRetentionDays
-	}
-	if retentionDays < MinRetentionDays || retentionDays > MaxRetentionDays {
-		return nil, fmt.Errorf("%w: retention days must be between %d and %d", ErrInvalidConfig, MinRetentionDays, MaxRetentionDays)
 	}
 	now := config.Now
 	if now == nil {
@@ -61,7 +52,7 @@ func New(config Config) (*Manager, error) {
 			return nil, fmt.Errorf("create crash report directory %s: %w", name, err)
 		}
 	}
-	manager := &Manager{root: root, token: config.Token, retention: time.Duration(retentionDays) * 24 * time.Hour, now: now, authorizeInstance: config.AuthorizeInstance, resolveInstance: config.ResolveInstance, enqueueAnalysis: config.EnqueueAnalysis, analysisEnqueueError: config.AnalysisEnqueueError, reportCleanupError: config.ReportCleanupError}
+	manager := &Manager{root: root, token: config.Token, now: now, authorizeInstance: config.AuthorizeInstance, resolveInstance: config.ResolveInstance, enqueueAnalysis: config.EnqueueAnalysis, analysisEnqueueError: config.AnalysisEnqueueError}
 	if err := manager.installBuiltinSymbols(); err != nil {
 		return nil, err
 	}
@@ -672,14 +663,17 @@ func (m *Manager) Open(ctx context.Context, id string, kind FileKind) (*os.File,
 	return file, report, nil
 }
 
-func (m *Manager) Cleanup(ctx context.Context) (CleanupResult, error) {
+func (m *Manager) Cleanup(ctx context.Context, retentionDays int) (CleanupResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if retentionDays < MinRetentionDays || retentionDays > MaxRetentionDays {
+		return CleanupResult{}, fmt.Errorf("retention days must be between %d and %d", MinRetentionDays, MaxRetentionDays)
+	}
 	if err := ctx.Err(); err != nil {
 		return CleanupResult{}, err
 	}
 	var result CleanupResult
-	cutoff := m.currentTime().Add(-m.retention)
+	cutoff := m.currentTime().Add(-time.Duration(retentionDays) * 24 * time.Hour)
 	entries, err := os.ReadDir(filepath.Join(m.root, "reports"))
 	if err != nil {
 		return result, err
@@ -850,36 +844,6 @@ func hasArtifactReference(referenced map[string]struct{}, kind ArtifactKind, id 
 func artifactTimeBefore(artifact Artifact, cutoff time.Time) bool {
 	receivedAt, err := time.Parse(timeFormat, artifact.ReceivedAt)
 	return err == nil && receivedAt.Before(cutoff)
-}
-
-func (m *Manager) StartCleanup(parent context.Context) func() {
-	return m.startCleanup(parent, 24*time.Hour)
-}
-
-func (m *Manager) startCleanup(parent context.Context, interval time.Duration) func() {
-	ctx, cancel := context.WithCancel(parent)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if _, err := m.Cleanup(ctx); err != nil && !errors.Is(err, context.Canceled) {
-					if m.reportCleanupError != nil {
-						m.reportCleanupError(err)
-					}
-				}
-			}
-		}
-	}()
-	return func() {
-		cancel()
-		<-done
-	}
 }
 
 func (m *Manager) readPending(token string) (PendingSubmission, error) {

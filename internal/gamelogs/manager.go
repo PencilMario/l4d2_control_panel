@@ -152,8 +152,8 @@ func (m *Manager) maintain(ctx context.Context, instanceID string, retentionDays
 	if err := validateInstanceID(instanceID); err != nil {
 		return result, err
 	}
-	if retentionDays < 1 || retentionDays > 365 {
-		return result, errors.New("game log retention days must be between 1 and 365")
+	if retentionDays < 1 || retentionDays > 3650 {
+		return result, errors.New("game log retention days must be between 1 and 3650")
 	}
 	if err := ctx.Err(); err != nil {
 		return result, err

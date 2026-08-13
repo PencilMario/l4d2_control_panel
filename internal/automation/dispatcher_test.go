@@ -4,14 +4,85 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/not0721here/l4d2-control-panel/internal/a2s"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
+	"github.com/not0721here/l4d2-control-panel/internal/crashreports"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/players"
 	"github.com/not0721here/l4d2-control-panel/internal/releases"
 	"github.com/not0721here/l4d2-control-panel/internal/updates"
 )
+
+type recordingMaintenanceCleaner struct {
+	days int
+	err  error
+}
+
+func (*recordingMaintenanceCleaner) Backup(context.Context, string) (string, error) {
+	return "", nil
+}
+
+func (c *recordingMaintenanceCleaner) Cleanup(_ context.Context, retention time.Duration) (int, error) {
+	c.days = int(retention / (24 * time.Hour))
+	return 0, c.err
+}
+
+type recordingGameLogCleaner struct {
+	days int
+	err  error
+}
+
+func (c *recordingGameLogCleaner) Cleanup(_ context.Context, retentionDays int) error {
+	c.days = retentionDays
+	return c.err
+}
+
+type recordingCrashReportCleaner struct {
+	days int
+	err  error
+}
+
+func (c *recordingCrashReportCleaner) Cleanup(_ context.Context, retentionDays int) (crashreports.CleanupResult, error) {
+	c.days = retentionDays
+	return crashreports.CleanupResult{}, c.err
+}
+
+func TestScheduledCleanupSharesRetentionAcrossAllCleanersAndAttemptsEachStage(t *testing.T) {
+	maintenance := &recordingMaintenanceCleaner{err: errors.New("maintenance failed")}
+	gameLogs := &recordingGameLogCleaner{err: errors.New("game logs failed")}
+	crashReports := &recordingCrashReportCleaner{err: errors.New("crash reports failed")}
+	d := Dispatcher{
+		Maintenance:  maintenance,
+		GameLogs:     gameLogs,
+		CrashReports: crashReports,
+	}
+
+	err := d.run(context.Background(), domain.ScheduledTask{Type: "cleanup", Payload: `{"retention_days":45}`})
+	for _, want := range []error{maintenance.err, gameLogs.err, crashReports.err} {
+		if !errors.Is(err, want) {
+			t.Errorf("error=%v does not contain %v", err, want)
+		}
+	}
+	if maintenance.days != 45 || gameLogs.days != 45 || crashReports.days != 45 {
+		t.Fatalf("retentions=%d/%d/%d", maintenance.days, gameLogs.days, crashReports.days)
+	}
+}
+
+func TestScheduledCleanupDefaultsRetentionToThirtyDays(t *testing.T) {
+	maintenance := &recordingMaintenanceCleaner{}
+	gameLogs := &recordingGameLogCleaner{}
+	crashReports := &recordingCrashReportCleaner{}
+	d := Dispatcher{Maintenance: maintenance, GameLogs: gameLogs, CrashReports: crashReports}
+
+	if err := d.run(context.Background(), domain.ScheduledTask{Type: "cleanup", Payload: `{}`}); err != nil {
+		t.Fatal(err)
+	}
+	if maintenance.days != 30 || gameLogs.days != 30 || crashReports.days != 30 {
+		t.Fatalf("retentions=%d/%d/%d", maintenance.days, gameLogs.days, crashReports.days)
+	}
+}
 
 type missingSourceRepo struct{}
 

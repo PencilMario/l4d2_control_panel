@@ -430,6 +430,9 @@ export function SchedulesPage({
 	 setTimeoutMinutes(task.timeout_minutes);
     setEnabled(task.enabled);
 	setInstanceID(task.type === "game_update" ? "" : task.instance_id);
+    const payload = parsePayload(task) as Record<string, unknown>;
+    const days = Number(payload.retention_days);
+    setRetentionDays(Number.isInteger(days) && days >= 1 && days <= 3650 ? days : 30);
     setScheduleError("");
     setScheduleStatus("");
     setEditorOpen(true);
@@ -463,7 +466,9 @@ export function SchedulesPage({
             timezone: editing.timezone,
             online_policy: TASK_TYPES[editing.type].usesPlayerPolicy ? policy : "force",
 			 timeout_minutes: timeoutMinutes,
-            payload: (editing.type === "package_full" || editing.type === "release_full") ? "{}" : editing.payload,
+            payload: editing.type === "cleanup"
+              ? JSON.stringify({ retention_days: retentionDays })
+              : (editing.type === "package_full" || editing.type === "release_full") ? "{}" : editing.payload,
             enabled,
           }
         : {
@@ -650,7 +655,7 @@ export function SchedulesPage({
               使用目标实例当前配置的插件包；计划任务不会覆盖实例插件包设置。
             </p>
           ) : null}
-          {taskType === "cleanup" && !editing ? (
+          {taskType === "cleanup" ? (
             <label>
               保留天数
               <input

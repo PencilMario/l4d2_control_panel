@@ -17,12 +17,9 @@ import (
 
 func TestNewUsesNinetyDayDefaultAndCreatesPrivateDirectories(t *testing.T) {
 	root := t.TempDir()
-	manager, err := New(Config{Root: root, Token: "secret"})
+	_, err := New(Config{Root: root, Token: "secret"})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if manager.retention != 90*24*time.Hour {
-		t.Fatalf("retention=%s want=%s", manager.retention, 90*24*time.Hour)
 	}
 	for _, name := range []string{"incoming", "pending", "reports", "symbols"} {
 		info, statErr := os.Stat(filepath.Join(root, name))
@@ -72,12 +69,14 @@ func TestNewInstallsOnlySourceModAndMetamodBuiltinSymbols(t *testing.T) {
 }
 
 func TestNewRejectsInvalidRetention(t *testing.T) {
-	for _, days := range []int{-1, 3651} {
-		t.Run(strings.ReplaceAll(time.Duration(days).String(), "-", "negative-"), func(t *testing.T) {
-			if _, err := New(Config{Root: t.TempDir(), RetentionDays: days}); err == nil {
-				t.Fatalf("retention days=%d was accepted", days)
-			}
-		})
+	manager, err := New(Config{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, days := range []int{0, -1, 3651} {
+		if _, err := manager.Cleanup(context.Background(), days); err == nil {
+			t.Fatalf("retention days=%d was accepted", days)
+		}
 	}
 }
 
@@ -266,7 +265,7 @@ func TestCleanupRemovesExpiredReportsAndPendingTokensButKeepsSymbols(t *testing.
 		t.Fatal(err)
 	}
 	manager.now = func() time.Time { return now.Add(91 * 24 * time.Hour) }
-	result, err := manager.Cleanup(context.Background())
+	result, err := manager.Cleanup(context.Background(), 90)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +342,7 @@ func TestCleanupRetainsReferencedAndBuiltinArtifactsButRemovesExpiredUnreference
 	}
 
 	manager.now = func() time.Time { return now.Add(91 * 24 * time.Hour) }
-	result, err := manager.Cleanup(context.Background())
+	result, err := manager.Cleanup(context.Background(), 90)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,36 +361,6 @@ func TestCleanupRetainsReferencedAndBuiltinArtifactsButRemovesExpiredUnreference
 	builtinFile.Close()
 	if _, _, err := manager.OpenArtifact(context.Background(), ArtifactKindBinary, drop.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unreferenced binary error=%v", err)
-	}
-}
-
-func TestStartCleanupReportsErrors(t *testing.T) {
-	root := t.TempDir()
-	reported := make(chan error, 1)
-	manager, err := New(Config{
-		Root:               root,
-		Token:              "secret",
-		ReportCleanupError: func(err error) { reported <- err },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	reportsPath := filepath.Join(root, "reports")
-	if err := os.RemoveAll(reportsPath); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(reportsPath, []byte("not a directory"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	stop := manager.startCleanup(context.Background(), time.Millisecond)
-	defer stop()
-	select {
-	case cleanupErr := <-reported:
-		if cleanupErr == nil {
-			t.Fatal("cleanup error callback received nil")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("cleanup error was not reported")
 	}
 }
 

@@ -108,7 +108,6 @@ func main() {
 	crashReportManager, err := crashreports.New(crashreports.Config{
 		Root:            cfg.CrashReportsDir,
 		Token:           cfg.CrashReportToken,
-		RetentionDays:   cfg.CrashRetentionDays,
 		ResolveInstance: newCrashReportInstanceResolver(cfg.DataRoot, db),
 		EnqueueAnalysis: func(ctx context.Context, report crashreports.Report) error {
 			if report.InstanceID == "" {
@@ -124,17 +123,10 @@ func main() {
 			return analysisWorker.Enqueue(ctx, report.ID, true)
 		},
 		AnalysisEnqueueError: func(err error) { log.Printf("crash analysis enqueue: %v", err) },
-		ReportCleanupError:   func(err error) { log.Printf("crash report cleanup: %v", err) },
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	if result, cleanupErr := crashReportManager.Cleanup(context.Background()); cleanupErr != nil {
-		log.Printf("crash report cleanup: %v", cleanupErr)
-	} else if result.ReportsRemoved > 0 || result.PendingRemoved > 0 {
-		log.Printf("crash report cleanup: reports=%d pending=%d bytes=%d", result.ReportsRemoved, result.PendingRemoved, result.BytesReleased)
-	}
-	stopCrashReportCleanup := crashReportManager.StartCleanup(context.Background())
 	symbolGenerator, err := crashsymbols.New(crashsymbols.Config{Path: cfg.DumpSymsPath})
 	if err != nil {
 		log.Fatal(err)
@@ -320,10 +312,7 @@ func main() {
 		log.Printf("found %d unclaimed managed containers", len(unknown))
 	}
 	jobManager := jobs.NewPersistentManager(db, jobs.WithLogSink(jobLogManager))
-	gameLogScheduler := gamelogs.NewScheduler(db, jobManager, gameLogManager)
-	if err := gameLogScheduler.Start(); err != nil {
-		log.Fatal(err)
-	}
+	gameLogCleaner := gamelogs.NewCleaner(db, gameLogManager)
 	playerService := players.NewService(db, a2s.Client{}, engine, cfg.GameHost)
 	vpkRestartCoordinator := vpkrestart.New(db, playerService, life, jobManager)
 	vpkRestartCoordinator.Start(context.Background())
@@ -354,7 +343,7 @@ func main() {
 	sharedRebuilder := updates.SharedGameRebuilder{Overlay: overlayClient, Packages: packageManager, Sources: db, Deployer: updatePipeline, Private: privateManager, Accelerator: acceleratorManager}
 	sharedGameCoordinator := &updates.SharedGameCoordinator{Root: cfg.DataRoot, Instances: db, Players: playerService, Installer: engine, Reconciler: sharedRebuilder, Lifecycle: life, Gate: sharedGate}
 	sharedGameMigration := &sharedmigration.SharedGameService{Root: cfg.DataRoot, Instances: db, Installer: engine, Publisher: sharedPublisher, Layout: sharedmigration.FilesystemLayout{Root: cfg.DataRoot}, Reconciler: sharedRebuilder, Gate: sharedGate}
-	dispatcher := automation.Dispatcher{Jobs: jobManager, Players: playerService, Packages: packageManager, PackagesUpdate: updateCoordinator, GameUpdate: gameCoordinator, SharedGameUpdate: sharedGameCoordinator, Releases: releaseClient, Sources: db, Instances: db, Maintenance: maintenance.New(cfg.DataRoot, maintenance.WithPackageCleanup(db, packageManager)), Gate: sharedGate, Secrets: secretService}
+	dispatcher := automation.Dispatcher{Jobs: jobManager, Players: playerService, Packages: packageManager, PackagesUpdate: updateCoordinator, GameUpdate: gameCoordinator, SharedGameUpdate: sharedGameCoordinator, Releases: releaseClient, Sources: db, Instances: db, Maintenance: maintenance.New(cfg.DataRoot, maintenance.WithPackageCleanup(db, packageManager)), GameLogs: gameLogCleaner, CrashReports: crashReportManager, Gate: sharedGate, Secrets: secretService}
 	scheduleService := scheduler.NewService(db, dispatcher)
 	secureCookie := true
 	if configured := os.Getenv("L4D2_PANEL_SECURE_COOKIE"); configured != "" {
@@ -363,18 +352,16 @@ func main() {
 			log.Fatal("L4D2_PANEL_SECURE_COOKIE must be true or false")
 		}
 	}
-	api := httpapi.New(db, sessions, httpapi.WithGameLogs(gameLogManager, gameLogScheduler), httpapi.WithOperations(life, jobManager), httpapi.WithMaintenanceGate(sharedGate), httpapi.WithJobLogs(jobLogManager), httpapi.WithConsole(engine), httpapi.WithPlayers(playerService), httpapi.WithContent(uploadManager, privateManager, packageManager, updatePipeline, updateCoordinator), httpapi.WithReleases(releaseClient), httpapi.WithSelfServiceVPK(selfServiceVPKManager), httpapi.WithSelfServiceVPKKey(secretKey), httpapi.WithVPKRestartRegistrar(vpkRestartCoordinator), httpapi.WithPrivateUploads(privateUploadManager), httpapi.WithGameUpdates(gameCoordinator), httpapi.WithSharedGameUpdates(sharedGameCoordinator), httpapi.WithSharedGameMigration(sharedGameMigration), httpapi.WithSharedGamePath(cfg.GameCurrentPath), httpapi.WithScheduler(scheduleService), httpapi.WithSecrets(secretService), httpapi.WithResources(engine), httpapi.WithPerformance(performanceSampler), httpapi.WithSystem(engine), httpapi.WithA2SDefenseMutations(a2sDefenseCoordinator), httpapi.WithA2SDefenseSettings(a2sDefenseCoordinator), httpapi.WithCrashReports(crashReportManager), httpapi.WithCrashAnalysis(analysisWorker), httpapi.WithSecureCookie(secureCookie))
+	api := httpapi.New(db, sessions, httpapi.WithGameLogs(gameLogManager), httpapi.WithOperations(life, jobManager), httpapi.WithMaintenanceGate(sharedGate), httpapi.WithJobLogs(jobLogManager), httpapi.WithConsole(engine), httpapi.WithPlayers(playerService), httpapi.WithContent(uploadManager, privateManager, packageManager, updatePipeline, updateCoordinator), httpapi.WithReleases(releaseClient), httpapi.WithSelfServiceVPK(selfServiceVPKManager), httpapi.WithSelfServiceVPKKey(secretKey), httpapi.WithVPKRestartRegistrar(vpkRestartCoordinator), httpapi.WithPrivateUploads(privateUploadManager), httpapi.WithGameUpdates(gameCoordinator), httpapi.WithSharedGameUpdates(sharedGameCoordinator), httpapi.WithSharedGameMigration(sharedGameMigration), httpapi.WithSharedGamePath(cfg.GameCurrentPath), httpapi.WithScheduler(scheduleService), httpapi.WithSecrets(secretService), httpapi.WithResources(engine), httpapi.WithPerformance(performanceSampler), httpapi.WithSystem(engine), httpapi.WithA2SDefenseMutations(a2sDefenseCoordinator), httpapi.WithA2SDefenseSettings(a2sDefenseCoordinator), httpapi.WithCrashReports(crashReportManager), httpapi.WithCrashAnalysis(analysisWorker), httpapi.WithSecureCookie(secureCookie))
 	stopBackground := func() {
 		if err := analysisWorker.Stop(context.Background()); err != nil {
 			log.Printf("stop crash analysis worker: %v", err)
 		}
 		stopCrashSymbolIndexer()
-		stopCrashReportCleanup()
 		stopA2SEventLogger()
 		a2sDefenseCoordinator.Stop()
 		vpkRestartCoordinator.Stop()
 		scheduleService.Stop()
-		gameLogScheduler.Stop()
 		selfServiceVPKScheduler.Stop()
 	}
 	mux := http.NewServeMux()

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/not0721here/l4d2-control-panel/internal/content"
+	"github.com/not0721here/l4d2-control-panel/internal/crashreports"
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
@@ -37,9 +39,18 @@ type Dispatcher struct {
 	Instances interface {
 		Instance(context.Context, string) (domain.Instance, error)
 	}
-	Maintenance *maintenance.Manager
-	Gate        *maintenance.Gate
-	Secrets     interface {
+	Maintenance interface {
+		Backup(context.Context, string) (string, error)
+		Cleanup(context.Context, time.Duration) (int, error)
+	}
+	GameLogs interface {
+		Cleanup(context.Context, int) error
+	}
+	CrashReports interface {
+		Cleanup(context.Context, int) (crashreports.CleanupResult, error)
+	}
+	Gate    *maintenance.Gate
+	Secrets interface {
 		Get(context.Context, string) (string, bool, error)
 	}
 }
@@ -112,6 +123,9 @@ func (d Dispatcher) run(ctx context.Context, task domain.ScheduledTask) error {
 		_, err := d.Releases.FetchLatest(ctx, input.Repository, input.AssetPattern, token, d.Packages)
 		return err
 	case "backup":
+		if d.Maintenance == nil {
+			return errors.New("maintenance unavailable")
+		}
 		_, err := d.Maintenance.Backup(ctx, task.InstanceID)
 		return err
 	case "cleanup":
@@ -119,8 +133,34 @@ func (d Dispatcher) run(ctx context.Context, task domain.ScheduledTask) error {
 		if days < 1 {
 			days = 30
 		}
-		_, err := d.Maintenance.Cleanup(ctx, time.Duration(days)*24*time.Hour)
-		return err
+		var cleanupErrs []error
+		maintenanceResult := -1
+		if d.Maintenance == nil {
+			cleanupErrs = append(cleanupErrs, errors.New("maintenance unavailable"))
+		} else {
+			var err error
+			maintenanceResult, err = d.Maintenance.Cleanup(ctx, time.Duration(days)*24*time.Hour)
+			if err != nil {
+				cleanupErrs = append(cleanupErrs, fmt.Errorf("maintenance cleanup: %w", err))
+			}
+		}
+		if d.GameLogs == nil {
+			cleanupErrs = append(cleanupErrs, errors.New("game log cleanup unavailable"))
+		} else if err := d.GameLogs.Cleanup(ctx, days); err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("game log cleanup: %w", err))
+		}
+		crashResult := crashreports.CleanupResult{}
+		if d.CrashReports == nil {
+			cleanupErrs = append(cleanupErrs, errors.New("crash report cleanup unavailable"))
+		} else {
+			var err error
+			crashResult, err = d.CrashReports.Cleanup(ctx, days)
+			if err != nil {
+				cleanupErrs = append(cleanupErrs, fmt.Errorf("crash report cleanup: %w", err))
+			}
+		}
+		jobs.Logf(ctx, "schedule", joblogs.Info, "cleanup summary retention_days=%d maintenance_removed=%d crash_reports_removed=%d crash_pending_removed=%d crash_artifacts_removed=%d crash_bytes_released=%d", days, maintenanceResult, crashResult.ReportsRemoved, crashResult.PendingRemoved, crashResult.ArtifactsRemoved, crashResult.BytesReleased)
+		return errors.Join(cleanupErrs...)
 	default:
 		return errors.New("unsupported scheduled task type")
 	}

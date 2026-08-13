@@ -7,30 +7,27 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/not0721here/l4d2-control-panel/internal/crashreports"
 )
 
 type Config struct {
-	ListenAddress      string
-	PanelPort          int
-	AcceleratorPort    int
-	StackwalkPath      string
-	DumpSymsPath       string
-	GameHost           string
-	DataRoot           string
-	PanelDir           string
-	PackagesDir        string
-	InstancesDir       string
-	SharedVPKDir       string
-	GameDir            string
-	GameReleasesDir    string
-	GameStagingDir     string
-	GameCurrentPath    string
-	DatabasePath       string
-	CrashReportsDir    string
-	CrashRetentionDays int
-	CrashReportToken   string
+	ListenAddress    string
+	PanelPort        int
+	AcceleratorPort  int
+	StackwalkPath    string
+	DumpSymsPath     string
+	GameHost         string
+	DataRoot         string
+	PanelDir         string
+	PackagesDir      string
+	InstancesDir     string
+	SharedVPKDir     string
+	GameDir          string
+	GameReleasesDir  string
+	GameStagingDir   string
+	GameCurrentPath  string
+	DatabasePath     string
+	CrashReportsDir  string
+	CrashReportToken string
 }
 
 func (c Config) InstanceOverlayDir(instanceID string) string {
@@ -64,14 +61,6 @@ func Load() (Config, error) {
 	if gameHost == "" {
 		return Config{}, errors.New("L4D2_PANEL_GAME_HOST is required and must be an address SRCDS answers on")
 	}
-	retentionDays := crashreports.DefaultRetentionDays
-	if raw := os.Getenv("L4D2_PANEL_CRASH_RETENTION_DAYS"); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < crashreports.MinRetentionDays || parsed > crashreports.MaxRetentionDays {
-			return Config{}, errors.New("L4D2_PANEL_CRASH_RETENTION_DAYS must be an integer between 1 and 3650")
-		}
-		retentionDays = parsed
-	}
 	stackwalkPath := os.Getenv("L4D2_PANEL_STACKWALK_PATH")
 	if stackwalkPath == "" {
 		stackwalkPath = "/usr/local/bin/minidump_stackwalk"
@@ -87,15 +76,14 @@ func Load() (Config, error) {
 		return Config{}, errors.New("L4D2_PANEL_DUMP_SYMS_PATH must be an absolute filesystem path")
 	}
 	c := Config{
-		ListenAddress:      listen,
-		PanelPort:          panelPort,
-		AcceleratorPort:    acceleratorPort,
-		StackwalkPath:      stackwalkPath,
-		DumpSymsPath:       dumpSymsPath,
-		GameHost:           gameHost,
-		DataRoot:           filepath.Clean(root),
-		CrashRetentionDays: retentionDays,
-		CrashReportToken:   os.Getenv("L4D2_PANEL_CRASH_REPORT_TOKEN"),
+		ListenAddress:    listen,
+		PanelPort:        panelPort,
+		AcceleratorPort:  acceleratorPort,
+		StackwalkPath:    stackwalkPath,
+		DumpSymsPath:     dumpSymsPath,
+		GameHost:         gameHost,
+		DataRoot:         filepath.Clean(root),
+		CrashReportToken: os.Getenv("L4D2_PANEL_CRASH_REPORT_TOKEN"),
 	}
 	c.PanelDir = filepath.Join(c.DataRoot, "panel")
 	c.PackagesDir = filepath.Join(c.DataRoot, "packages")

@@ -38,6 +38,14 @@ const gameUpdateTask = {
   next_run: "2026-07-16T20:00:00Z",
 };
 
+const cleanupTask = {
+  ...gameUpdateTask,
+  id: "cleanup-1",
+  type: "cleanup",
+  online_policy: "force",
+  payload: JSON.stringify({ retention_days: 14 }),
+};
+
 const json = (value: unknown, status = 200) =>
   new Response(JSON.stringify(value), {
     status,
@@ -265,6 +273,30 @@ describe("SchedulesPage", () => {
       ({ path, init }) => path === "/api/schedules" && init?.method === "POST",
     );
     const body = JSON.parse(String(create?.init?.body));
+    expect(body.instance_id).toBe("");
+    expect(body.online_policy).toBe("force");
+    expect(JSON.parse(body.payload)).toEqual({ retention_days: 45 });
+  });
+
+  it("edits the retention period stored on a cleanup schedule", async () => {
+    const { requests } = mockSchedules([cleanupTask]);
+    const user = userEvent.setup();
+    render(<SchedulesPage instances={instances} packages={packages} />);
+
+    await user.click(await screen.findByRole("button", { name: "编辑 清理" }));
+    expect(screen.getByLabelText("保留天数")).toHaveValue(14);
+    await user.clear(screen.getByLabelText("保留天数"));
+    await user.type(screen.getByLabelText("保留天数"), "45");
+    await user.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent("计划已更新"),
+    );
+    const update = requests.find(
+      ({ path, init }) => path === "/api/schedules" && init?.method === "POST",
+    );
+    const body = JSON.parse(String(update?.init?.body));
+    expect(body.type).toBe("cleanup");
     expect(body.instance_id).toBe("");
     expect(body.online_policy).toBe("force");
     expect(JSON.parse(body.payload)).toEqual({ retention_days: 45 });

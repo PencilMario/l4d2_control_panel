@@ -340,11 +340,6 @@ func main() {
 	defer jobLogManager.Close()
 	seedJobs(db)
 	gameLogManager := gamelogs.NewManager(root, gamelogs.Options{})
-	gameLogScheduler := gamelogs.NewScheduler(db, jobManager, gameLogManager)
-	if err := gameLogScheduler.Start(); err != nil {
-		log.Fatal(err)
-	}
-	defer gameLogScheduler.Stop()
 	selfServiceVPKManager := content.NewSelfServiceVPKManager(db, uploads)
 	selfServiceVPKScheduler := content.NewSelfServiceVPKScheduler(selfServiceVPKManager)
 	if err := selfServiceVPKScheduler.Start(); err != nil {
@@ -360,7 +355,7 @@ func main() {
 	api := httpapi.New(
 		db,
 		sessions,
-		httpapi.WithGameLogs(gameLogManager, gameLogScheduler),
+		httpapi.WithGameLogs(gameLogManager),
 		httpapi.WithOperations(lifecycle, jobManager),
 		httpapi.WithJobLogs(jobLogManager),
 		httpapi.WithConsole(console),

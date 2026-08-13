@@ -96,7 +96,6 @@ func TestControlServicesUseSharedUnixProxyAndPublishOnlyPanel(t *testing.T) {
 	}
 	assertContains(t, panel, "L4D2_PANEL_LISTEN: 0.0.0.0:${L4D2_PANEL_HTTP_PORT:-18081}", "Panel host HTTP listener")
 	assertContains(t, panel, "L4D2_PANEL_CRASH_REPORT_TOKEN: ${L4D2_PANEL_CRASH_REPORT_TOKEN:-}", "Panel crash report token")
-	assertContains(t, panel, "L4D2_PANEL_CRASH_RETENTION_DAYS: ${L4D2_PANEL_CRASH_RETENTION_DAYS:-90}", "Panel crash report retention")
 	assertContains(t, panel, "L4D2_PANEL_STACKWALK_PATH: ${L4D2_PANEL_STACKWALK_PATH:-/usr/local/bin/minidump_stackwalk}", "Panel stackwalk tool path")
 	assertContains(t, panel, "L4D2_PANEL_DUMP_SYMS_PATH: ${L4D2_PANEL_DUMP_SYMS_PATH:-/usr/local/bin/dump_syms}", "Panel dump_syms tool path")
 	assertContains(t, panel, "cap_add: [CHOWN]", "Panel CHOWN-only capability")
@@ -155,6 +154,7 @@ func TestPanelImageContainsConfiguredStackwalkTool(t *testing.T) {
 	assertContains(t, dockerfile, "make -j2 src/processor/minidump_stackwalk", "Breakpad stackwalk build")
 	assertContains(t, dockerfile, "COPY assets/breakpad/stab.h /usr/local/include/stab.h", "Alpine STABS compatibility header")
 	assertContains(t, dockerfile, "COPY --from=breakpad /src/breakpad/src/processor/minidump_stackwalk", "Breakpad stackwalk installation")
+	assertContains(t, dockerfile, "COPY --from=breakpad /src/breakpad/src/tools/linux/dump_syms/dump_syms", "Breakpad dump_syms installation")
 	assertContains(t, dockerfile, "minidump_stackwalk", "Breakpad stackwalk binary")
 	assertContains(t, dockerfile, "libstdc++", "Breakpad runtime library")
 }

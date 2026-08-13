@@ -4,15 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/go-chi/chi/v5"
-	"github.com/not0721here/l4d2-control-panel/internal/gamelogs"
-	"github.com/not0721here/l4d2-control-panel/internal/store"
 	"io"
 	"net/http"
 	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/not0721here/l4d2-control-panel/internal/store"
 )
 
 func (s *Server) ensureLogInstance(r *http.Request) error {
@@ -106,17 +106,12 @@ func (s *Server) gameLogsDownload(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, filepath.Base(p), info.ModTime(), f)
 }
 func (s *Server) getGameLogSettings(w http.ResponseWriter, r *http.Request) {
-	d, err := s.store.GameLogRetentionDays()
-	if err != nil {
-		writeJSON(w, 500, nil)
-		return
-	}
 	size, err := s.store.GameLogMaxFileSizeMB()
 	if err != nil {
 		writeJSON(w, 500, nil)
 		return
 	}
-	writeJSON(w, 200, map[string]int{"retention_days": d, "max_file_size_mb": size})
+	writeJSON(w, 200, map[string]int{"max_file_size_mb": size})
 }
 func decodeStrict(r *http.Request, v any) error {
 	d := json.NewDecoder(r.Body)
@@ -131,43 +126,16 @@ func decodeStrict(r *http.Request, v any) error {
 	return nil
 }
 func (s *Server) putGameLogSettings(w http.ResponseWriter, r *http.Request) {
-	if s.gameLogScheduler == nil {
-		writeJSON(w, 503, nil)
-		return
-	}
 	var in struct {
-		RetentionDays int `json:"retention_days"`
 		MaxFileSizeMB int `json:"max_file_size_mb"`
 	}
-	if err := decodeStrict(r, &in); err != nil || in.RetentionDays < store.MinGameLogRetentionDays || in.RetentionDays > store.MaxGameLogRetentionDays || in.MaxFileSizeMB < store.MinGameLogMaxFileSizeMB || in.MaxFileSizeMB > store.MaxGameLogMaxFileSizeMB {
+	if err := decodeStrict(r, &in); err != nil || in.MaxFileSizeMB < store.MinGameLogMaxFileSizeMB || in.MaxFileSizeMB > store.MaxGameLogMaxFileSizeMB {
 		writeJSON(w, 422, nil)
 		return
 	}
-	oldDays, err := s.store.GameLogRetentionDays()
-	if err != nil {
-		writeJSON(w, 500, nil)
-		return
-	}
-	oldSize, err := s.store.GameLogMaxFileSizeMB()
-	if err != nil {
-		writeJSON(w, 500, nil)
-		return
-	}
-	if err := s.store.SetGameLogSettings(in.RetentionDays, in.MaxFileSizeMB); err != nil {
+	if err := s.store.SetGameLogSettings(in.MaxFileSizeMB); err != nil {
 		writeJSON(w, 422, nil)
 		return
 	}
-	result := gamelogs.EnqueueResult{Errors: []string{}, JobIDs: []string{}}
-	if in.RetentionDays < oldDays || in.MaxFileSizeMB < oldSize {
-		result = s.gameLogScheduler.EnqueueAll(context.Background())
-	}
-	writeJSON(w, 200, map[string]any{"retention_days": in.RetentionDays, "max_file_size_mb": in.MaxFileSizeMB, "enqueue": result})
-}
-func (s *Server) cleanupGameLogs(w http.ResponseWriter, r *http.Request) {
-	if s.gameLogScheduler == nil {
-		writeJSON(w, 503, nil)
-		return
-	}
-	v := s.gameLogScheduler.EnqueueAll(context.Background())
-	writeJSON(w, 200, v)
+	writeJSON(w, 200, map[string]int{"max_file_size_mb": in.MaxFileSizeMB})
 }

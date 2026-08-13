@@ -206,7 +206,7 @@ func TestSaveGeneratedSymbolIsPersistentAndUsesBreakpadLookupPath(t *testing.T) 
 		t.Fatal(err)
 	}
 	current = current.Add(91 * 24 * time.Hour)
-	if _, err := manager.Cleanup(context.Background()); err != nil {
+	if _, err := manager.Cleanup(context.Background(), 90); err != nil {
 		t.Fatal(err)
 	}
 	remaining, _, err := manager.OpenArtifact(context.Background(), ArtifactKindSymbol, id)

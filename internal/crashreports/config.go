@@ -8,9 +8,8 @@ import (
 )
 
 const (
-	DefaultRetentionDays = 90
-	MinRetentionDays     = 1
-	MaxRetentionDays     = 3650
+	MinRetentionDays = 1
+	MaxRetentionDays = 3650
 
 	MaxMinidumpBytes       int64 = 128 << 20
 	MaxMetadataBytes       int64 = 4 << 20
@@ -42,13 +41,11 @@ var (
 type Config struct {
 	Root                 string
 	Token                string
-	RetentionDays        int
 	Now                  func() time.Time
 	AuthorizeInstance    InstanceAuthorizer
 	ResolveInstance      InstanceResolver
 	EnqueueAnalysis      func(context.Context, Report) error
 	AnalysisEnqueueError func(error)
-	ReportCleanupError   func(error)
 }
 
 type InstanceAuthorizer func(context.Context, string, string) error

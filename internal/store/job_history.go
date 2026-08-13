@@ -18,16 +18,11 @@ const (
 	DefaultCompletedJobLimit    = 25
 	MinCompletedJobLimit        = 1
 	MaxCompletedJobLimit        = 500
-	DefaultGameLogRetentionDays = 14
-	MinGameLogRetentionDays     = 1
-	MaxGameLogRetentionDays     = 365
 	DefaultGameLogMaxFileSizeMB = 10
 	MinGameLogMaxFileSizeMB     = 1
 	MaxGameLogMaxFileSizeMB     = 1024
 
-	// Keep the original key so existing installations retain their configured value.
 	completedJobLimitKey         = "successful_job_limit"
-	gameLogRetentionDaysKey      = "game_log_retention_days"
 	gameLogMaxFileSizeMBKey      = "game_log_max_file_size_mb"
 	githubReleasesAcceleratorKey = "github_releases_accelerator"
 )
@@ -214,39 +209,6 @@ ON CONFLICT(name) DO UPDATE SET value=excluded.value,updated_at=excluded.updated
 	return nil
 }
 
-func (s *Store) GameLogRetentionDays() (int, error) {
-	var raw string
-	err := s.db.QueryRow(`SELECT value FROM system_settings WHERE name=?`, gameLogRetentionDaysKey).Scan(&raw)
-	if err == sql.ErrNoRows {
-		return DefaultGameLogRetentionDays, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	days, err := strconv.Atoi(raw)
-	if err != nil || days < MinGameLogRetentionDays || days > MaxGameLogRetentionDays {
-		return 0, fmt.Errorf("invalid stored game log retention days %q", raw)
-	}
-	return days, nil
-}
-
-func (s *Store) SetGameLogRetentionDays(days int) error {
-	if days < MinGameLogRetentionDays || days > MaxGameLogRetentionDays {
-		return fmt.Errorf("game log retention days must be between %d and %d", MinGameLogRetentionDays, MaxGameLogRetentionDays)
-	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.Exec(`INSERT INTO system_settings(name,value,updated_at) VALUES(?,?,?)
-ON CONFLICT(name) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
-		gameLogRetentionDaysKey, strconv.Itoa(days), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
 func (s *Store) GameLogMaxFileSizeMB() (int, error) {
 	var raw string
 	err := s.db.QueryRow(`SELECT value FROM system_settings WHERE name=?`, gameLogMaxFileSizeMBKey).Scan(&raw)
@@ -303,10 +265,7 @@ ON CONFLICT(name) DO UPDATE SET value=excluded.value,updated_at=excluded.updated
 	return err
 }
 
-func (s *Store) SetGameLogSettings(retentionDays, maxFileSizeMB int) error {
-	if retentionDays < MinGameLogRetentionDays || retentionDays > MaxGameLogRetentionDays {
-		return fmt.Errorf("game log retention days must be between %d and %d", MinGameLogRetentionDays, MaxGameLogRetentionDays)
-	}
+func (s *Store) SetGameLogSettings(maxFileSizeMB int) error {
 	if maxFileSizeMB < MinGameLogMaxFileSizeMB || maxFileSizeMB > MaxGameLogMaxFileSizeMB {
 		return fmt.Errorf("game log max file size MB must be between %d and %d", MinGameLogMaxFileSizeMB, MaxGameLogMaxFileSizeMB)
 	}
@@ -316,14 +275,10 @@ func (s *Store) SetGameLogSettings(retentionDays, maxFileSizeMB int) error {
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	for key, value := range map[string]int{
-		gameLogRetentionDaysKey: retentionDays,
-		gameLogMaxFileSizeMBKey: maxFileSizeMB,
-	} {
-		if _, err := tx.Exec(`INSERT INTO system_settings(name,value,updated_at) VALUES(?,?,?)
-ON CONFLICT(name) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, key, strconv.Itoa(value), now); err != nil {
-			return err
-		}
+	if _, err := tx.Exec(`INSERT INTO system_settings(name,value,updated_at) VALUES(?,?,?)
+ON CONFLICT(name) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
+		gameLogMaxFileSizeMBKey, strconv.Itoa(maxFileSizeMB), now); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
