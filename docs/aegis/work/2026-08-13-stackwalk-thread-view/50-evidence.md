@@ -22,5 +22,9 @@
 
 ## Remote acceptance
 
-- Pending: deploy the committed frontend-only change to the existing `/home/steam/l4d2_control_panel` Compose source on 安可服.
-- Pending: verify `http://100.73.249.118:18081/` with Playwright at desktop and 390px mobile widths, including the recent-list top frame, crashed-thread default, thread switching, hidden ordinary logs, and horizontal overflow.
+- Deployed revision `36c2e6d` to `/home/steam/l4d2_control_panel.next-36c2e6d` on 安可服; only the `panel` service was rebuilt/recreated. Existing helper containers and `/home/steam/l4d2-panel-data` remained in place.
+- `curl -fsS http://127.0.0.1:18081/api/health` -> `status: ok`, database `ok`, 11 containers running; `panel` reported healthy after startup.
+- Playwright desktop at `http://100.73.249.118:18081/`: authenticated crash page showed recent-list preview `#0 server.so!Crash + 0x10`; Stackwalk defaulted to `Thread 2（崩溃线程）`, showing only `server.so!Crash + 0x10` and `engine.so!Run + 0x20`.
+- Playwright thread switch: selecting `Thread 0` showed `worker.so!Idle + 0x8`; ordinary `minidump_stackwalk` log text was absent from the rendered call-stack region.
+- Playwright 390px viewport: `document.documentElement.scrollWidth` and `document.body.scrollWidth` were `375`, with the thread selector fitting at 279px; no horizontal overflow was observed.
+- Browser console still reports the pre-auth `GET /api/session` 401 during initial page load; no new runtime error was introduced by the authenticated crash page checks.
