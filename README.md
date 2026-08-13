@@ -45,8 +45,9 @@ curl -fsSL https://raw.githubusercontent.com/PencilMario/l4d2_control_panel/main
 2. 克隆仓库到 `/opt/l4d2-control-panel`；
 3. 创建权限为 `0600` 的 `.env`；
 4. 生成随机管理员密码；
-5. 构建并启动服务；
-6. 等待 `/api/health` 就绪。
+5. 生成并持久化 Accelerator 崩溃报告 Token；
+6. 构建并启动服务；
+7. 等待 `/api/health` 就绪。
 
 首次成功后请立即保存终端打印的管理员密码。持久数据默认位于 `/srv/l4d2-panel`。
 
@@ -83,7 +84,7 @@ Panel 使用 host network，直接监听 `0.0.0.0:${L4D2_PANEL_HTTP_PORT:-18081}
 | `L4D2_PANEL_HTTP_PORT` | 宿主机 HTTP 端口 | `18081` |
 | `L4D2_PANEL_ACCELERATOR_PORT` | 写入 Accelerator 的宿主机 loopback 上传端口，默认跟随 HTTP 端口 | `L4D2_PANEL_HTTP_PORT` |
 | `L4D2_PANEL_GAME_HOST` | Panel 发起 A2S 查询时使用的宿主机地址 | `host.docker.internal` |
-| `L4D2_PANEL_CRASH_REPORT_TOKEN` | Accelerator 接收端共享 token；为空时关闭接收端 | 空 |
+| `L4D2_PANEL_CRASH_REPORT_TOKEN` | Accelerator 接收端共享 token；一键部署时缺失会自动生成并持久化 | 自动生成 |
 | `L4D2_PANEL_STACKWALK_PATH` | Panel 容器内 `minidump_stackwalk` 可执行文件路径 | `/usr/local/bin/minidump_stackwalk` |
 | `L4D2_PANEL_DUMP_SYMS_PATH` | Panel 容器内 Breakpad `dump_syms` 可执行文件路径 | `/usr/local/bin/dump_syms` |
 | `L4D2_PANEL_DOWNLOAD_PROXY` | GitHub Release、SteamCMD 等下载代理 | 空 |

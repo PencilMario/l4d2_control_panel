@@ -69,6 +69,7 @@ parse_args() {
 write_env_file() {
   local env_file="$1"
   local password="$2"
+  local crash_report_token="${3:-$(generate_token)}"
   local temp_file
 
   mkdir -p "$(dirname "$env_file")"
@@ -76,6 +77,7 @@ write_env_file() {
   umask 077
   cat > "$temp_file" <<EOF
 L4D2_PANEL_ADMIN_PASSWORD=$password
+L4D2_PANEL_CRASH_REPORT_TOKEN=$crash_report_token
 L4D2_PANEL_DATA_ROOT=$DEFAULT_DATA_ROOT
 L4D2_PANEL_HTTP_PORT=$DEFAULT_HTTP_PORT
 L4D2_PANEL_GAME_HOST=$DEFAULT_GAME_HOST
@@ -94,6 +96,35 @@ ensure_env_file() {
   local env_file="$1"
   local password="$2"
   [[ -e "$env_file" ]] || write_env_file "$env_file" "$password"
+}
+
+ensure_crash_report_token() {
+  local env_file="$1"
+  local token temp_file
+
+  token="$(read_env_value "$env_file" L4D2_PANEL_CRASH_REPORT_TOKEN)"
+  if [[ -n "$token" ]]; then
+    chmod 0600 "$env_file"
+    return 0
+  fi
+
+  token="$(generate_token)"
+  temp_file="${env_file}.tmp.$$"
+  umask 077
+  awk -v token="$token" '
+    BEGIN { key = "L4D2_PANEL_CRASH_REPORT_TOKEN"; found = 0 }
+    index($0, key "=") == 1 {
+      print key "=" token
+      found = 1
+      next
+    }
+    { print }
+    END {
+      if (!found) print key "=" token
+    }
+  ' "$env_file" > "$temp_file"
+  chmod 0600 "$temp_file"
+  mv -f "$temp_file" "$env_file"
 }
 
 update_repository() {
@@ -308,6 +339,10 @@ generate_password() {
   printf '\n'
 }
 
+generate_token() {
+  generate_password
+}
+
 locate_repository() {
   local install_dir="$1"
   local repository_url="$2"
@@ -355,6 +390,8 @@ main() {
     generated_password="$(generate_password)"
     write_env_file "$env_file" "$generated_password"
     created_env=true
+  else
+    ensure_crash_report_token "$env_file"
   fi
 
   update_and_deploy "$repository" "$BRANCH" "$env_file"

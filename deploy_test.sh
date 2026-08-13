@@ -63,10 +63,39 @@ test_env_generation_and_preservation() {
   assert_contains "$original" "L4D2_PANEL_DATA_ROOT=/srv/l4d2-panel" "default data root"
   assert_contains "$original" "L4D2_PANEL_HTTP_PORT=18081" "default HTTP port"
   assert_contains "$original" "L4D2_PANEL_GAME_HOST=host.docker.internal" "default game host"
+  token="$(sed -n 's/^L4D2_PANEL_CRASH_REPORT_TOKEN=//p' "$env_file")"
+  [[ "$token" =~ ^[A-Za-z0-9_-]{32,}$ ]] || fail "generated crash report token is missing or unsafe"
   assert_eq "600" "$mode" "environment file permissions"
 
   ensure_env_file "$env_file" "replacement-secret"
   assert_eq "$original" "$(cat "$env_file")" "existing environment file must be preserved"
+  rm -rf "$temp_dir"
+}
+
+test_crash_report_token_repair_and_preservation() {
+  source_deploy
+  local temp_dir env_file original token
+  temp_dir="$(new_temp_dir)"
+  env_file="$temp_dir/.env"
+
+  printf 'L4D2_PANEL_ADMIN_PASSWORD=existing\nL4D2_PANEL_CRASH_REPORT_TOKEN=\n' > "$env_file"
+  chmod 600 "$env_file"
+  ensure_crash_report_token "$env_file"
+  token="$(sed -n 's/^L4D2_PANEL_CRASH_REPORT_TOKEN=//p' "$env_file")"
+  [[ "$token" =~ ^[A-Za-z0-9_-]{32,}$ ]] || fail "empty crash report token was not repaired"
+
+  original="$(cat "$env_file")"
+  ensure_crash_report_token "$env_file"
+  assert_eq "$original" "$(cat "$env_file")" "repaired crash report token must be preserved"
+
+  printf 'L4D2_PANEL_ADMIN_PASSWORD=existing\n' > "$env_file"
+  ensure_crash_report_token "$env_file"
+  token="$(sed -n 's/^L4D2_PANEL_CRASH_REPORT_TOKEN=//p' "$env_file")"
+  [[ "$token" =~ ^[A-Za-z0-9_-]{32,}$ ]] || fail "missing crash report token was not added"
+
+  printf 'L4D2_PANEL_ADMIN_PASSWORD=existing\nL4D2_PANEL_CRASH_REPORT_TOKEN=operator-token\n' > "$env_file"
+  ensure_crash_report_token "$env_file"
+  assert_contains "$(cat "$env_file")" "L4D2_PANEL_CRASH_REPORT_TOKEN=operator-token" "configured crash report token must be preserved"
   rm -rf "$temp_dir"
 }
 
@@ -314,6 +343,7 @@ test_main_orchestrates_local_deployment() {
 main() {
   test_parse_args_defaults_and_overrides
   test_env_generation_and_preservation
+  test_crash_report_token_repair_and_preservation
   test_update_rejects_dirty_tree_and_fast_forwards
   test_bootstrap_clones_repository
   test_compose_deploy_and_health_check
