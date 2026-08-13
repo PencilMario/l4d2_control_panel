@@ -1214,7 +1214,7 @@ describe("App", () => {
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "内容仓库" }));
 
-    expect(screen.getByRole("button", { name: "更新共享游戏本体" }))
+    expect(screen.getByRole("button", { name: "更新游戏本体" }))
       .toHaveClass("shared-game-update");
   });
 
