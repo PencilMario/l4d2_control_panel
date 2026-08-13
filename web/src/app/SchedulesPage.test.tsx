@@ -149,7 +149,9 @@ describe("SchedulesPage", () => {
     expect(dialog).toHaveTextContent("在线玩家策略");
     expect(dialog).toHaveTextContent("不会取消已经排队或正在执行的任务");
     expect(dialog).toHaveTextContent("保留天数");
-    expect(dialog).toHaveTextContent("未被实例引用且不是对应 GitHub 仓库最新版的历史插件包");
+    expect(dialog).toHaveTextContent("同时清理保留期之前的维护文件、游戏日志和崩溃报告");
+    expect(dialog).toHaveTextContent("未启用此计划任务时，游戏日志和崩溃报告不会自行按保留期清理");
+    expect(dialog).toHaveTextContent("历史插件包");
     expect(dialog).toHaveTextContent("常规插件包");
 
     await user.click(within(dialog).getByRole("button", { name: "关闭任务说明" }));
