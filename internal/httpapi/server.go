@@ -729,6 +729,7 @@ func (s *Server) downloadPrivate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := chi.URLParam(r, "*")
+	w.Header().Set("Cache-Control", "no-store")
 	if s.privateUploads == nil {
 		raw, err := s.private.Read(r.Context(), chi.URLParam(r, "id"), name)
 		if err != nil {

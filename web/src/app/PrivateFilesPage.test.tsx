@@ -18,9 +18,12 @@ const json = (value: unknown, status = 200) =>
 function mockPrivateAPI(options?: {
   error?: boolean;
   binaryOnly?: boolean;
+  staleReadWithoutNoStore?: boolean;
   importResponse?: Promise<Response>;
 }) {
   let modified = false;
+  let privateContent = "hostname smoke";
+  const cachedPrivateContent = privateContent;
   const calls: Array<{ path: string; init?: RequestInit }> = [];
   const fetchMock = vi.fn(
     async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -82,10 +85,14 @@ function mockPrivateAPI(options?: {
         return options?.importResponse ?? new Response(null, { status: 204 });
       }
       if (path.includes("/private/file/cfg/server.cfg") && !init?.method) {
-        return new Response("hostname smoke", { status: 200 });
+        const content = options?.staleReadWithoutNoStore && init?.cache !== "no-store"
+          ? cachedPrivateContent
+          : privateContent;
+        return new Response(content, { status: 200 });
       }
       if (path.includes("/private/cfg/server.cfg") && init?.method === "PUT") {
         modified = true;
+        privateContent = String(init.body ?? "");
         return new Response(null, { status: 204 });
       }
       if (path.endsWith("/private/uploads") && init?.method === "POST") {
@@ -269,6 +276,24 @@ describe("PrivateFilesPage", () => {
     );
     await userEvent.click(screen.getByRole("button", { name: "应用更改" }));
     expect(queue).toHaveBeenCalledWith("/api/instances/abc/private/apply", {});
+  });
+
+  it("keeps saved text after the page is reloaded", async () => {
+    mockPrivateAPI({ staleReadWithoutNoStore: true });
+    const firstRender = render(<PrivateFilesPage instances={[instance]} queue={vi.fn()} />);
+    await userEvent.click(await screen.findByRole("treeitem", { name: "cfg" }));
+    await userEvent.click(screen.getByRole("treeitem", { name: "server.cfg" }));
+    await userEvent.click(screen.getByRole("button", { name: "编辑 server.cfg" }));
+    await userEvent.clear(screen.getByLabelText("文件内容"));
+    await userEvent.type(screen.getByLabelText("文件内容"), "hostname persisted");
+    await userEvent.click(screen.getByRole("button", { name: "保存到暂存区" }));
+    expect(await screen.findByText("文件已保存到暂存区")).toBeVisible();
+
+    firstRender.unmount();
+    render(<PrivateFilesPage instances={[instance]} queue={vi.fn()} />);
+    await userEvent.click(await screen.findByRole("treeitem", { name: "cfg" }));
+    await userEvent.click(screen.getByRole("treeitem", { name: "server.cfg" }));
+    expect(await screen.findByLabelText("文件内容")).toHaveValue("hostname persisted");
   });
 
   it("shows directories, empty directories, and no editor for binary files", async () => {

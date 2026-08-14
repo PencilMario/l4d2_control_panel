@@ -282,7 +282,10 @@ export function PrivateFilesPage({ instances, queue, queueAndWait }: Props) {
   }, []);
 
   const editFile = async (path: string) => {
-    const response = await fetch(`/api/instances/${instanceID}/private/file/${encodeRelativePath(path)}`, { credentials: "same-origin" });
+    const response = await fetch(`/api/instances/${instanceID}/private/file/${encodeRelativePath(path)}`, {
+      credentials: "same-origin",
+      cache: "no-store",
+    });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const bytes = new Uint8Array(await response.arrayBuffer());
     if (bytes.byteLength > EDITOR_LIMIT) throw new Error("文件超过文本编辑大小限制");

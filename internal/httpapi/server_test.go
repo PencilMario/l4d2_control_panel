@@ -2091,6 +2091,9 @@ func TestContentReadRoutesAndJobFeed(t *testing.T) {
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), check.want) {
 			t.Fatalf("%s: status=%d body=%s", check.path, w.Code, w.Body.String())
 		}
+		if check.path == "/api/instances/abc/private/file/cfg/server.cfg" && w.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("%s: cache-control=%q", check.path, w.Header().Get("Cache-Control"))
+		}
 		if check.path == "/api/instances/abc/private" && !strings.Contains(w.Body.String(), `"path":"cfg/server.cfg"`) {
 			t.Fatalf("private list must use stable lower-case fields: %s", w.Body.String())
 		}
