@@ -791,3 +791,37 @@ func TestListManagedIncludesGameAndMaintenanceRoles(t *testing.T) {
 		t.Fatalf("items=%#v err=%v", items, err)
 	}
 }
+
+func TestGetArchiveReadsContainerFileAsTarStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1.44/containers/game/archive" || r.URL.Query().Get("path") != "/lib/i386-linux-gnu/libc.so.6" {
+			t.Fatalf("request=%s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/x-tar")
+		_, _ = w.Write([]byte("tar-bytes"))
+	}))
+	defer server.Close()
+
+	stream, err := NewEngine(server.URL).GetArchive(context.Background(), "game", "/lib/i386-linux-gnu/libc.so.6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	got, err := io.ReadAll(stream)
+	if err != nil || string(got) != "tar-bytes" {
+		t.Fatalf("archive=%q err=%v", got, err)
+	}
+}
+
+func TestGetArchiveRejectsUnsafeContainerPath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("unsafe archive path reached Docker")
+	}))
+	defer server.Close()
+
+	for _, path := range []string{"", "relative/libc.so.6", "/lib/../etc/passwd", "/tmp/file"} {
+		if _, err := NewEngine(server.URL).GetArchive(context.Background(), "game", path); err == nil {
+			t.Fatalf("path %q was accepted", path)
+		}
+	}
+}

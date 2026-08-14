@@ -2,6 +2,7 @@ package crashanalysis
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -100,6 +101,49 @@ type workerStackwalk struct{ calls int }
 func (s *workerStackwalk) Run(context.Context, string) (StackwalkResult, error) {
 	s.calls++
 	return StackwalkResult{Text: "#0 accelerator", Tool: "fake"}, nil
+}
+
+type orderedArtifactPreparer struct {
+	events *[]string
+	err    error
+}
+
+func (p orderedArtifactPreparer) Prepare(context.Context, crashreports.Report) error {
+	*p.events = append(*p.events, "artifacts")
+	return p.err
+}
+
+type orderedStackwalk struct {
+	events *[]string
+}
+
+func (s orderedStackwalk) Run(context.Context, string) (StackwalkResult, error) {
+	*s.events = append(*s.events, "stackwalk")
+	return StackwalkResult{Text: "#0 libc.so.6", Tool: "fake"}, nil
+}
+
+func TestWorkerPreparesSystemArtifactsBeforeStackwalkWithoutMakingPreparationFatal(t *testing.T) {
+	events := []string{}
+	store := &workerStore{report: crashreports.Report{ID: strings.Repeat("a", 64)}, metadata: []byte("metadata"), done: make(chan struct{}, 1)}
+	worker, err := NewWorker(WorkerConfig{Store: store, Stackwalker: orderedStackwalk{events: &events}, Preparer: orderedArtifactPreparer{events: &events, err: errors.New("container disappeared")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop(context.Background())
+	if err := worker.Enqueue(context.Background(), store.report.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-store.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not finish")
+	}
+	if strings.Join(events, ",") != "artifacts,stackwalk" {
+		t.Fatalf("events=%v", events)
+	}
 }
 
 type workerAI struct{ calls int }

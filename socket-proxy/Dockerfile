@@ -8,6 +8,7 @@ RUN GOPROXY="${GOPROXY}" go mod download
 COPY cmd/socket-proxy ./cmd/socket-proxy
 COPY internal/socketproxy ./internal/socketproxy
 COPY internal/traffic ./internal/traffic
+COPY internal/systemlibs ./internal/systemlibs
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/socket-proxy ./cmd/socket-proxy
 FROM ${ALPINE_IMAGE}
 RUN addgroup -S proxy && adduser -S -D -H -G proxy proxy

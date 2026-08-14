@@ -68,7 +68,7 @@ func (m *Manager) SaveBinary(ctx context.Context, input BinaryInput) (Artifact, 
 		ID: id, Kind: ArtifactKindBinary, SHA256: id, Size: size,
 		InstanceID:      input.InstanceID,
 		DebugIdentifier: input.DebugIdentifier, CodeIdentifier: input.CodeIdentifier,
-		Platform: input.Platform, Architecture: input.Architecture,
+		DebugFile: basename, Platform: input.Platform, Architecture: input.Architecture,
 		Basename: basename, ReceivedAt: m.currentTime().Format(timeFormat),
 	}
 	target := filepath.Join(m.root, "binaries", id+".bin")

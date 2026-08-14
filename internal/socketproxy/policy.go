@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/not0721here/l4d2-control-panel/internal/systemlibs"
 )
 
 var versionPrefix = regexp.MustCompile(`^/v[0-9]+\.[0-9]+`)
@@ -14,6 +16,7 @@ var containerAction = regexp.MustCompile(`^/containers/[^/]+/(start|stop|wait|ex
 var execAction = regexp.MustCompile(`^/exec/[^/]+/(start|resize)$`)
 var containerDelete = regexp.MustCompile(`^/containers/[^/]+$`)
 var containerLogs = regexp.MustCompile(`^/containers/([^/]+)/logs$`)
+var containerArchive = regexp.MustCompile(`^/containers/([^/]+)/archive$`)
 
 func Allowed(method, path string) bool {
 	path = versionPrefix.ReplaceAllString(path, "")
@@ -25,7 +28,7 @@ func Allowed(method, path string) bool {
 	}
 	switch method {
 	case http.MethodGet:
-		return path == "/info" || path == "/containers/json" || path == "/images/json" || containerItem.MatchString(path) || strings.HasPrefix(path, "/images/") && strings.HasSuffix(path, "/json")
+		return path == "/info" || path == "/containers/json" || path == "/images/json" || containerItem.MatchString(path) || containerArchive.MatchString(path) || strings.HasPrefix(path, "/images/") && strings.HasSuffix(path, "/json")
 	case http.MethodPost:
 		return path == "/containers/create" || path == "/images/create" || containerAction.MatchString(path) || execAction.MatchString(path)
 	case http.MethodDelete:
@@ -33,6 +36,19 @@ func Allowed(method, path string) bool {
 	default:
 		return false
 	}
+}
+
+func ArchiveContainerID(path string) (string, bool) {
+	path = versionPrefix.ReplaceAllString(path, "")
+	match := containerArchive.FindStringSubmatch(path)
+	if len(match) != 2 {
+		return "", false
+	}
+	return match[1], true
+}
+
+func AllowedArchiveQuery(query url.Values) bool {
+	return len(query) == 1 && len(query["path"]) == 1 && systemlibs.IsAllowedContainerPath(query.Get("path"))
 }
 
 func LogContainerID(path string) (string, bool) {

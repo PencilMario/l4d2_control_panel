@@ -30,6 +30,7 @@ type Manager struct {
 	now                  func() time.Time
 	authorizeInstance    InstanceAuthorizer
 	resolveInstance      InstanceResolver
+	resolveContainerID   func(context.Context, string) (string, error)
 	enqueueAnalysis      func(context.Context, Report) error
 	analysisEnqueueError func(error)
 	mu                   sync.Mutex
@@ -52,7 +53,7 @@ func New(config Config) (*Manager, error) {
 			return nil, fmt.Errorf("create crash report directory %s: %w", name, err)
 		}
 	}
-	manager := &Manager{root: root, token: config.Token, now: now, authorizeInstance: config.AuthorizeInstance, resolveInstance: config.ResolveInstance, enqueueAnalysis: config.EnqueueAnalysis, analysisEnqueueError: config.AnalysisEnqueueError}
+	manager := &Manager{root: root, token: config.Token, now: now, authorizeInstance: config.AuthorizeInstance, resolveInstance: config.ResolveInstance, resolveContainerID: config.ResolveContainerID, enqueueAnalysis: config.EnqueueAnalysis, analysisEnqueueError: config.AnalysisEnqueueError}
 	if err := manager.installBuiltinSymbols(); err != nil {
 		return nil, err
 	}
@@ -69,8 +70,22 @@ func (m *Manager) Authorized(token string) bool {
 func (m *Manager) Configured() bool { return m.token != "" }
 
 func (m *Manager) PreSubmit(input PreSubmitInput) (string, error) {
+	return m.PreSubmitContext(context.Background(), input)
+}
+
+func (m *Manager) PreSubmitContext(ctx context.Context, input PreSubmitInput) (string, error) {
 	if len(input.CrashSignature) > MaxCrashSignatureBytes {
 		return "", ErrCrashSignatureTooLarge
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	containerID := ""
+	if m.resolveContainerID != nil && input.InstanceID != "" {
+		containerID, _ = m.resolveContainerID(ctx, input.InstanceID)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -82,7 +97,7 @@ func (m *Manager) PreSubmit(input PreSubmitInput) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	pending := PendingSubmission{Token: token, CreatedAt: m.currentTime(), Input: input}
+	pending := PendingSubmission{Token: token, CreatedAt: m.currentTime(), ContainerID: containerID, Input: input}
 	if err := writeJSONAtomic(filepath.Join(m.root, "pending", token+".json"), pending, 0o600); err != nil {
 		return "", fmt.Errorf("save pending crash report: %w", err)
 	}
@@ -147,6 +162,20 @@ func (m *Manager) Receive(ctx context.Context, input UploadInput) (report Report
 	}
 	if err := ctx.Err(); err != nil {
 		return Report{}, err
+	}
+	pending, pendingErr := m.readPending(input.PresubmitToken)
+	containerID := ""
+	if pendingErr == nil {
+		containerID = pending.ContainerID
+	}
+	if containerID == "" && m.resolveContainerID != nil {
+		instanceID := input.InstanceID
+		if instanceID == "" && pendingErr == nil {
+			instanceID = pending.Input.InstanceID
+		}
+		if instanceID != "" {
+			containerID, _ = m.resolveContainerID(ctx, instanceID)
+		}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -244,6 +273,7 @@ func (m *Manager) Receive(ctx context.Context, input UploadInput) (report Report
 	report = Report{
 		ID:               id,
 		InstanceID:       input.InstanceID,
+		ContainerID:      containerID,
 		ReceivedAt:       m.currentTime(),
 		UpdatedAt:        m.currentTime(),
 		MinidumpSize:     dumpSize,
@@ -262,6 +292,9 @@ func (m *Manager) Receive(ctx context.Context, input UploadInput) (report Report
 		}
 		if report.InstanceID == "" {
 			report.InstanceID = old.InstanceID
+		}
+		if report.ContainerID == "" {
+			report.ContainerID = old.ContainerID
 		}
 		if report.GameDirectory == "" {
 			report.GameDirectory = old.GameDirectory
@@ -293,7 +326,7 @@ func (m *Manager) Receive(ctx context.Context, input UploadInput) (report Report
 		report.AIStartedAt = old.AIStartedAt
 		report.AICompletedAt = old.AICompletedAt
 	}
-	if pending, pendingErr := m.readPending(input.PresubmitToken); pendingErr == nil {
+	if pendingErr == nil {
 		report.CrashSignature = pending.Input.CrashSignature
 		if report.InstanceID == "" {
 			report.InstanceID = pending.Input.InstanceID

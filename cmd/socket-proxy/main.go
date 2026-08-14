@@ -212,6 +212,17 @@ func newProxyHandler(trafficHandler, dockerProxy http.Handler, labels func(conte
 				return
 			}
 		}
+		if id, isArchive := socketproxy.ArchiveContainerID(r.URL.Path); isArchive {
+			if !socketproxy.AllowedArchiveQuery(r.URL.Query()) {
+				http.Error(w, "docker archive query forbidden", http.StatusForbidden)
+				return
+			}
+			containerLabels, err := labels(r.Context(), id)
+			if err != nil || containerLabels["io.l4d2-panel.managed"] != "true" || containerLabels["io.l4d2-panel.role"] != "game" {
+				http.Error(w, "docker container archive forbidden", http.StatusForbidden)
+				return
+			}
+		}
 		dockerProxy.ServeHTTP(w, r)
 	})
 }

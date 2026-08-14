@@ -150,6 +150,8 @@ POST /api/crash-reports/<crash-id>/analyze
 
 Panel 的标准镜像在构建阶段从可配置的 Breakpad 仓库构建并内置 `minidump_stackwalk` 与 `dump_syms`，默认路径分别由 `L4D2_PANEL_STACKWALK_PATH` 和 `L4D2_PANEL_DUMP_SYMS_PATH` 指定；自定义镜像或这些变量可以提供其它绝对路径。Panel 启动时会扫描共享游戏 release 与实例 overlay 中的 ELF 模块，单个模块失败不会阻止其他模块；生成的符号按 Breakpad MODULE debug ID 去重，写入本地符号库并供 stackwalk 使用。工具缺失、符号不足或 stackwalk 失败只会把分析状态标为失败，不会使 Accelerator 上传失败。仓库只内置 SourceMod 和 Metamod 符号，不把 Valve/L4D2 生成物提交为公共内置资产。
 
+Linux 崩溃报告缺少 `libc.so.6` 等系统库时，Panel 会在 Stackwalk 前从**产生该报告的托管游戏容器**读取对应 ELF 文件，并把二进制和由同一文件生成的 Breakpad symbol 保存为报告 artifact。容器 ID 在预提交阶段固定，因此容器随后重建也不会误用新容器。提取只允许固定的 Linux runtime 库名称和架构目录，受控解析相对符号链接，并用 `dump_syms` 校验 Debug ID、平台、架构和模块名；容器已删除、库路径不存在或二进制版本与报告不匹配时会 best-effort 跳过，不阻塞上传或 Stackwalk。系统库不会从 minidump 或 `.ai` 分析报告中恢复，也不会使用 Panel 容器或宿主机自身的 `libc.so.6` 作为替代。
+
 在实例设置中可开启“安装 Accelerator”。开启后，首次部署、插件重装/更新、游戏重装和容器重建都会重新对账并安装 Accelerator 文件；新转储上传后自动执行 Stackwalk，AI 诊断需在崩溃报告详情中手动触发。下载地址以及是否使用 GitHub Release 加速链接在“系统设置 > Accelerator 下载”中配置，不锁定目标仓库或版本。AI 在“系统设置 > 崩溃 AI”中配置 OpenAI-compatible endpoint、model 和 API key；密钥加密保存，发送前只保留脱敏后的崩溃签名、metadata 摘要和 stackwalk 文本。
 
 URL 中包含共享 token，生产环境应使用 HTTPS 或受信任的本机网络，并避免把 token 写入公共日志。

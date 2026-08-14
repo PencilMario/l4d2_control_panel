@@ -23,6 +23,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/domain"
 	"github.com/not0721here/l4d2-control-panel/internal/joblogs"
 	"github.com/not0721here/l4d2-control-panel/internal/jobs"
+	"github.com/not0721here/l4d2-control-panel/internal/systemlibs"
 )
 
 const apiVersion = "/v1.44"
@@ -727,4 +728,25 @@ func (e *Engine) ListManaged(ctx context.Context) ([]Container, error) {
 	var result []Container
 	err := e.do(ctx, http.MethodGet, "/containers/json", url.Values{"all": []string{"true"}, "filters": []string{string(filters)}}, nil, &result)
 	return result, err
+}
+
+func (e *Engine) GetArchive(ctx context.Context, containerID, containerPath string) (io.ReadCloser, error) {
+	if strings.TrimSpace(containerID) == "" || !systemlibs.IsAllowedContainerPath(containerPath) {
+		return nil, errors.New("container archive path is not allowed")
+	}
+	endpoint := e.base + apiVersion + "/containers/" + url.PathEscape(containerID) + "/archive?" + url.Values{"path": []string{containerPath}}.Encode()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := e.http.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		defer response.Body.Close()
+		raw, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		return nil, &apiError{method: http.MethodGet, path: "/containers/" + containerID + "/archive", status: response.Status, body: string(raw), statusCode: response.StatusCode}
+	}
+	return response.Body, nil
 }

@@ -44,6 +44,7 @@ type Config struct {
 	Now                  func() time.Time
 	AuthorizeInstance    InstanceAuthorizer
 	ResolveInstance      InstanceResolver
+	ResolveContainerID   func(context.Context, string) (string, error)
 	EnqueueAnalysis      func(context.Context, Report) error
 	AnalysisEnqueueError func(error)
 }
@@ -99,14 +100,16 @@ type BinaryInput struct {
 }
 
 type PendingSubmission struct {
-	Token     string         `json:"token"`
-	CreatedAt time.Time      `json:"created_at"`
-	Input     PreSubmitInput `json:"input"`
+	Token       string         `json:"token"`
+	CreatedAt   time.Time      `json:"created_at"`
+	ContainerID string         `json:"container_id,omitempty"`
+	Input       PreSubmitInput `json:"input"`
 }
 
 type Report struct {
 	ID               string          `json:"id"`
 	InstanceID       string          `json:"instance_id,omitempty"`
+	ContainerID      string          `json:"container_id,omitempty"`
 	ReceivedAt       time.Time       `json:"received_at"`
 	UpdatedAt        time.Time       `json:"updated_at"`
 	MinidumpSize     int64           `json:"minidump_size"`

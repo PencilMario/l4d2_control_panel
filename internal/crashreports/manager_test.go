@@ -127,6 +127,70 @@ func TestReceiveStoresContentAddressedReportAndManifest(t *testing.T) {
 	}
 }
 
+func TestReceivePersistsResolvedGameContainerID(t *testing.T) {
+	manager, err := New(Config{
+		Root: t.TempDir(),
+		Now:  func() time.Time { return testProtocolNow() },
+		ResolveContainerID: func(_ context.Context, instanceID string) (string, error) {
+			if instanceID != "instance-a" {
+				t.Fatalf("instance id=%q", instanceID)
+			}
+			return "game-container", nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := manager.Receive(context.Background(), UploadInput{
+		InstanceID: "instance-a", Minidump: bytes.NewReader([]byte("MDMPcontainer")), Metadata: strings.NewReader("metadata"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ContainerID != "game-container" {
+		t.Fatalf("container id=%q", report.ContainerID)
+	}
+	loaded, err := manager.Get(context.Background(), report.ID)
+	if err != nil || loaded.ContainerID != "game-container" {
+		t.Fatalf("loaded=%#v err=%v", loaded, err)
+	}
+}
+
+func TestReceiveUsesGameContainerResolvedAtPreSubmit(t *testing.T) {
+	currentContainerID := "old-game-container"
+	resolveCalls := 0
+	manager, err := New(Config{
+		Root: t.TempDir(),
+		Now:  func() time.Time { return testProtocolNow() },
+		ResolveContainerID: func(_ context.Context, instanceID string) (string, error) {
+			if instanceID != "instance-a" {
+				t.Fatalf("instance id=%q", instanceID)
+			}
+			resolveCalls++
+			return currentContainerID, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	presubmit, err := manager.PreSubmit(PreSubmitInput{InstanceID: "instance-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := strings.Split(presubmit, "|")[2]
+	currentContainerID = "new-game-container"
+	report, err := manager.Receive(context.Background(), UploadInput{
+		InstanceID: "instance-a", PresubmitToken: token,
+		Minidump: bytes.NewReader([]byte("MDMPpre-submit-container")), Metadata: strings.NewReader("metadata"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ContainerID != "old-game-container" || resolveCalls != 1 {
+		t.Fatalf("container id=%q resolve calls=%d", report.ContainerID, resolveCalls)
+	}
+}
+
 func TestReceiveDeduplicatesDumpAndReplacesMetadata(t *testing.T) {
 	manager := newTestManager(t, time.Date(2026, 8, 9, 10, 0, 0, 0, time.UTC))
 	dump := append([]byte("MDMP"), []byte("same crash")...)

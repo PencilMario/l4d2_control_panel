@@ -154,7 +154,7 @@ func (m *Manager) handlePreSubmit(w http.ResponseWriter, r *http.Request) {
 		writeProtocolError(w, instanceAuthorizationStatus(err), instanceAuthorizationCode(err))
 		return
 	}
-	response, err := m.PreSubmit(PreSubmitInput{
+	response, err := m.PreSubmitContext(r.Context(), PreSubmitInput{
 		UserID:           r.Form.Get("UserID"),
 		ExtensionVersion: r.Form.Get("ExtensionVersion"),
 		ServerID:         r.Form.Get("ServerID"),

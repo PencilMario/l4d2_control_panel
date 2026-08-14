@@ -32,9 +32,14 @@ type StackwalkRunner interface {
 	Run(context.Context, string) (StackwalkResult, error)
 }
 
+type ArtifactPreparer interface {
+	Prepare(context.Context, crashreports.Report) error
+}
+
 type WorkerConfig struct {
 	Store       AnalysisStore
 	Stackwalker StackwalkRunner
+	Preparer    ArtifactPreparer
 	AI          AIAnalyzer
 	AIModel     string
 	AIProvider  AIProvider
@@ -44,6 +49,7 @@ type WorkerConfig struct {
 type Worker struct {
 	store       AnalysisStore
 	stackwalker StackwalkRunner
+	preparer    ArtifactPreparer
 	ai          AIAnalyzer
 	aiModel     string
 	aiProvider  AIProvider
@@ -67,7 +73,7 @@ func NewWorker(config WorkerConfig) (*Worker, error) {
 	if config.QueueSize <= 0 {
 		config.QueueSize = 64
 	}
-	return &Worker{store: config.Store, stackwalker: config.Stackwalker, ai: config.AI, aiModel: strings.TrimSpace(config.AIModel), aiProvider: config.AIProvider, queue: make(chan workerJob, config.QueueSize), pending: make(map[string]struct{})}, nil
+	return &Worker{store: config.Store, stackwalker: config.Stackwalker, preparer: config.Preparer, ai: config.AI, aiModel: strings.TrimSpace(config.AIModel), aiProvider: config.AIProvider, queue: make(chan workerJob, config.QueueSize), pending: make(map[string]struct{})}, nil
 }
 
 func (w *Worker) Start(parent context.Context) error {
@@ -180,6 +186,9 @@ func (w *Worker) Analyze(ctx context.Context, reportID string, requestAI bool) e
 		}
 	}
 	if stackwalkText == "" {
+		if w.preparer != nil {
+			_ = w.preparer.Prepare(ctx, report)
+		}
 		if err := w.store.SetStackwalkStatus(ctx, reportID, crashreports.AnalysisStatusRunning, ""); err != nil {
 			return err
 		}

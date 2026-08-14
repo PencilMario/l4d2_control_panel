@@ -1,6 +1,7 @@
 package socketproxy
 
 import (
+	"net/http"
 	"net/url"
 	"testing"
 )
@@ -16,6 +17,34 @@ func TestPolicyAllowsRequiredDockerEndpointsOnly(t *testing.T) {
 	for _, item := range denied {
 		if Allowed(item[0], item[1]) {
 			t.Fatalf("dangerous endpoint allowed: %v", item)
+		}
+	}
+}
+
+func TestAllowedArchiveEndpointRequiresSystemLibraryPath(t *testing.T) {
+	for _, path := range []string{
+		"/v1.44/containers/game/archive",
+		"/containers/game/archive",
+	} {
+		if !Allowed(http.MethodGet, path) {
+			t.Fatalf("archive endpoint denied: %s", path)
+		}
+	}
+	for _, query := range []url.Values{
+		{"path": {"/lib/i386-linux-gnu/libc.so.6"}},
+		{"path": {"/usr/lib/x86_64-linux-gnu/libstdc++.so.6"}},
+	} {
+		if !AllowedArchiveQuery(query) {
+			t.Fatalf("safe archive query denied: %v", query)
+		}
+	}
+	for _, query := range []url.Values{
+		{"path": {"/etc/passwd"}},
+		{"path": {"/lib/../etc/passwd"}},
+		{"path": {"/lib/libc.so.6"}, "foo": {"bar"}},
+	} {
+		if AllowedArchiveQuery(query) {
+			t.Fatalf("unsafe archive query accepted: %v", query)
 		}
 	}
 }

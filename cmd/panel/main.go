@@ -11,6 +11,7 @@ import (
 	"github.com/not0721here/l4d2-control-panel/internal/config"
 	"github.com/not0721here/l4d2-control-panel/internal/content"
 	"github.com/not0721here/l4d2-control-panel/internal/crashanalysis"
+	"github.com/not0721here/l4d2-control-panel/internal/crashartifacts"
 	"github.com/not0721here/l4d2-control-panel/internal/crashreports"
 	"github.com/not0721here/l4d2-control-panel/internal/crashsymbols"
 	"github.com/not0721here/l4d2-control-panel/internal/disk"
@@ -115,11 +116,36 @@ func main() {
 		log.Fatal(err)
 	}
 	defer db.Close()
+	secretKey, err := secrets.LoadOrCreateKey(filepath.Join(cfg.PanelDir, "secret.key"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	secretService, err := secrets.New(db, secretKey)
+	if err != nil {
+		log.Fatal(err)
+	}
 	var analysisWorker *crashanalysis.Worker
+	dockerHost := os.Getenv("DOCKER_HOST")
+	if dockerHost == "" {
+		dockerHost = "unix:///run/l4d2-panel/proxy.sock"
+	}
+	steamCredentials := func() (string, string) {
+		username, _, _ := secretService.Get(context.Background(), "steam_username")
+		password, _, _ := secretService.Get(context.Background(), "steam_password")
+		return username, password
+	}
+	engine := docker.NewEngine(dockerHost, docker.WithDownloadProxy(os.Getenv("L4D2_PANEL_DOWNLOAD_PROXY")), docker.WithSteamCredentials(steamCredentials))
 	crashReportManager, err := crashreports.New(crashreports.Config{
 		Root:            cfg.CrashReportsDir,
 		Token:           cfg.CrashReportToken,
 		ResolveInstance: newCrashReportInstanceResolver(cfg.DataRoot, db),
+		ResolveContainerID: func(ctx context.Context, instanceID string) (string, error) {
+			instance, err := db.Instance(ctx, instanceID)
+			if err != nil {
+				return "", err
+			}
+			return instance.ContainerID, nil
+		},
 		EnqueueAnalysis: func(ctx context.Context, report crashreports.Report) error {
 			if report.InstanceID == "" {
 				return nil
@@ -166,14 +192,6 @@ func main() {
 			log.Fatal(err)
 		}
 	}
-	secretKey, err := secrets.LoadOrCreateKey(filepath.Join(cfg.PanelDir, "secret.key"))
-	if err != nil {
-		log.Fatal(err)
-	}
-	secretService, err := secrets.New(db, secretKey)
-	if err != nil {
-		log.Fatal(err)
-	}
 	stackwalker, err := crashanalysis.NewStackwalker(crashanalysis.StackwalkConfig{
 		Path:       cfg.StackwalkPath,
 		SymbolRoot: filepath.Join(cfg.CrashReportsDir, "symbols"),
@@ -181,9 +199,16 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	artifactPreparer := &crashartifacts.Preparer{
+		Containers: engine,
+		Store:      crashReportManager,
+		Generator:  symbolGenerator,
+		TempRoot:   filepath.Join(cfg.CrashReportsDir, "incoming"),
+	}
 	analysisWorker, err = crashanalysis.NewWorker(crashanalysis.WorkerConfig{
 		Store:       crashReportManager,
 		Stackwalker: stackwalker,
+		Preparer:    artifactPreparer,
 		AIProvider: func(ctx context.Context) (crashanalysis.AIAnalyzer, string, error) {
 			settings, err := db.CrashAnalysisSettings(ctx)
 			if err != nil {
@@ -235,16 +260,6 @@ func main() {
 			}
 		}
 	})
-	dockerHost := os.Getenv("DOCKER_HOST")
-	if dockerHost == "" {
-		dockerHost = "unix:///run/l4d2-panel/proxy.sock"
-	}
-	steamCredentials := func() (string, string) {
-		username, _, _ := secretService.Get(context.Background(), "steam_username")
-		password, _, _ := secretService.Get(context.Background(), "steam_password")
-		return username, password
-	}
-	engine := docker.NewEngine(dockerHost, docker.WithDownloadProxy(os.Getenv("L4D2_PANEL_DOWNLOAD_PROXY")), docker.WithSteamCredentials(steamCredentials))
 	trafficClient := traffic.NewUnixClient(strings.TrimPrefix(dockerHost, "unix://"))
 	updatePipeline := updates.New(cfg.DataRoot)
 	if err := updatePipeline.Recover(context.Background()); err != nil {
