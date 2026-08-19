@@ -8,9 +8,11 @@ import (
 )
 
 const (
-	maxConsoleHistoryBytes  = 1 << 20
-	maxConsoleHistoryLines  = 1000
-	consoleSubscriberBuffer = 64
+	maxConsoleHistoryBytes = 1 << 20
+	maxConsoleHistoryLines = 1000
+	// A subscriber is registered before its history snapshot is written. Keep
+	// enough frame slots for that snapshot plus a short live-output burst.
+	consoleSubscriberBuffer = 256
 )
 
 var errConsoleSessionClosed = errors.New("console session closed")

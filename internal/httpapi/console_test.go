@@ -40,3 +40,33 @@ func TestAppendConsoleHistoryCapsUnterminatedOutputByBytes(t *testing.T) {
 		t.Fatal("history did not retain the newest bytes")
 	}
 }
+
+func TestConsoleHubRetainsBurstWithinSubscriberFrameBuffer(t *testing.T) {
+	hub := &consoleHub{sessions: make(map[string]*consoleSession)}
+	session := &consoleSession{
+		instanceID:  "instance",
+		subscribers: make(map[chan []byte]struct{}),
+	}
+	hub.sessions[session.instanceID] = session
+	updates := make(chan []byte, consoleSubscriberBuffer)
+	session.subscribers[updates] = struct{}{}
+	payload := bytes.Repeat([]byte("x"), 4*1024)
+
+	for index := 0; index < 128; index++ {
+		hub.publish(session, payload)
+	}
+
+	for index := 0; index < 128; index++ {
+		select {
+		case frame, open := <-updates:
+			if !open {
+				t.Fatalf("subscriber closed after %d frames", index)
+			}
+			if !bytes.Equal(frame, payload) {
+				t.Fatalf("frame %d differed from payload", index)
+			}
+		default:
+			t.Fatalf("missing buffered frame %d", index)
+		}
+	}
+}
