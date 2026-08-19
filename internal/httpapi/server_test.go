@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -220,6 +221,53 @@ func (u *apiGameUpdater) UpdateGame(context.Context, string, domain.Instance) er
 }
 
 type fakeAttacher struct{ peer net.Conn }
+
+type countingAttacher struct {
+	mu          sync.Mutex
+	attachments map[string]int
+	peers       map[string][]net.Conn
+}
+
+func (a *countingAttacher) AttachSupervisor(_ context.Context, containerID string) (io.ReadWriteCloser, error) {
+	client, peer := net.Pipe()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.attachments == nil {
+		a.attachments = make(map[string]int)
+		a.peers = make(map[string][]net.Conn)
+	}
+	a.attachments[containerID]++
+	a.peers[containerID] = append(a.peers[containerID], peer)
+	return client, nil
+}
+
+func (a *countingAttacher) attachmentCount(containerID string) int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.attachments[containerID]
+}
+
+func (a *countingAttacher) peer(containerID string, attachment int) (net.Conn, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	peers := a.peers[containerID]
+	if attachment < 0 || attachment >= len(peers) {
+		return nil, false
+	}
+	return peers[attachment], true
+}
+
+func (a *countingAttacher) Close() {
+	a.mu.Lock()
+	var peers []net.Conn
+	for _, values := range a.peers {
+		peers = append(peers, values...)
+	}
+	a.mu.Unlock()
+	for _, peer := range peers {
+		_ = peer.Close()
+	}
+}
 
 type overviewPlayers struct {
 	summary players.Summary
@@ -2348,4 +2396,148 @@ func TestConsoleWebSocketProxiesSupervisorAttach(t *testing.T) {
 		t.Fatalf("got %q", raw)
 	}
 	<-done
+}
+
+func TestConsoleWebSocketReusesInstanceHistoryWithoutReattaching(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	instance := domain.Instance{ID: "abc", NodeID: "local", Name: "one", ContainerID: "container-1", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateRunning}
+	if err := db.CreateInstance(context.Background(), instance); err != nil {
+		t.Fatal(err)
+	}
+	attacher := &countingAttacher{}
+	t.Cleanup(attacher.Close)
+	s = New(db, s.auth, WithConsole(attacher))
+	server := httptest.NewServer(s.Handler())
+	defer server.Close()
+	header := consoleWebSocketHeader(t, s)
+
+	first := dialConsoleWebSocket(t, server, "abc", header)
+	peer := consolePeer(t, attacher, "container-1", 0)
+	writeConsoleOutput(t, peer, []byte("prior output"))
+	if got := string(readConsoleFrame(t, first)); got != "prior output" {
+		t.Fatalf("first frame=%q", got)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second := dialConsoleWebSocket(t, server, "abc", header)
+	defer second.Close()
+	if got := attacher.attachmentCount("container-1"); got != 1 {
+		t.Fatalf("attachments=%d, want 1", got)
+	}
+	if got := string(readConsoleFrame(t, second)); got != "prior output" {
+		t.Fatalf("history frame=%q", got)
+	}
+	writeConsoleOutput(t, peer, []byte("new output"))
+	if got := string(readConsoleFrame(t, second)); got != "new output" {
+		t.Fatalf("new frame=%q", got)
+	}
+}
+
+func TestConsoleWebSocketDoesNotShareHistoryAcrossInstances(t *testing.T) {
+	s, db := testServer(t)
+	defer db.Close()
+	for _, instance := range []domain.Instance{
+		{ID: "one", NodeID: "local", Name: "one", ContainerID: "container-1", GamePort: 27015, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateRunning},
+		{ID: "two", NodeID: "local", Name: "two", ContainerID: "container-2", GamePort: 27016, StartMap: "map", GameMode: "coop", Tickrate: 100, MaxPlayers: 8, RuntimeImage: "runtime", DesiredState: domain.StateRunning, ActualState: domain.StateRunning},
+	} {
+		if err := db.CreateInstance(context.Background(), instance); err != nil {
+			t.Fatal(err)
+		}
+	}
+	attacher := &countingAttacher{}
+	t.Cleanup(attacher.Close)
+	s = New(db, s.auth, WithConsole(attacher))
+	server := httptest.NewServer(s.Handler())
+	defer server.Close()
+	header := consoleWebSocketHeader(t, s)
+	first := dialConsoleWebSocket(t, server, "one", header)
+	defer first.Close()
+	second := dialConsoleWebSocket(t, server, "two", header)
+	defer second.Close()
+
+	if got := attacher.attachmentCount("container-1") + attacher.attachmentCount("container-2"); got != 2 {
+		t.Fatalf("attachments=%d, want 2", got)
+	}
+	writeConsoleOutput(t, consolePeer(t, attacher, "container-1", 0), []byte("instance one"))
+	writeConsoleOutput(t, consolePeer(t, attacher, "container-2", 0), []byte("instance two"))
+	if got := string(readConsoleFrame(t, first)); got != "instance one" {
+		t.Fatalf("first frame=%q", got)
+	}
+	if got := string(readConsoleFrame(t, second)); got != "instance two" {
+		t.Fatalf("second frame=%q", got)
+	}
+	assertNoConsoleFrame(t, first)
+	assertNoConsoleFrame(t, second)
+}
+
+func consoleWebSocketHeader(t *testing.T, s *Server) http.Header {
+	t.Helper()
+	token, err := s.auth.Login("correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return http.Header{"Cookie": []string{sessionCookie + "=" + token}}
+}
+
+func dialConsoleWebSocket(t *testing.T, server *httptest.Server, instanceID string, header http.Header) *websocket.Conn {
+	t.Helper()
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/api/instances/"+instanceID+"/console", header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return conn
+}
+
+func consolePeer(t *testing.T, attacher *countingAttacher, containerID string, attachment int) net.Conn {
+	t.Helper()
+	peer, found := attacher.peer(containerID, attachment)
+	if !found {
+		t.Fatalf("missing attachment %d for %s", attachment, containerID)
+	}
+	return peer
+}
+
+func writeConsoleOutput(t *testing.T, peer net.Conn, payload []byte) {
+	t.Helper()
+	if err := peer.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peer.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.SetWriteDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readConsoleFrame(t *testing.T, conn *websocket.Conn) []byte {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	_, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	return payload
+}
+
+func assertNoConsoleFrame(t *testing.T, conn *websocket.Conn) {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	_, payload, err := conn.ReadMessage()
+	if err == nil {
+		t.Fatalf("unexpected frame=%q", payload)
+	}
+	if networkErr, ok := err.(net.Error); !ok || !networkErr.Timeout() {
+		t.Fatalf("read error=%v, want timeout", err)
+	}
 }

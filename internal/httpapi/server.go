@@ -50,7 +50,7 @@ type Server struct {
 	lifecycle         Lifecycle
 	jobs              *jobs.Manager
 	jobLogs           *joblogs.Manager
-	console           ConsoleAttacher
+	consoles          *consoleHub
 	players           PlayerService
 	uploads           *content.UploadManager
 	selfServiceVPK    *content.SelfServiceVPKManager
@@ -149,7 +149,11 @@ type ConsoleAttacher interface {
 	AttachSupervisor(context.Context, string) (io.ReadWriteCloser, error)
 }
 
-func WithConsole(attacher ConsoleAttacher) Option { return func(s *Server) { s.console = attacher } }
+func WithConsole(attacher ConsoleAttacher) Option {
+	return func(s *Server) {
+		s.consoles = newConsoleHub(attacher)
+	}
+}
 
 type PlayerService interface {
 	Summary(context.Context, string) (players.Summary, error)
@@ -2108,7 +2112,7 @@ var consoleUpgrader = websocket.Upgrader{ReadBufferSize: 4096, WriteBufferSize: 
 }}
 
 func (s *Server) consoleSocket(w http.ResponseWriter, r *http.Request) {
-	if s.console == nil {
+	if s.consoles == nil {
 		writeError(w, 503, "console_unavailable", "console adapter unavailable")
 		return
 	}
@@ -2117,29 +2121,27 @@ func (s *Server) consoleSocket(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "instance_not_running", "instance container unavailable")
 		return
 	}
-	stream, err := s.console.AttachSupervisor(r.Context(), instance.ContainerID)
+	session, history, updates, unsubscribe, err := s.consoles.Subscribe(instance.ID, instance.ContainerID)
 	if err != nil {
 		writeError(w, 502, "console_attach_failed", err.Error())
 		return
 	}
-	defer stream.Close()
 	socket, err := consoleUpgrader.Upgrade(w, r, nil)
 	if err != nil {
+		unsubscribe()
 		return
 	}
-	defer socket.Close()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		buffer := make([]byte, 16*1024)
-		for {
-			n, readErr := stream.Read(buffer)
-			if n > 0 {
-				if writeErr := socket.WriteMessage(websocket.BinaryMessage, buffer[:n]); writeErr != nil {
-					return
-				}
+		defer socket.Close()
+		if len(history) > 0 {
+			if err := socket.WriteMessage(websocket.BinaryMessage, history); err != nil {
+				return
 			}
-			if readErr != nil {
+		}
+		for frame := range updates {
+			if err := socket.WriteMessage(websocket.BinaryMessage, frame); err != nil {
 				return
 			}
 		}
@@ -2155,11 +2157,12 @@ func (s *Server) consoleSocket(w http.ResponseWriter, r *http.Request) {
 		if len(payload) > 64*1024 {
 			break
 		}
-		if _, err := stream.Write(payload); err != nil {
+		if err := s.consoles.Write(session, payload); err != nil {
 			break
 		}
 	}
-	_ = stream.Close()
+	unsubscribe()
+	_ = socket.Close()
 	<-done
 }
 
