@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -10,9 +11,7 @@ import (
 const (
 	maxConsoleHistoryBytes = 1 << 20
 	maxConsoleHistoryLines = 1000
-	// A subscriber is registered before its history snapshot is written. Keep
-	// enough frame slots for that snapshot plus a short live-output burst.
-	consoleSubscriberBuffer = 256
+	maxConsolePendingBytes = 4 << 20
 )
 
 var errConsoleSessionClosed = errors.New("console session closed")
@@ -33,16 +32,105 @@ type consoleSession struct {
 	stream  io.ReadWriteCloser
 
 	history     []byte
-	subscribers map[chan []byte]struct{}
+	subscribers map[*consoleSubscriber]struct{}
 	attachErr   error
 	closed      bool
+}
+
+// normalizeConsolePayload removes blank refresh lines emitted by a TTY while
+// preserving useful output, including lines split across read boundaries.
+func normalizeConsolePayload(payload []byte) []byte {
+	var output []byte
+	start := 0
+	for {
+		newline := bytes.IndexByte(payload[start:], '\n')
+		if newline < 0 {
+			line := payload[start:]
+			line = bytes.TrimRight(line, "\r")
+			if len(bytes.TrimSpace(line)) > 0 {
+				output = append(output, line...)
+			}
+			break
+		}
+		newline += start
+		line := payload[start:newline]
+		line = bytes.TrimRight(line, "\r")
+		if len(bytes.TrimSpace(line)) > 0 {
+			output = append(output, line...)
+			output = append(output, '\n')
+		}
+		start = newline + 1
+		if start == len(payload) {
+			break
+		}
+	}
+	return output
+}
+
+// consoleSubscriber queues output independently of the WebSocket writer. A
+// browser can spend time receiving the initial history while the game keeps
+// producing output; that burst must not disconnect the subscriber.
+type consoleSubscriber struct {
+	mu          sync.Mutex
+	cond        *sync.Cond
+	queue       [][]byte
+	queuedBytes int
+	closed      bool
+}
+
+func newConsoleSubscriber() *consoleSubscriber {
+	subscriber := &consoleSubscriber{}
+	subscriber.cond = sync.NewCond(&subscriber.mu)
+	return subscriber
+}
+
+func (s *consoleSubscriber) enqueue(payload []byte) {
+	frame := append([]byte(nil), payload...)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.queue = append(s.queue, frame)
+	s.queuedBytes += len(frame)
+	for s.queuedBytes > maxConsolePendingBytes && len(s.queue) > 1 {
+		s.queuedBytes -= len(s.queue[0])
+		s.queue[0] = nil
+		s.queue = s.queue[1:]
+	}
+	s.cond.Signal()
+}
+
+func (s *consoleSubscriber) next() ([]byte, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for len(s.queue) == 0 && !s.closed {
+		s.cond.Wait()
+	}
+	if len(s.queue) == 0 {
+		return nil, false
+	}
+	frame := s.queue[0]
+	s.queue[0] = nil
+	s.queue = s.queue[1:]
+	s.queuedBytes -= len(frame)
+	return frame, true
+}
+
+func (s *consoleSubscriber) close() {
+	s.mu.Lock()
+	s.closed = true
+	s.queue = nil
+	s.queuedBytes = 0
+	s.cond.Broadcast()
+	s.mu.Unlock()
 }
 
 func newConsoleHub(attacher ConsoleAttacher) *consoleHub {
 	return &consoleHub{attacher: attacher, sessions: make(map[string]*consoleSession)}
 }
 
-func (h *consoleHub) Subscribe(instanceID, containerID string) (*consoleSession, []byte, <-chan []byte, func(), error) {
+func (h *consoleHub) Subscribe(instanceID, containerID string) (*consoleSession, []byte, *consoleSubscriber, func(), error) {
 	for {
 		h.mu.Lock()
 		session := h.sessions[instanceID]
@@ -61,7 +149,7 @@ func (h *consoleHub) Subscribe(instanceID, containerID string) (*consoleSession,
 				instanceID:  instanceID,
 				containerID: containerID,
 				ready:       make(chan struct{}),
-				subscribers: make(map[chan []byte]struct{}),
+				subscribers: make(map[*consoleSubscriber]struct{}),
 			}
 			h.sessions[instanceID] = session
 		}
@@ -83,7 +171,7 @@ func (h *consoleHub) Subscribe(instanceID, containerID string) (*consoleSession,
 			h.mu.Unlock()
 			continue
 		}
-		updates := make(chan []byte, consoleSubscriberBuffer)
+		updates := newConsoleSubscriber()
 		session.subscribers[updates] = struct{}{}
 		history := append([]byte(nil), session.history...)
 		h.mu.Unlock()
@@ -124,7 +212,9 @@ func (h *consoleHub) read(session *consoleSession, stream io.ReadWriteCloser) {
 	for {
 		n, err := stream.Read(buffer)
 		if n > 0 {
-			h.publish(session, buffer[:n])
+			if payload := normalizeConsolePayload(buffer[:n]); len(payload) > 0 {
+				h.publish(session, payload)
+			}
 		}
 		if err != nil {
 			h.retire(session)
@@ -141,13 +231,7 @@ func (h *consoleHub) publish(session *consoleSession, payload []byte) {
 	}
 	session.history = appendConsoleHistory(session.history, payload)
 	for updates := range session.subscribers {
-		frame := append([]byte(nil), payload...)
-		select {
-		case updates <- frame:
-		default:
-			delete(session.subscribers, updates)
-			close(updates)
-		}
+		updates.enqueue(payload)
 	}
 }
 
@@ -165,12 +249,12 @@ func (h *consoleHub) Write(session *consoleSession, payload []byte) error {
 	return err
 }
 
-func (h *consoleHub) unsubscribe(session *consoleSession, updates chan []byte) {
+func (h *consoleHub) unsubscribe(session *consoleSession, updates *consoleSubscriber) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if _, found := session.subscribers[updates]; found {
 		delete(session.subscribers, updates)
-		close(updates)
+		updates.close()
 	}
 }
 
@@ -200,7 +284,7 @@ func (h *consoleHub) closeLocked(session *consoleSession) io.ReadWriteCloser {
 		close(session.ready)
 	}
 	for updates := range session.subscribers {
-		close(updates)
+		updates.close()
 	}
 	clear(session.subscribers)
 	session.writeMu.Lock()

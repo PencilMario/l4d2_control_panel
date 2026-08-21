@@ -41,14 +41,34 @@ func TestAppendConsoleHistoryCapsUnterminatedOutputByBytes(t *testing.T) {
 	}
 }
 
+func TestConsoleOutputNormalizerDropsBlankRefreshLinesAndPreservesPartialLines(t *testing.T) {
+	if output := normalizeConsolePayload([]byte("\r\r\n\r\r\nsta")); string(output) != "sta" {
+		t.Fatalf("partial output=%q, want %q", output, "sta")
+	}
+	output := normalizeConsolePayload([]byte("tus\r\r\n\r\r\n"))
+	if string(output) != "tus\n" {
+		t.Fatalf("normalized output=%q, want %q", output, "tus\n")
+	}
+	if output = normalizeConsolePayload([]byte("\r\r\n\r\r\n")); len(output) != 0 {
+		t.Fatalf("blank refresh output=%q, want no frame", output)
+	}
+}
+
+func TestConsoleOutputNormalizerPreservesPromptAndControlCharacters(t *testing.T) {
+	output := normalizeConsolePayload([]byte("\x1b[2J\x1b[Hhello\r\n"))
+	if string(output) != "\x1b[2J\x1b[Hhello\n" {
+		t.Fatalf("normalized control output=%q", output)
+	}
+}
+
 func TestConsoleHubRetainsBurstWithinSubscriberFrameBuffer(t *testing.T) {
 	hub := &consoleHub{sessions: make(map[string]*consoleSession)}
 	session := &consoleSession{
 		instanceID:  "instance",
-		subscribers: make(map[chan []byte]struct{}),
+		subscribers: make(map[*consoleSubscriber]struct{}),
 	}
 	hub.sessions[session.instanceID] = session
-	updates := make(chan []byte, consoleSubscriberBuffer)
+	updates := newConsoleSubscriber()
 	session.subscribers[updates] = struct{}{}
 	payload := bytes.Repeat([]byte("x"), 4*1024)
 
@@ -57,16 +77,34 @@ func TestConsoleHubRetainsBurstWithinSubscriberFrameBuffer(t *testing.T) {
 	}
 
 	for index := 0; index < 128; index++ {
-		select {
-		case frame, open := <-updates:
-			if !open {
-				t.Fatalf("subscriber closed after %d frames", index)
-			}
-			if !bytes.Equal(frame, payload) {
-				t.Fatalf("frame %d differed from payload", index)
-			}
-		default:
-			t.Fatalf("missing buffered frame %d", index)
+		frame, open := updates.next()
+		if !open {
+			t.Fatalf("subscriber closed after %d frames", index)
+		}
+		if !bytes.Equal(frame, payload) {
+			t.Fatalf("frame %d differed from payload", index)
+		}
+	}
+}
+
+func TestConsoleHubDoesNotDisconnectSubscriberWhenBurstExceedsBuffer(t *testing.T) {
+	hub := &consoleHub{sessions: make(map[string]*consoleSession)}
+	session := &consoleSession{
+		instanceID:  "instance",
+		subscribers: make(map[*consoleSubscriber]struct{}),
+	}
+	hub.sessions[session.instanceID] = session
+	updates := newConsoleSubscriber()
+	session.subscribers[updates] = struct{}{}
+	payload := []byte("console burst\n")
+
+	for index := 0; index <= 256; index++ {
+		hub.publish(session, payload)
+	}
+
+	for index := 0; index <= 256; index++ {
+		if _, open := updates.next(); !open {
+			t.Fatalf("subscriber closed after %d frames", index)
 		}
 	}
 }

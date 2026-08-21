@@ -2140,7 +2140,11 @@ func (s *Server) consoleSocket(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		for frame := range updates {
+		for {
+			frame, open := updates.next()
+			if !open {
+				return
+			}
 			if err := socket.WriteMessage(websocket.BinaryMessage, frame); err != nil {
 				return
 			}
