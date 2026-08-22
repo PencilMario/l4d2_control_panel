@@ -14,6 +14,7 @@ func TestControlServicesUseSharedUnixProxyAndPublishOnlyPanel(t *testing.T) {
 	}
 	compose := string(raw)
 	services := serviceBlocks(t, compose)
+	panelInit := services["panel-init"]
 	proxyInit := services["proxy-init"]
 	proxy := services["socket-proxy"]
 	overlayHelper := services["overlay-helper"]
@@ -111,6 +112,11 @@ func TestControlServicesUseSharedUnixProxyAndPublishOnlyPanel(t *testing.T) {
 	assertContains(t, panel, `extra_hosts:
       - "host.docker.internal:host-gateway"`, "Panel host gateway mapping for A2S")
 	assertContains(t, panel, "HTTPS_PROXY: ${L4D2_PANEL_DOWNLOAD_PROXY:-}", "Panel download proxy")
+	assertContains(t, panelInit, `mkdir -p \"$$DATA_ROOT/packages\"`, "package directory creation")
+	assertContains(t, panelInit, `chown -R 10001:10001 \"$$DATA_ROOT/packages\"`, "recursive package ownership repair")
+	if strings.Contains(panelInit, `chown 10001:10001 \"$$DATA_ROOT\"`) || strings.Contains(panelInit, `chown -R 10001:10001 \"$$DATA_ROOT\"`) {
+		t.Fatal("panel-init must not recursively repair ownership of the whole data root")
+	}
 
 	for _, retired := range []string{"LISTEN_ADDR", "23750", "tcp://socket-proxy"} {
 		if strings.Contains(compose, retired) {

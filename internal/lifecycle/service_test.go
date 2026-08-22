@@ -120,6 +120,25 @@ func (g *fakeDefenseGate) EnsureProtected(_ context.Context, instance domain.Ins
 	return g.err
 }
 
+type fakeOverlayProvisioner struct {
+	events *[]string
+	err    error
+}
+
+func (p fakeOverlayProvisioner) Prepare(context.Context, domain.Instance) error {
+	if p.events != nil {
+		*p.events = append(*p.events, "prepare")
+	}
+	return nil
+}
+
+func (p fakeOverlayProvisioner) EnsureOverlay(_ context.Context, instance domain.Instance) error {
+	if p.events != nil {
+		*p.events = append(*p.events, "overlay:"+instance.ID)
+	}
+	return p.err
+}
+
 func TestStartRequiresDefenseBeforeStartingContainer(t *testing.T) {
 	root := t.TempDir()
 	db, err := store.Open(filepath.Join(root, "panel.db"))
@@ -146,6 +165,54 @@ func TestStartRequiresDefenseBeforeStartingContainer(t *testing.T) {
 	}
 	if !engine.started || len(gate.calls) != 2 {
 		t.Fatalf("started=%t calls=%d", engine.started, len(gate.calls))
+	}
+}
+
+func TestStartEnsuresOverlayBeforeAcceleratorForExistingContainer(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	instance := domain.Instance{ID: "overlay-start", NodeID: "local", Name: "overlay start", ContainerID: "container", GamePort: 27015, RuntimeImage: "runtime", ActualState: domain.StateStopped}
+	if err := db.CreateInstance(context.Background(), instance); err != nil {
+		t.Fatal(err)
+	}
+	events := []string{}
+	service := New(db, &fakeEngine{events: &events}, freePorts{}, root,
+		WithProvisioner(fakeOverlayProvisioner{events: &events}),
+		WithAccelerator(fakeAccelerator{events: &events}),
+	)
+	if err := service.Start(context.Background(), instance.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(events, ","); got != "overlay:overlay-start,accelerator:overlay-start,start" {
+		t.Fatalf("events=%v", events)
+	}
+}
+
+func TestStartEnsuresOverlayBeforeAcceleratorForNewContainer(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	instance := domain.Instance{ID: "overlay-create", NodeID: "local", Name: "overlay create", GamePort: 27015, RuntimeImage: "runtime", SelectedPackageID: "package-a", PackageVersion: "package-old", ActualState: domain.StateStopped}
+	if err := db.CreateInstance(context.Background(), instance); err != nil {
+		t.Fatal(err)
+	}
+	events := []string{}
+	service := New(db, &fakeEngine{events: &events}, freePorts{}, root,
+		WithProvisioner(fakeOverlayProvisioner{events: &events}),
+		WithAccelerator(fakeAccelerator{events: &events}),
+	)
+	if err := service.Start(context.Background(), instance.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(events, ","); got != "prepare,overlay:overlay-create,accelerator:overlay-create,create,start" {
+		t.Fatalf("events=%v", events)
 	}
 }
 
@@ -219,6 +286,8 @@ func (p fakeProvisioner) Prepare(ctx context.Context, value domain.Instance) err
 	value.PackageVersion = value.SelectedPackageID
 	return p.repo.UpdateInstance(ctx, value)
 }
+
+func (p fakeProvisioner) EnsureOverlay(context.Context, domain.Instance) error { return nil }
 
 func TestStartPreparesSelectedPackageBeforeCreatingContainer(t *testing.T) {
 	root := t.TempDir()

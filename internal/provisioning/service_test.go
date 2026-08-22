@@ -98,7 +98,7 @@ func TestRecoverOverlaysEnsuresEveryInstanceUsesActiveRelease(t *testing.T) {
 	}
 }
 
-func TestRecoverOverlaysUsesCanonicalCurrentReleaseWhenStateIsMissing(t *testing.T) {
+func TestRecoverOverlaysUsesCanonicalCurrentReleaseWhenStateIsFailed(t *testing.T) {
 	events := []string{}
 	root := t.TempDir()
 	release := filepath.Join(root, "game", "releases", "release-1")
@@ -108,8 +108,27 @@ func TestRecoverOverlaysUsesCanonicalCurrentReleaseWhenStateIsMissing(t *testing
 	if err := os.Symlink(filepath.Join("releases", "release-1"), filepath.Join(root, "game", "current")); err != nil {
 		t.Fatal(err)
 	}
-	service := Service{Root: root, Instances: &fakeRepo{instances: []domain.Instance{{ID: "one"}}}, SharedState: sharedStateRepo{}, Overlay: fakeOverlay{events: &events}}
+	service := Service{Root: root, Instances: &fakeRepo{instances: []domain.Instance{{ID: "one"}}}, SharedState: sharedStateRepo{state: domain.SharedGameState{MigrationState: "failed"}}, Overlay: fakeOverlay{events: &events}}
 	if err := service.RecoverOverlays(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(events, ","); got != "ensure:one:release-1" {
+		t.Fatalf("events=%v", events)
+	}
+}
+
+func TestEnsureOverlayUsesCanonicalCurrentReleaseWhenStateIsFailed(t *testing.T) {
+	events := []string{}
+	root := t.TempDir()
+	release := filepath.Join(root, "game", "releases", "release-1")
+	if err := os.MkdirAll(release, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("releases", "release-1"), filepath.Join(root, "game", "current")); err != nil {
+		t.Fatal(err)
+	}
+	service := Service{Root: root, SharedState: sharedStateRepo{state: domain.SharedGameState{MigrationState: "failed"}}, Overlay: fakeOverlay{events: &events}}
+	if err := service.EnsureOverlay(context.Background(), domain.Instance{ID: "one"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.Join(events, ","); got != "ensure:one:release-1" {

@@ -54,18 +54,12 @@ type Service struct {
 }
 
 func (s Service) RecoverOverlays(ctx context.Context) error {
-	if s.SharedState == nil || s.Overlay == nil || s.Instances == nil {
+	if s.Instances == nil {
 		return errors.New("shared game services are unavailable")
 	}
-	state, err := s.SharedState.SharedGameState(ctx)
-	releaseID := ""
-	if err == nil && state.MigrationState == "ready" && state.ActiveReleaseID != "" {
-		releaseID = state.ActiveReleaseID
-	} else {
-		releaseID, err = currentReleaseID(s.Root)
-		if err != nil {
-			return errors.New("shared game is not ready")
-		}
+	releaseID, err := s.resolveReleaseID(ctx)
+	if err != nil {
+		return err
 	}
 	instances, err := s.Instances.Instances(ctx)
 	if err != nil {
@@ -77,6 +71,31 @@ func (s Service) RecoverOverlays(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s Service) EnsureOverlay(ctx context.Context, instance domain.Instance) error {
+	releaseID, err := s.resolveReleaseID(ctx)
+	if err != nil {
+		return err
+	}
+	if err := s.Overlay.Ensure(ctx, instance.ID, releaseID); err != nil {
+		return fmt.Errorf("ensure instance overlay %s: %w", instance.ID, err)
+	}
+	return nil
+}
+
+func (s Service) resolveReleaseID(ctx context.Context) (string, error) {
+	if s.SharedState == nil || s.Overlay == nil {
+		return "", errors.New("shared game services are unavailable")
+	}
+	state, err := s.SharedState.SharedGameState(ctx)
+	if err == nil && state.MigrationState == "ready" && state.ActiveReleaseID != "" {
+		return state.ActiveReleaseID, nil
+	}
+	if releaseID, currentErr := currentReleaseID(s.Root); currentErr == nil {
+		return releaseID, nil
+	}
+	return "", errors.New("shared game is not ready")
 }
 
 var releaseIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
