@@ -332,6 +332,134 @@ describe("App", () => {
     expect(output).toHaveTextContent("three");
   });
 
+  it("does not open the native console until its history setting has loaded", async () => {
+    const settingsResponse = deferred<Response>();
+    const sockets: FakeWebSocket[] = [];
+    class FakeWebSocket {
+      binaryType = "";
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onopen: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      send = vi.fn();
+      close = vi.fn();
+      constructor(public url: string) { sockets.push(this); }
+    }
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/session") return Response.json({ authenticated: true });
+      if (path === "/api/instances") return Response.json([apiInstance]);
+      if (path === "/api/settings/console") return settingsResponse.promise;
+      if (path.endsWith("/overview")) return Response.json(runningZeroOverview);
+      return Response.json([]);
+    }));
+
+    render(<App />);
+    const consoleButton = await screen.findByRole("button", { name: "控制台" });
+    expect(consoleButton).toBeDisabled();
+    expect(sockets).toHaveLength(0);
+
+    settingsResponse.resolve(Response.json({ history_lines: 1_000_000 }));
+    await waitFor(() => expect(consoleButton).toBeEnabled());
+    await userEvent.click(consoleButton);
+    expect(sockets).toHaveLength(1);
+  });
+
+  it("falls back to the default console history and reports a settings load error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/session") return Response.json({ authenticated: true });
+      if (path === "/api/instances") return Response.json([apiInstance]);
+      if (path === "/api/settings/console") return Response.json({ history_lines: 0 });
+      if (path.endsWith("/overview")) return Response.json(runningZeroOverview);
+      if (path === "/api/settings/steam" || path === "/api/settings/github-token") return Response.json({ configured: false });
+      if (path === "/api/settings/accelerator") return Response.json({ download_url: "", use_github_proxy: false });
+      if (path === "/api/settings/crash-analysis") return Response.json({ endpoint: "", model: "", api_key_set: false });
+      if (path === "/api/settings/github-releases") return Response.json({ accelerator_url: "" });
+      if (path === "/api/settings/jobs") return Response.json({ successful_job_limit: 25 });
+      if (path === "/api/settings/game-logs") return Response.json({ max_file_size_mb: 10 });
+      return Response.json([]);
+    }));
+
+    render(<App />);
+    const consoleButton = await screen.findByRole("button", { name: "控制台" });
+    await userEvent.click(screen.getByRole("button", { name: "系统设置" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("8192"));
+    expect(consoleButton).toBeEnabled();
+  });
+
+  it("does not let a stale console settings load overwrite a saved value", async () => {
+    const staleSettingsResponse = deferred<Response>();
+    let consoleGetCount = 0;
+    const sockets: FakeWebSocket[] = [];
+    class FakeWebSocket {
+      binaryType = "";
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onopen: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      send = vi.fn();
+      close = vi.fn();
+      constructor(public url: string) { sockets.push(this); }
+    }
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/settings/console") {
+        if (init?.method === "PUT") return Response.json({ history_lines: 1_000_000 });
+        consoleGetCount += 1;
+        return consoleGetCount === 1
+          ? staleSettingsResponse.promise
+          : Response.json({ history_lines: 8192 });
+      }
+      return Response.json({ configured: false });
+    }));
+
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "控制台" }));
+    const output = document.querySelector(".terminal-modal pre") as HTMLPreElement;
+    expect(sockets).toHaveLength(1);
+
+    await userEvent.click(screen.getByRole("button", { name: "系统设置" }));
+    const input = await screen.findByRole("spinbutton", { name: "控制台缓存行数" });
+    await userEvent.clear(input);
+    await userEvent.type(input, "1000000");
+    await userEvent.click(screen.getByRole("button", { name: "保存控制台缓存设置" }));
+    await screen.findByText("控制台缓存设置已保存");
+
+    staleSettingsResponse.resolve(Response.json({ history_lines: 8192 }));
+    await act(async () => {
+      for (let index = 0; index <= 8192; index += 1) {
+        sockets[0].onmessage?.({ data: `[${index}]\n` } as MessageEvent);
+      }
+    });
+    expect(output).toHaveTextContent("[0]");
+    expect(output).toHaveTextContent("[8192]");
+    expect(sockets).toHaveLength(1);
+  });
+
+  it("restores the confirmed console history after a failed save", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/settings/console") {
+        if (init?.method === "PUT") return Response.json({ error: { message: "保存失败" } }, { status: 500 });
+        return Response.json({ history_lines: 8192 });
+      }
+      return Response.json({ configured: false });
+    }));
+
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "系统设置" }));
+    const input = await screen.findByRole("spinbutton", { name: "控制台缓存行数" });
+    await userEvent.clear(input);
+    await userEvent.type(input, "1000000");
+    await userEvent.click(screen.getByRole("button", { name: "保存控制台缓存设置" }));
+
+    await waitFor(() => expect(input).toHaveValue(8192));
+    expect(screen.getByRole("alert")).toHaveTextContent("保存失败");
+  });
+
   it("deduplicates, sorts and caps performance history", () => {
     const points = Array.from({ length: 721 }, (_, index) => ({
       at: new Date(Date.UTC(2026, 6, 15, 0, 0, index)).toISOString(),

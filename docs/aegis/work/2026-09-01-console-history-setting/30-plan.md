@@ -4,7 +4,7 @@
 
 **Goal:** 增加默认 8192、范围 1～1,000,000 且保存后立即生效的控制台缓存行数设置，并让后端与前端共享该设置。
 
-**Architecture:** 复用 SQLite `system_settings` 键值表，新增 `/api/settings/console` 认证接口。`consoleHub` 持有动态后端上限并在更新时裁剪现有会话；React App 持有共享前端上限，SettingsPage 保存后通过 prop 更新 Terminal，避免 WebSocket 重连。
+**Architecture:** 复用 SQLite `system_settings` 键值表，新增 `/api/settings/console` 认证接口。`consoleHub` 持有动态后端上限并在更新时裁剪现有会话；React App 统一加载并保存共享前端上限，SettingsPage 通过回调更新 App，保存后通过 prop 更新 Terminal，避免 WebSocket 重连和旧读取覆盖新值。
 
 **Tech Stack:** Go `database/sql`/`testing`、Chi HTTP、React/TypeScript、Vitest、Vite。
 
@@ -152,7 +152,7 @@ Expected: FAIL because no trim helper, shared prop, input, or API call exists.
 
 - [ ] **Step 3: 写最小实现**
 
-Export frontend min/max/default constants and a trim helper; App loads `/api/settings/console` after authentication and passes the current limit to SettingsPage and Terminal. Terminal stores the latest limit in a ref, trims output when the prop changes, and applies the ref to incoming frames. SettingsPage loads the endpoint, validates the response, renders the numeric setting card, validates and saves it, restores the confirmed value on error, and reports saved value through the App callback.
+Export frontend min/max/default constants and a trim helper; App loads `/api/settings/console` after authentication, gates Terminal until the response is valid, falls back to the default with an error notice on failure, and owns the save request sequence. App passes the current limit and save callback to SettingsPage and Terminal. Terminal stores the latest limit in a ref, trims output when the prop changes, and applies the ref to incoming frames. SettingsPage renders the numeric setting card, validates and saves through the App callback, and restores the confirmed value on error.
 
 - [ ] **Step 4: 运行 GREEN**
 

@@ -205,6 +205,16 @@ export const sharedGameVersionLabel = (state: SharedGameState) =>
 
 const errorMessage = (reason: unknown) =>
   reason instanceof Error ? reason.message : String(reason);
+const isValidConsoleHistoryLines = (value: unknown): value is number =>
+  typeof value === "number" &&
+  Number.isInteger(value) &&
+  value >= NATIVE_CONSOLE_MIN_LINES &&
+  value <= NATIVE_CONSOLE_HARD_MAX_LINES;
+const readConsoleHistoryLines = (value: unknown): number | null => {
+  if (!value || typeof value !== "object") return null;
+  const lines = (value as { history_lines?: unknown }).history_lines;
+  return isValidConsoleHistoryLines(lines) ? lines : null;
+};
 const EMPTY_PERFORMANCE_HISTORY: PerformanceHistoryPoint[] = [];
 
 type HistoryBootstrap = {
@@ -335,6 +345,9 @@ export function App({ initialInstances, initialPackages, initialPackageSources, 
   const [consoleHistoryLines, setConsoleHistoryLines] = useState(
     NATIVE_CONSOLE_MAX_LINES,
   );
+  const [consoleSettingsReady, setConsoleSettingsReady] = useState(injected);
+  const [consoleSettingsError, setConsoleSettingsError] = useState("");
+  const consoleSettingsRequestSequence = useRef(0);
   const [playersTarget, setPlayersTarget] = useState<Instance | null>(null);
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState("");
@@ -580,24 +593,48 @@ export function App({ initialInstances, initialPackages, initialPackageSources, 
   useEffect(() => {
     if (auth !== "yes") return;
     let cancelled = false;
+    const sequence = ++consoleSettingsRequestSequence.current;
     api<{ history_lines: number }>("/api/settings/console")
       .then((settings) => {
-        const lines = settings.history_lines;
-        if (
-          cancelled ||
-          !Number.isInteger(lines) ||
-          lines < NATIVE_CONSOLE_MIN_LINES ||
-          lines > NATIVE_CONSOLE_HARD_MAX_LINES
-        ) {
-          return;
-        }
+        const lines = readConsoleHistoryLines(settings);
+        if (cancelled || sequence !== consoleSettingsRequestSequence.current) return;
+        if (lines === null) throw new Error("控制台缓存设置数据无效");
         setConsoleHistoryLines(lines);
+        setConsoleSettingsError("");
+        setConsoleSettingsReady(true);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (cancelled || sequence !== consoleSettingsRequestSequence.current) return;
+        setConsoleHistoryLines(NATIVE_CONSOLE_MAX_LINES);
+        setConsoleSettingsError(`控制台缓存设置读取失败，已使用默认值 ${NATIVE_CONSOLE_MAX_LINES} 行。`);
+        setConsoleSettingsReady(true);
+      });
     return () => {
       cancelled = true;
+      if (sequence === consoleSettingsRequestSequence.current) {
+        consoleSettingsRequestSequence.current += 1;
+      }
     };
   }, [auth]);
+  const saveConsoleHistoryLines = useCallback(async (historyLines: number) => {
+    const sequence = ++consoleSettingsRequestSequence.current;
+    const saved = await api<{ history_lines?: unknown }>(
+      "/api/settings/console",
+      {
+        method: "PUT",
+        body: JSON.stringify({ history_lines: historyLines }),
+      },
+    );
+    if (!mountedRef.current || sequence !== consoleSettingsRequestSequence.current) {
+      throw new Error("控制台缓存设置保存已失效");
+    }
+    const savedLines = readConsoleHistoryLines(saved);
+    if (savedLines === null) throw new Error("控制台缓存设置响应无效");
+    setConsoleHistoryLines(savedLines);
+    setConsoleSettingsError("");
+    setConsoleSettingsReady(true);
+    return savedLines;
+  }, []);
   useEffect(() => {
     const selectionStillExists = instances.some(
       (instance) => instance.id === selectedInstanceID,
@@ -857,10 +894,10 @@ export function App({ initialInstances, initialPackages, initialPackageSources, 
             {page !== "overview" ? <p>{page === "content" ? "统一管理共享游戏本体、共享 VPK 模组包、插件版本包及 GitHub 自动发布源" : page === "jobs" ? "持久化排队与异步执行的游戏维护、更新、备份及清理任务" : "管理游戏进程、内容部署与计划维护"}</p> : null}
           </div>
         ) : null}
-        {error && (
+        {(error || consoleSettingsError) && (
           <div className="error-banner">
-            {error}
-            <button onClick={() => setError("")}>
+            {error || consoleSettingsError}
+            <button onClick={() => { setError(""); setConsoleSettingsError(""); }}>
               <X />
             </button>
           </div>
@@ -877,6 +914,7 @@ export function App({ initialInstances, initialPackages, initialPackageSources, 
             setPending={setPending}
             action={action}
             setTerminal={setTerminal}
+            consoleSettingsReady={consoleSettingsReady}
             setPlayers={setPlayersTarget}
             queue={queue}
             reload={loadInstances}
@@ -910,7 +948,9 @@ export function App({ initialInstances, initialPackages, initialPackageSources, 
         {page === "settings" && (
           <SettingsPage
             consoleHistoryLines={consoleHistoryLines}
-            onConsoleHistoryLinesChange={setConsoleHistoryLines}
+            consoleSettingsReady={consoleSettingsReady}
+            consoleSettingsError={consoleSettingsError}
+            saveConsoleHistoryLines={saveConsoleHistoryLines}
           />
         )}{" "}
         {job && <JobStrip job={job} />}
@@ -1026,6 +1066,7 @@ function Overview({
   setPending,
   action,
   setTerminal,
+  consoleSettingsReady,
   setPlayers,
   queue,
   reload,
@@ -1042,6 +1083,7 @@ function Overview({
   setPending: (v: Instance) => void;
   action: (id: string, a: string) => void;
   setTerminal: (v: Instance) => void;
+  consoleSettingsReady: boolean;
   setPlayers: (v: Instance) => void;
   queue: (path: string, body: any) => Promise<void>;
   reload: () => Promise<void>;
@@ -1189,7 +1231,7 @@ function Overview({
                     ) : (
                       <button className="instance-command command-primary" aria-label="启动" disabled={starting} aria-busy={starting} onClick={() => void action(x.id, "start")}>{starting ? <RefreshCw /> : <Play />}{starting ? "启动中" : "启动游戏实例"}</button>
                     )}
-                    <button className="instance-command" aria-label="控制台" onClick={() => setTerminal(x)}><TerminalSquare />游戏控制台</button>
+                    <button className="instance-command" aria-label="控制台" disabled={!consoleSettingsReady} title={consoleSettingsReady ? undefined : "正在读取控制台缓存设置"} onClick={() => setTerminal(x)}><TerminalSquare />游戏控制台</button>
                     <button className="instance-command" aria-label="玩家" onClick={() => setPlayers(x)}><Users />在线玩家 ({x.players === null ? "--" : x.players}/{observedCapacity === null ? "--" : observedCapacity})</button>
                     <button className="instance-command" aria-label={`配置 ${x.name}`} onClick={() => setEditing(x)}><SlidersHorizontal />私有配置</button>
                     <button className="instance-command" aria-label="更新" onClick={() => setReinstalling(x)}><RefreshCw />插件更新</button>
@@ -1889,10 +1931,14 @@ function PlayerSummaryItem({ icon, label, value }: { icon: ReactNode; label: str
 
 function SettingsPage({
   consoleHistoryLines,
-  onConsoleHistoryLinesChange,
+  consoleSettingsReady,
+  consoleSettingsError,
+  saveConsoleHistoryLines,
 }: {
   consoleHistoryLines: number;
-  onConsoleHistoryLinesChange: (lines: number) => void;
+  consoleSettingsReady: boolean;
+  consoleSettingsError: string;
+  saveConsoleHistoryLines: (lines: number) => Promise<number>;
 }) {
   const [steam, setSteam] = useState(false);
   const [github, setGithub] = useState(false);
@@ -1934,10 +1980,14 @@ function SettingsPage({
   const [draftConsoleHistoryLines, setDraftConsoleHistoryLines] = useState(
     String(consoleHistoryLines),
   );
-  const [consoleSettingsReady, setConsoleSettingsReady] = useState(false);
   const [savingConsoleSettings, setSavingConsoleSettings] = useState(false);
   const [consoleSettingsNotice, setConsoleSettingsNotice] = useState("");
   const settingsActions = useAsyncLocks();
+  useEffect(() => {
+    if (!consoleSettingsReady) return;
+    setConfirmedConsoleHistoryLines(consoleHistoryLines);
+    setDraftConsoleHistoryLines(String(consoleHistoryLines));
+  }, [consoleHistoryLines, consoleSettingsReady]);
   useEffect(() => {
     api<any>("/api/settings/steam")
       .then((x) => setSteam(x.configured))
@@ -2000,22 +2050,6 @@ function SettingsPage({
           setSettingsError(errorMessage(reason));
         }
       });
-    api<{ history_lines: number }>("/api/settings/console")
-      .then((settings) => {
-        const lines = settings.history_lines;
-        if (
-          !Number.isInteger(lines) ||
-          lines < NATIVE_CONSOLE_MIN_LINES ||
-          lines > NATIVE_CONSOLE_HARD_MAX_LINES
-        ) {
-          throw new Error("控制台缓存设置数据无效");
-        }
-        setConfirmedConsoleHistoryLines(lines);
-        setDraftConsoleHistoryLines(String(lines));
-        onConsoleHistoryLinesChange(lines);
-        setConsoleSettingsReady(true);
-      })
-      .catch((reason) => setSettingsError(errorMessage(reason)));
   }, []);
   const saveSteam = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -2241,23 +2275,9 @@ function SettingsPage({
     setSavingConsoleSettings(true);
     try {
       await settingsActions.run("console", async () => {
-        const saved = await api<{ history_lines: number }>(
-          "/api/settings/console",
-          {
-            method: "PUT",
-            body: JSON.stringify({ history_lines: historyLines }),
-          },
-        );
-        if (
-          !Number.isInteger(saved.history_lines) ||
-          saved.history_lines < NATIVE_CONSOLE_MIN_LINES ||
-          saved.history_lines > NATIVE_CONSOLE_HARD_MAX_LINES
-        ) {
-          throw new Error("控制台缓存设置响应无效");
-        }
-        setConfirmedConsoleHistoryLines(saved.history_lines);
-        setDraftConsoleHistoryLines(String(saved.history_lines));
-        onConsoleHistoryLinesChange(saved.history_lines);
+        const savedLines = await saveConsoleHistoryLines(historyLines);
+        setConfirmedConsoleHistoryLines(savedLines);
+        setDraftConsoleHistoryLines(String(savedLines));
         setConsoleSettingsNotice("控制台缓存设置已保存");
       });
     } catch (reason) {
@@ -2273,9 +2293,9 @@ function SettingsPage({
         <h2>系统设置</h2>
         <p>配置服务器访问、后台任务、日志与网络防御策略</p>
       </header>
-      {settingsError && (
+      {(settingsError || consoleSettingsError) && (
         <div className="error" role="alert">
-          {settingsError}
+          {settingsError || consoleSettingsError}
         </div>
       )}
       <div className="settings-reference-grid">
