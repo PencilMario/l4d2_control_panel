@@ -2408,6 +2408,45 @@ func TestConsoleSettingsReadUpdateAndRejectInvalidValues(t *testing.T) {
 	}
 }
 
+func TestConsoleSettingsUpdateSerializesPersistenceAndHubMutation(t *testing.T) {
+	base, db := testServer(t)
+	defer db.Close()
+	s := New(db, base.auth, WithConsole(nil))
+	cookie := loginCookie(t, s)
+
+	s.consoleSettingsMu.Lock()
+	responseCh := make(chan *httptest.ResponseRecorder, 1)
+	request := httptest.NewRequest(http.MethodPut, "/api/settings/console", strings.NewReader(`{"history_lines":2}`))
+	request.AddCookie(cookie)
+	go func() {
+		response := httptest.NewRecorder()
+		s.Handler().ServeHTTP(response, request)
+		responseCh <- response
+	}()
+
+	select {
+	case response := <-responseCh:
+		t.Fatalf("settings update was not serialized: status=%d body=%s", response.Code, response.Body.String())
+	case <-time.After(50 * time.Millisecond):
+	}
+	if got, err := db.ConsoleHistoryLines(); err != nil || got != store.DefaultConsoleHistoryLines {
+		t.Fatalf("settings changed before serialized update ran: value=%d err=%v", got, err)
+	}
+	s.consoleSettingsMu.Unlock()
+
+	select {
+	case response := <-responseCh:
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"history_lines":2`) {
+			t.Fatalf("settings update: status=%d body=%s", response.Code, response.Body.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("settings update did not finish after serialization lock was released")
+	}
+	if got, err := db.ConsoleHistoryLines(); err != nil || got != 2 || s.consoles.historyLines != 2 {
+		t.Fatalf("store/hub settings diverged: store=%d hub=%d err=%v", got, s.consoles.historyLines, err)
+	}
+}
+
 func TestConsoleWebSocketProxiesSupervisorAttach(t *testing.T) {
 	s, db := testServer(t)
 	defer db.Close()

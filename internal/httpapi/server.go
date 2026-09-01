@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -45,6 +46,7 @@ const sessionCookie = "l4d2_panel_session"
 
 type Server struct {
 	store             *store.Store
+	consoleSettingsMu sync.Mutex
 	auth              *auth.Service
 	router            http.Handler
 	lifecycle         Lifecycle
@@ -664,6 +666,8 @@ func (s *Server) setJobSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getConsoleSettings(w http.ResponseWriter, _ *http.Request) {
+	s.consoleSettingsMu.Lock()
+	defer s.consoleSettingsMu.Unlock()
 	lines, err := s.store.ConsoleHistoryLines()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "settings_error", err.Error())
@@ -688,6 +692,8 @@ func (s *Server) putConsoleSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "invalid_console_history_lines", "history_lines must be between 1 and 1000000")
 		return
 	}
+	s.consoleSettingsMu.Lock()
+	defer s.consoleSettingsMu.Unlock()
 	if err := s.store.SetConsoleHistoryLines(input.HistoryLines); err != nil {
 		writeError(w, http.StatusInternalServerError, "settings_error", err.Error())
 		return
