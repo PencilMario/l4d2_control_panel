@@ -6,11 +6,12 @@ import (
 	"errors"
 	"io"
 	"sync"
+
+	"github.com/not0721here/l4d2-control-panel/internal/store"
 )
 
 const (
 	maxConsoleHistoryBytes = 1 << 20
-	maxConsoleHistoryLines = 8192
 	maxConsolePendingBytes = 4 << 20
 )
 
@@ -19,8 +20,9 @@ var errConsoleSessionClosed = errors.New("console session closed")
 type consoleHub struct {
 	attacher ConsoleAttacher
 
-	mu       sync.Mutex
-	sessions map[string]*consoleSession
+	mu           sync.Mutex
+	sessions     map[string]*consoleSession
+	historyLines int
 }
 
 type consoleSession struct {
@@ -127,7 +129,23 @@ func (s *consoleSubscriber) close() {
 }
 
 func newConsoleHub(attacher ConsoleAttacher) *consoleHub {
-	return &consoleHub{attacher: attacher, sessions: make(map[string]*consoleSession)}
+	return &consoleHub{
+		attacher:     attacher,
+		sessions:     make(map[string]*consoleSession),
+		historyLines: store.DefaultConsoleHistoryLines,
+	}
+}
+
+func (h *consoleHub) setHistoryLines(lines int) {
+	if lines < store.MinConsoleHistoryLines || lines > store.MaxConsoleHistoryLines {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.historyLines = lines
+	for _, session := range h.sessions {
+		session.history = trimConsoleHistory(session.history, lines)
+	}
 }
 
 func (h *consoleHub) Subscribe(instanceID, containerID string) (*consoleSession, []byte, *consoleSubscriber, func(), error) {
@@ -229,7 +247,7 @@ func (h *consoleHub) publish(session *consoleSession, payload []byte) {
 	if session.closed || h.sessions[session.instanceID] != session {
 		return
 	}
-	session.history = appendConsoleHistory(session.history, payload)
+	session.history = appendConsoleHistoryWithLimit(session.history, payload, h.historyLines)
 	for updates := range session.subscribers {
 		updates.enqueue(payload)
 	}
@@ -295,6 +313,14 @@ func (h *consoleHub) closeLocked(session *consoleSession) io.ReadWriteCloser {
 }
 
 func appendConsoleHistory(history, payload []byte) []byte {
+	return appendConsoleHistoryWithLimit(history, payload, store.DefaultConsoleHistoryLines)
+}
+
+func trimConsoleHistory(history []byte, maxLines int) []byte {
+	return appendConsoleHistoryWithLimit(nil, history, maxLines)
+}
+
+func appendConsoleHistoryWithLimit(history, payload []byte, maxLines int) []byte {
 	combined := append(append([]byte(nil), history...), payload...)
 	if len(combined) > maxConsoleHistoryBytes {
 		combined = append([]byte(nil), combined[len(combined)-maxConsoleHistoryBytes:]...)
@@ -308,10 +334,10 @@ func appendConsoleHistory(history, payload []byte) []byte {
 	if len(combined) > 0 && combined[len(combined)-1] != '\n' {
 		lines++
 	}
-	if lines <= maxConsoleHistoryLines {
+	if lines <= maxLines {
 		return combined
 	}
-	linesToDrop := lines - maxConsoleHistoryLines
+	linesToDrop := lines - maxLines
 	for index, value := range combined {
 		if value != '\n' {
 			continue

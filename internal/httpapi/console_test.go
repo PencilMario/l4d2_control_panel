@@ -50,6 +50,26 @@ func TestAppendConsoleHistoryKeepsNewest8192LinesAcrossFrames(t *testing.T) {
 	}
 }
 
+func TestConsoleHistoryLimitTrimsExistingSessionAndAppliesToNewOutput(t *testing.T) {
+	hub := newConsoleHub(nil)
+	session := &consoleSession{
+		instanceID:  "instance",
+		subscribers: make(map[*consoleSubscriber]struct{}),
+	}
+	hub.sessions[session.instanceID] = session
+	hub.publish(session, []byte("one\ntwo\nthree\n"))
+
+	hub.setHistoryLines(2)
+	if got := string(session.history); got != "two\nthree\n" {
+		t.Fatalf("trimmed history=%q, want %q", got, "two\nthree\n")
+	}
+
+	hub.publish(session, []byte("four\n"))
+	if got := string(session.history); got != "three\nfour\n" {
+		t.Fatalf("updated history=%q, want %q", got, "three\nfour\n")
+	}
+}
+
 func TestAppendConsoleHistoryCapsUnterminatedOutputByBytes(t *testing.T) {
 	payload := bytes.Repeat([]byte("x"), maxConsoleHistoryBytes+1)
 	history := appendConsoleHistory(nil, payload)

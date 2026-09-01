@@ -2356,6 +2356,58 @@ func TestCleanVPKRequiresConfirmation(t *testing.T) {
 	}
 }
 
+func TestConsoleSettingsReadUpdateAndRejectInvalidValues(t *testing.T) {
+	base, db := testServer(t)
+	defer db.Close()
+	s := New(db, base.auth, WithConsole(nil))
+	cookie := loginCookie(t, s)
+
+	get := authenticatedJSON(t, s, cookie, http.MethodGet, "/api/settings/console", "")
+	if get.Code != http.StatusOK || !strings.Contains(get.Body.String(), `"history_lines":8192`) {
+		t.Fatalf("default settings: status=%d body=%s", get.Code, get.Body.String())
+	}
+
+	if s.consoles == nil {
+		t.Fatal("console hub was not configured")
+	}
+	session := &consoleSession{
+		instanceID:  "instance",
+		subscribers: make(map[*consoleSubscriber]struct{}),
+	}
+	s.consoles.sessions[session.instanceID] = session
+	s.consoles.publish(session, []byte("one\ntwo\nthree\n"))
+
+	put := authenticatedJSON(t, s, cookie, http.MethodPut, "/api/settings/console", `{"history_lines":2}`)
+	if put.Code != http.StatusOK || !strings.Contains(put.Body.String(), `"history_lines":2`) {
+		t.Fatalf("updated settings: status=%d body=%s", put.Code, put.Body.String())
+	}
+	if got := string(session.history); got != "two\nthree\n" {
+		t.Fatalf("session history=%q, want %q", got, "two\nthree\n")
+	}
+
+	for _, body := range []string{
+		`{"history_lines":0}`,
+		`{"history_lines":1000001}`,
+		`{"history_lines":"many"}`,
+		`{"history_lines":2} trailing`,
+		`{"history_lines":2,"extra":true}`,
+	} {
+		response := authenticatedJSON(t, s, cookie, http.MethodPut, "/api/settings/console", body)
+		if response.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("body=%s status=%d response=%s", body, response.Code, response.Body.String())
+		}
+	}
+	get = authenticatedJSON(t, s, cookie, http.MethodGet, "/api/settings/console", "")
+	if get.Code != http.StatusOK || !strings.Contains(get.Body.String(), `"history_lines":2`) {
+		t.Fatalf("invalid update changed setting: status=%d body=%s", get.Code, get.Body.String())
+	}
+
+	reloaded := New(db, base.auth, WithConsole(nil))
+	if reloaded.consoles == nil || reloaded.consoles.historyLines != 2 {
+		t.Fatalf("reloaded console history lines=%d, want 2", reloaded.consoles.historyLines)
+	}
+}
+
 func TestConsoleWebSocketProxiesSupervisorAttach(t *testing.T) {
 	s, db := testServer(t)
 	defer db.Close()

@@ -239,6 +239,11 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 	for _, option := range options {
 		option(s)
 	}
+	if s.consoles != nil && s.store != nil {
+		if lines, err := s.store.ConsoleHistoryLines(); err == nil {
+			s.consoles.setHistoryLines(lines)
+		}
+	}
 	if s.selfServiceVPK != nil {
 		s.selfServiceKey()
 	}
@@ -279,6 +284,8 @@ func New(db *store.Store, a *auth.Service, options ...Option) *Server {
 		r.Get("/api/instances/{id}/game-logs/download", s.gameLogsDownload)
 		r.Get("/api/settings/game-logs", s.getGameLogSettings)
 		r.Put("/api/settings/game-logs", s.putGameLogSettings)
+		r.Get("/api/settings/console", s.getConsoleSettings)
+		r.Put("/api/settings/console", s.putConsoleSettings)
 		r.Get("/api/settings/accelerator", s.getAcceleratorSettings)
 		r.Put("/api/settings/accelerator", s.putAcceleratorSettings)
 		r.Get("/api/settings/crash-analysis", s.getCrashAnalysisSettings)
@@ -523,6 +530,10 @@ type jobSettingsResponse struct {
 	CompletedJobLimit int `json:"successful_job_limit"`
 }
 
+type consoleSettingsResponse struct {
+	HistoryLines int `json:"history_lines"`
+}
+
 type githubReleasesSettingsResponse struct {
 	AcceleratorURL string `json:"accelerator_url"`
 }
@@ -648,6 +659,41 @@ func (s *Server) setJobSettings(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.SetCompletedJobLimit(input.CompletedJobLimit); err != nil {
 		writeError(w, http.StatusInternalServerError, "settings_error", err.Error())
 		return
+	}
+	writeJSON(w, http.StatusOK, input)
+}
+
+func (s *Server) getConsoleSettings(w http.ResponseWriter, _ *http.Request) {
+	lines, err := s.store.ConsoleHistoryLines()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "settings_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, consoleSettingsResponse{HistoryLines: lines})
+}
+
+func (s *Server) putConsoleSettings(w http.ResponseWriter, r *http.Request) {
+	var input consoleSettingsResponse
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_console_settings", "history_lines must be an integer between 1 and 1000000")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_console_settings", "request body must contain exactly one console settings object")
+		return
+	}
+	if input.HistoryLines < store.MinConsoleHistoryLines || input.HistoryLines > store.MaxConsoleHistoryLines {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_console_history_lines", "history_lines must be between 1 and 1000000")
+		return
+	}
+	if err := s.store.SetConsoleHistoryLines(input.HistoryLines); err != nil {
+		writeError(w, http.StatusInternalServerError, "settings_error", err.Error())
+		return
+	}
+	if s.consoles != nil {
+		s.consoles.setHistoryLines(input.HistoryLines)
 	}
 	writeJSON(w, http.StatusOK, input)
 }
