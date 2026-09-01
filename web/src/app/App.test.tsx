@@ -247,6 +247,91 @@ describe("App", () => {
     expect(scrollTop).toBe(600);
   });
 
+  it("saves the console history limit from system settings", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/settings/console") {
+        if (init?.method === "PUT") return Response.json({ history_lines: 1_000_000 });
+        return Response.json({ history_lines: 8192 });
+      }
+      return Response.json({ configured: false });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "系统设置" }));
+    const input = await screen.findByRole("spinbutton", { name: "控制台缓存行数" });
+    expect(input).toHaveValue(8192);
+    expect(input).toHaveAttribute("min", "1");
+    expect(input).toHaveAttribute("max", "1000000");
+
+    await userEvent.clear(input);
+    await userEvent.type(input, "1000000");
+    await userEvent.click(screen.getByRole("button", { name: "保存控制台缓存设置" }));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/settings/console",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ history_lines: 1_000_000 }),
+      }),
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent("控制台缓存设置已保存");
+  });
+
+  it("trims an open console immediately after saving its history limit", async () => {
+    const sockets: FakeWebSocket[] = [];
+    class FakeWebSocket {
+      binaryType = "";
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      send = vi.fn();
+      close = vi.fn();
+      constructor(public url: string) { sockets.push(this); }
+    }
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    let nextFrame = 1;
+    const frames = new Map<number, FrameRequestCallback>();
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      const id = nextFrame++;
+      frames.set(id, callback);
+      return id;
+    });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+    const flushFrames = () => {
+      const pending = [...frames.entries()];
+      frames.clear();
+      pending.forEach(([id, callback]) => callback(id));
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === "/api/settings/console") {
+          if (init?.method === "PUT") return Response.json({ history_lines: 1 });
+          return Response.json({ history_lines: 8192 });
+        }
+        return Response.json({ configured: false });
+      }),
+    );
+
+    render(<App initialInstances={[instance]} />);
+    await userEvent.click(screen.getByRole("button", { name: "控制台" }));
+    const output = document.querySelector(".terminal-modal pre") as HTMLPreElement;
+    act(() => sockets[0].onmessage?.({ data: "one\ntwo\nthree\n" } as MessageEvent));
+    act(() => flushFrames());
+    expect(output.textContent).toBe("one\ntwo\nthree\n");
+
+    await userEvent.click(screen.getByRole("button", { name: "系统设置" }));
+    const input = await screen.findByRole("spinbutton", { name: "控制台缓存行数" });
+    await userEvent.clear(input);
+    await userEvent.type(input, "1");
+    await userEvent.click(screen.getByRole("button", { name: "保存控制台缓存设置" }));
+
+    await screen.findByText("控制台缓存设置已保存");
+    expect(output).not.toHaveTextContent("one");
+    expect(output).not.toHaveTextContent("two");
+    expect(output).toHaveTextContent("three");
+  });
+
   it("deduplicates, sorts and caps performance history", () => {
     const points = Array.from({ length: 721 }, (_, index) => ({
       at: new Date(Date.UTC(2026, 6, 15, 0, 0, index)).toISOString(),
@@ -1637,7 +1722,7 @@ describe("App", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "更新" }));
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.some(([path]) => String(path) === "/api/instances/1/game-update")).toBe(false);
 		expect(screen.getByRole("dialog")).toHaveTextContent("重新安装实例插件包");
 		expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     const confirm = screen.getByRole("button", { name: "确认重新安装" });
@@ -1645,7 +1730,7 @@ describe("App", () => {
       confirm.click();
       confirm.click();
     });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.filter(([path]) => String(path) === "/api/instances/1/game-update")).toHaveLength(1);
     expect(confirm).toBeDisabled();
     expect(confirm).toHaveAttribute("aria-busy", "true");
     expect(fetchMock).toHaveBeenCalledWith(
@@ -1662,12 +1747,13 @@ describe("App", () => {
   });
 
   it("does not expose game-body reinstall controls on an instance", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response('{"ID":"job-1","Status":"pending"}', {
+    const fetchMock = vi.fn(async () => new Response(
+      '{"ID":"job-1","Status":"pending"}',
+      {
         status: 202,
         headers: { "Content-Type": "application/json" },
-      }),
-    );
+      },
+    ));
     vi.stubGlobal("fetch", fetchMock);
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "更新" }));
@@ -1686,18 +1772,19 @@ describe("App", () => {
   });
 
   it("does not request a package reinstall when the instance has no selected package", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response('{"ID":"job-1","Status":"pending"}', {
+    const fetchMock = vi.fn(async () => new Response(
+      '{"ID":"job-1","Status":"pending"}',
+      {
         status: 202,
         headers: { "Content-Type": "application/json" },
-      }),
-    );
+      },
+    ));
     vi.stubGlobal("fetch", fetchMock);
     render(<App initialInstances={[{ ...instance, package_id: "", applied_package_id: "" }]} />);
     await userEvent.click(screen.getByRole("button", { name: "更新" }));
 		expect(screen.getByRole("dialog")).toHaveTextContent("尚未选择插件包");
 		expect(screen.getByRole("button", { name: "确认重新安装" })).toBeDisabled();
-		expect(fetchMock).not.toHaveBeenCalled();
+		expect(fetchMock.mock.calls.some(([path]) => String(path) === "/api/instances/1/game-update")).toBe(false);
   });
 
   it("allows GitHub source instances to run a full plugin update", async () => {

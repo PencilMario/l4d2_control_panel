@@ -71,7 +71,13 @@ import { SelfServiceVPKSettings } from "./SelfServiceVPKSettings";
 import { A2SDefenseSettings } from "./A2SDefenseSettings";
 import { cancelVPKUpload, enqueueVPKUploads, retryVPKUpload, startVPKUploadQueue, type VPKUploadMode, type VPKUploadTask } from "../vpk/uploadQueue";
 import { useConsoleFollow } from "./useConsoleFollow";
-import { appendConsoleOutput } from "./consoleBuffer";
+import {
+  appendConsoleOutput,
+  NATIVE_CONSOLE_HARD_MAX_LINES,
+  NATIVE_CONSOLE_MAX_LINES,
+  NATIVE_CONSOLE_MIN_LINES,
+  trimConsoleOutput,
+} from "./consoleBuffer";
 import { downloadConsoleText } from "./consoleExport";
 import {
   formatBytes as formatMetricBytes,
@@ -326,6 +332,9 @@ export function App({ initialInstances, initialPackages, initialPackageSources, 
   );
   const [logJob, setLogJob] = useState<Job | null>(null);
   const [terminal, setTerminal] = useState<Instance | null>(null);
+  const [consoleHistoryLines, setConsoleHistoryLines] = useState(
+    NATIVE_CONSOLE_MAX_LINES,
+  );
   const [playersTarget, setPlayersTarget] = useState<Instance | null>(null);
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState("");
@@ -568,6 +577,27 @@ export function App({ initialInstances, initialPackages, initialPackageSources, 
       liveInstanceIDs.current.clear();
     };
   }, [auth, injected, loadInstances]);
+  useEffect(() => {
+    if (auth !== "yes") return;
+    let cancelled = false;
+    api<{ history_lines?: number }>("/api/settings/console")
+      .then((settings) => {
+        const lines = settings.history_lines;
+        if (
+          cancelled ||
+          !Number.isInteger(lines) ||
+          lines < NATIVE_CONSOLE_MIN_LINES ||
+          lines > NATIVE_CONSOLE_HARD_MAX_LINES
+        ) {
+          return;
+        }
+        setConsoleHistoryLines(lines);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [auth]);
   useEffect(() => {
     const selectionStillExists = instances.some(
       (instance) => instance.id === selectedInstanceID,
@@ -877,7 +907,12 @@ export function App({ initialInstances, initialPackages, initialPackageSources, 
         {page === "schedules" && (
           <SchedulesPage instances={instances} packages={packages} />
         )}{" "}
-        {page === "settings" && <SettingsPage />}{" "}
+        {page === "settings" && (
+          <SettingsPage
+            consoleHistoryLines={consoleHistoryLines}
+            onConsoleHistoryLinesChange={setConsoleHistoryLines}
+          />
+        )}{" "}
         {job && <JobStrip job={job} />}
         </div>
       </main>
@@ -893,7 +928,11 @@ export function App({ initialInstances, initialPackages, initialPackageSources, 
         />
       )}
       {terminal && (
-        <Terminal instance={terminal} close={() => setTerminal(null)} />
+        <Terminal
+          instance={terminal}
+          historyLines={consoleHistoryLines}
+          close={() => setTerminal(null)}
+        />
       )}
       {playersTarget && (
         <PlayersModal
@@ -1278,16 +1317,23 @@ function Overview({
 }
 function Terminal({
   instance,
+  historyLines,
   close,
 }: {
   instance: Instance;
+  historyLines: number;
   close: () => void;
 }) {
   const [output, setOutput] = useState("");
   const [input, setInput] = useState("");
   const [connected, setConnected] = useState(false);
   const socket = useRef<WebSocket | null>(null);
+  const historyLinesRef = useRef(historyLines);
   const consoleFollow = useConsoleFollow(output);
+  useEffect(() => {
+    historyLinesRef.current = historyLines;
+    setOutput((current) => trimConsoleOutput(current, historyLines));
+  }, [historyLines]);
   useEffect(() => {
     const protocol = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(
@@ -1300,7 +1346,9 @@ function Terminal({
     ws.onmessage = (e) => {
       const text =
         typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data);
-      setOutput((current) => appendConsoleOutput(current, text));
+      setOutput((current) =>
+        appendConsoleOutput(current, text, historyLinesRef.current),
+      );
     };
     socket.current = ws;
     return () => ws.close();
@@ -1839,7 +1887,13 @@ function PlayerSummaryItem({ icon, label, value }: { icon: ReactNode; label: str
   );
 }
 
-function SettingsPage() {
+function SettingsPage({
+  consoleHistoryLines,
+  onConsoleHistoryLinesChange,
+}: {
+  consoleHistoryLines: number;
+  onConsoleHistoryLinesChange: (lines: number) => void;
+}) {
   const [steam, setSteam] = useState(false);
   const [github, setGithub] = useState(false);
   const [acceleratorDownloadURL, setAcceleratorDownloadURL] = useState("");
@@ -1875,6 +1929,14 @@ function SettingsPage() {
   const [gameLogBusy, setGameLogBusy] = useState<"save" | "">("");
   const [gameLogsNotice, setGameLogsNotice] = useState("");
   const gameLogRequestSequence = useRef(0);
+  const [confirmedConsoleHistoryLines, setConfirmedConsoleHistoryLines] =
+    useState(consoleHistoryLines);
+  const [draftConsoleHistoryLines, setDraftConsoleHistoryLines] = useState(
+    String(consoleHistoryLines),
+  );
+  const [consoleSettingsReady, setConsoleSettingsReady] = useState(false);
+  const [savingConsoleSettings, setSavingConsoleSettings] = useState(false);
+  const [consoleSettingsNotice, setConsoleSettingsNotice] = useState("");
   const settingsActions = useAsyncLocks();
   useEffect(() => {
     api<any>("/api/settings/steam")
@@ -1938,6 +2000,22 @@ function SettingsPage() {
           setSettingsError(errorMessage(reason));
         }
       });
+    api<{ history_lines?: number }>("/api/settings/console")
+      .then((settings) => {
+        const lines = settings.history_lines;
+        if (
+          !Number.isInteger(lines) ||
+          lines < NATIVE_CONSOLE_MIN_LINES ||
+          lines > NATIVE_CONSOLE_HARD_MAX_LINES
+        ) {
+          throw new Error("控制台缓存设置数据无效");
+        }
+        setConfirmedConsoleHistoryLines(lines);
+        setDraftConsoleHistoryLines(String(lines));
+        onConsoleHistoryLinesChange(lines);
+        setConsoleSettingsReady(true);
+      })
+      .catch((reason) => setSettingsError(errorMessage(reason)));
   }, []);
   const saveSteam = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -2146,6 +2224,49 @@ function SettingsPage() {
       if (sequence === gameLogRequestSequence.current) setGameLogBusy("");
     }
   };
+  const saveConsoleSettings = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (settingsActions.isLocked("console")) return;
+    const historyLines = Number(draftConsoleHistoryLines);
+    if (
+      !Number.isInteger(historyLines) ||
+      historyLines < NATIVE_CONSOLE_MIN_LINES ||
+      historyLines > NATIVE_CONSOLE_HARD_MAX_LINES
+    ) {
+      setSettingsError("控制台缓存行数必须为 1 至 1,000,000 的整数");
+      return;
+    }
+    setSettingsError("");
+    setConsoleSettingsNotice("");
+    setSavingConsoleSettings(true);
+    try {
+      await settingsActions.run("console", async () => {
+        const saved = await api<{ history_lines?: number }>(
+          "/api/settings/console",
+          {
+            method: "PUT",
+            body: JSON.stringify({ history_lines: historyLines }),
+          },
+        );
+        if (
+          !Number.isInteger(saved.history_lines) ||
+          saved.history_lines < NATIVE_CONSOLE_MIN_LINES ||
+          saved.history_lines > NATIVE_CONSOLE_HARD_MAX_LINES
+        ) {
+          throw new Error("控制台缓存设置响应无效");
+        }
+        setConfirmedConsoleHistoryLines(saved.history_lines);
+        setDraftConsoleHistoryLines(String(saved.history_lines));
+        onConsoleHistoryLinesChange(saved.history_lines);
+        setConsoleSettingsNotice("控制台缓存设置已保存");
+      });
+    } catch (reason) {
+      setDraftConsoleHistoryLines(String(confirmedConsoleHistoryLines));
+      setSettingsError(errorMessage(reason));
+    } finally {
+      setSavingConsoleSettings(false);
+    }
+  };
   return (
     <div className="settings-reference-page">
       <header className="settings-reference-head">
@@ -2205,6 +2326,13 @@ function SettingsPage() {
           <div className="settings-fields"><label>已完成任务保留数量<input type="number" min={1} max={500} step={1} required value={draftJobLimit} disabled={!jobSettingsReady || savingJobs} onChange={(event) => { setDraftJobLimit(event.target.value); setJobsNotice(""); }} /></label></div>
           {jobsNotice ? <p className="settings-notice" role="status">{jobsNotice}</p> : null}
           <footer><small>除正在运行的任务外，所有已结束任务共用此保留上限。</small><button className="settings-save" type="submit" aria-label="保存任务记录设置" disabled={!jobSettingsReady || savingJobs} aria-busy={savingJobs}>{savingJobs ? <RefreshCw /> : <Save />}<span>{savingJobs ? "保存中…" : "保存任务保留设置"}</span></button></footer>
+        </form>
+        <form className="settings-card" onSubmit={saveConsoleSettings}>
+          <div className="settings-card-title"><h3><ScrollText />游戏实例控制台缓存</h3></div>
+          <p>设置每个游戏实例控制台在内存中保留的最新文本行数，保存后对已打开的控制台立即生效。</p>
+          <div className="settings-fields"><label>控制台缓存行数<input aria-label="控制台缓存行数" type="number" min={NATIVE_CONSOLE_MIN_LINES} max={NATIVE_CONSOLE_HARD_MAX_LINES} step={1} required value={draftConsoleHistoryLines} disabled={!consoleSettingsReady || savingConsoleSettings} onChange={(event) => { setDraftConsoleHistoryLines(event.target.value); setConsoleSettingsNotice(""); }} /></label><p>默认值：{NATIVE_CONSOLE_MAX_LINES} 行；允许范围：{NATIVE_CONSOLE_MIN_LINES} - {NATIVE_CONSOLE_HARD_MAX_LINES.toLocaleString()} 行。</p></div>
+          {consoleSettingsNotice ? <p className="settings-notice" role="status">{consoleSettingsNotice}</p> : null}
+          <footer><small>前后端控制台缓存共用此上限。</small><button className="settings-save" type="submit" aria-label="保存控制台缓存设置" disabled={!consoleSettingsReady || savingConsoleSettings} aria-busy={savingConsoleSettings}>{savingConsoleSettings ? <RefreshCw /> : <Save />}<span>{savingConsoleSettings ? "保存中…" : "保存控制台缓存设置"}</span></button></footer>
         </form>
         <section className="settings-card" aria-labelledby="game-log-settings-title">
           <div className="settings-card-title"><h3 id="game-log-settings-title"><Trash2 />游戏日志清理策略</h3></div>

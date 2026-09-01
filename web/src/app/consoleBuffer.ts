@@ -1,4 +1,6 @@
 export const NATIVE_CONSOLE_MAX_LINES = 8192;
+export const NATIVE_CONSOLE_MIN_LINES = 1;
+export const NATIVE_CONSOLE_HARD_MAX_LINES = 1_000_000;
 
 export function appendConsoleOutput(
   current: string,
@@ -23,4 +25,11 @@ export function appendConsoleOutput(
     linesToDrop -= 1;
   }
   return combined.slice(offset);
+}
+
+export function trimConsoleOutput(
+  current: string,
+  maxLines = NATIVE_CONSOLE_MAX_LINES,
+) {
+  return appendConsoleOutput("", current, maxLines);
 }

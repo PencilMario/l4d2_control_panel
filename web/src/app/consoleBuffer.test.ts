@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendConsoleOutput } from "./consoleBuffer";
+import { appendConsoleOutput, trimConsoleOutput } from "./consoleBuffer";
 
 describe("appendConsoleOutput", () => {
   it("keeps the newest 1000 lines from one oversized frame", () => {
@@ -38,5 +38,9 @@ describe("appendConsoleOutput", () => {
     const output = appendConsoleOutput("alpha\nbet", "a\ngamma", 1000);
 
     expect(output).toBe("alpha\nbeta\ngamma");
+  });
+
+  it("trims an existing console buffer when the configured limit changes", () => {
+    expect(trimConsoleOutput("one\ntwo\nthree\n", 2)).toBe("two\nthree\n");
   });
 });
