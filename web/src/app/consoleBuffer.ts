@@ -1,4 +1,4 @@
-export const NATIVE_CONSOLE_MAX_LINES = 1000;
+export const NATIVE_CONSOLE_MAX_LINES = 8192;
 
 export function appendConsoleOutput(
   current: string,

@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestAppendConsoleHistoryKeepsNewestLinesAcrossFrames(t *testing.T) {
+func TestAppendConsoleHistoryKeepsAllLinesBelowLimitAcrossFrames(t *testing.T) {
 	first := strings.Builder{}
 	for index := 1; index <= 750; index++ {
 		_, _ = first.WriteString("old-" + strconv.Itoa(index) + "\n")
@@ -21,10 +21,31 @@ func TestAppendConsoleHistoryKeepsNewestLinesAcrossFrames(t *testing.T) {
 	history = appendConsoleHistory(history, []byte(second.String()))
 
 	lines := strings.Split(strings.TrimSuffix(string(history), "\n"), "\n")
-	if len(lines) != maxConsoleHistoryLines {
-		t.Fatalf("lines=%d, want %d", len(lines), maxConsoleHistoryLines)
+	if len(lines) != 1150 {
+		t.Fatalf("lines=%d, want 1150", len(lines))
 	}
-	if lines[0] != "old-151" || lines[len(lines)-1] != "new-400" {
+	if lines[0] != "old-1" || lines[len(lines)-1] != "new-400" {
+		t.Fatalf("history endpoints=%q...%q", lines[0], lines[len(lines)-1])
+	}
+}
+
+func TestAppendConsoleHistoryKeepsNewest8192LinesAcrossFrames(t *testing.T) {
+	first := strings.Builder{}
+	for index := 1; index <= 7000; index++ {
+		_, _ = first.WriteString("old-" + strconv.Itoa(index) + "\n")
+	}
+	second := strings.Builder{}
+	for index := 1; index <= 1193; index++ {
+		_, _ = second.WriteString("new-" + strconv.Itoa(index) + "\n")
+	}
+
+	history := appendConsoleHistory(nil, []byte(first.String()))
+	history = appendConsoleHistory(history, []byte(second.String()))
+	lines := strings.Split(strings.TrimSuffix(string(history), "\n"), "\n")
+	if len(lines) != 8192 {
+		t.Fatalf("lines=%d, want 8192", len(lines))
+	}
+	if lines[0] != "old-2" || lines[len(lines)-1] != "new-1193" {
 		t.Fatalf("history endpoints=%q...%q", lines[0], lines[len(lines)-1])
 	}
 }

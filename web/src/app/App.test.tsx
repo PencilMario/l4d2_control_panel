@@ -162,7 +162,7 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "更新游戏本体" })).toHaveClass("shared-game-update");
   });
 
-  it("keeps the newest 1000 console lines and follows after sending a command", async () => {
+  it("keeps the newest 8192 console lines and follows after sending a command", async () => {
     const sockets: FakeWebSocket[] = [];
     class FakeWebSocket {
       binaryType = "";
@@ -188,6 +188,8 @@ describe("App", () => {
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "控制台" }));
     const output = document.querySelector(".terminal-modal pre") as HTMLPreElement;
+    const exportButton = screen.getByRole("button", { name: "导出控制台文本" });
+    expect(exportButton).toBeDisabled();
     let scrollTop = 0;
     Object.defineProperties(output, {
       scrollHeight: { configurable: true, get: () => 600 },
@@ -201,7 +203,22 @@ describe("App", () => {
     act(() => sockets[0].onmessage?.({ data: "ready\n" } as MessageEvent));
     act(() => flushFrames());
     expect(output).toHaveTextContent("ready");
+    expect(exportButton).toBeEnabled();
     expect(scrollTop).toBe(600);
+
+    const createObjectURL = vi.fn((_blob: Blob) => "blob:console-export");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { createObjectURL, revokeObjectURL });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const appendChild = vi.spyOn(document.body, "appendChild");
+    await userEvent.click(exportButton);
+    const [blob] = createObjectURL.mock.calls[0] as [Blob];
+    expect(await blob.text()).toBe("ready\n");
+    const anchor = appendChild.mock.calls.at(-1)?.[0] as HTMLAnchorElement;
+    expect(anchor.download).toBe("深夜战役-console.txt");
+    expect(anchor.href).toBe("blob:console-export");
+    expect(click).toHaveBeenCalledOnce();
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:console-export");
 
     scrollTop = 100;
     fireEvent.scroll(output);
@@ -218,7 +235,7 @@ describe("App", () => {
     expect(sockets[0].url).toContain("/api/instances/1/console");
 
     act(() => {
-      for (let index = 0; index <= 1000; index += 1) {
+      for (let index = 0; index <= 8192; index += 1) {
         sockets[0].onmessage?.({ data: `[${index}]\n` } as MessageEvent);
       }
     });
@@ -226,7 +243,7 @@ describe("App", () => {
     expect(output).not.toHaveTextContent("ready");
     expect(output).not.toHaveTextContent("[0]");
     expect(output).toHaveTextContent("[1]");
-    expect(output).toHaveTextContent("[1000]");
+    expect(output).toHaveTextContent("[8192]");
     expect(scrollTop).toBe(600);
   });
 

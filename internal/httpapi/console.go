@@ -10,7 +10,7 @@ import (
 
 const (
 	maxConsoleHistoryBytes = 1 << 20
-	maxConsoleHistoryLines = 1000
+	maxConsoleHistoryLines = 8192
 	maxConsolePendingBytes = 4 << 20
 )
 

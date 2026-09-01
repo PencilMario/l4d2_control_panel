@@ -72,6 +72,7 @@ import { A2SDefenseSettings } from "./A2SDefenseSettings";
 import { cancelVPKUpload, enqueueVPKUploads, retryVPKUpload, startVPKUploadQueue, type VPKUploadMode, type VPKUploadTask } from "../vpk/uploadQueue";
 import { useConsoleFollow } from "./useConsoleFollow";
 import { appendConsoleOutput } from "./consoleBuffer";
+import { downloadConsoleText } from "./consoleExport";
 import {
   formatBytes as formatMetricBytes,
   formatBytesPerSecond,
@@ -1317,6 +1318,7 @@ function Terminal({
           </div>
           <div className="terminal-head-actions">
             <button type="button" onClick={() => setOutput("")}><Trash2 />清空显示</button>
+            <button type="button" title="导出控制台文本" aria-label="导出控制台文本" disabled={!output} onClick={() => downloadConsoleText(output, instance.name)}><Download />导出 TXT</button>
             <button type="button" className="terminal-close" aria-label="关闭控制台" onClick={close}><X /></button>
           </div>
         </header>
