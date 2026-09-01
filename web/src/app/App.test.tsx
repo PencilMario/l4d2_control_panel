@@ -1718,7 +1718,7 @@ describe("App", () => {
 
   it("reinstalls only the selected instance plugin package", async () => {
     const request = deferred<Response>();
-    const fetchMock = vi.fn(() => request.promise);
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => request.promise);
     vi.stubGlobal("fetch", fetchMock);
     render(<App initialInstances={[instance]} />);
     await userEvent.click(screen.getByRole("button", { name: "更新" }));
@@ -1747,7 +1747,7 @@ describe("App", () => {
   });
 
   it("does not expose game-body reinstall controls on an instance", async () => {
-    const fetchMock = vi.fn(async () => new Response(
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(
       '{"ID":"job-1","Status":"pending"}',
       {
         status: 202,
@@ -1772,7 +1772,7 @@ describe("App", () => {
   });
 
   it("does not request a package reinstall when the instance has no selected package", async () => {
-    const fetchMock = vi.fn(async () => new Response(
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(
       '{"ID":"job-1","Status":"pending"}',
       {
         status: 202,

@@ -580,7 +580,7 @@ export function App({ initialInstances, initialPackages, initialPackageSources, 
   useEffect(() => {
     if (auth !== "yes") return;
     let cancelled = false;
-    api<{ history_lines?: number }>("/api/settings/console")
+    api<{ history_lines: number }>("/api/settings/console")
       .then((settings) => {
         const lines = settings.history_lines;
         if (
@@ -2000,7 +2000,7 @@ function SettingsPage({
           setSettingsError(errorMessage(reason));
         }
       });
-    api<{ history_lines?: number }>("/api/settings/console")
+    api<{ history_lines: number }>("/api/settings/console")
       .then((settings) => {
         const lines = settings.history_lines;
         if (
@@ -2241,7 +2241,7 @@ function SettingsPage({
     setSavingConsoleSettings(true);
     try {
       await settingsActions.run("console", async () => {
-        const saved = await api<{ history_lines?: number }>(
+        const saved = await api<{ history_lines: number }>(
           "/api/settings/console",
           {
             method: "PUT",
