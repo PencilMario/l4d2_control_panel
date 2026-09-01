@@ -3,6 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +20,24 @@ func TestStartMinimumFreeBytesIsOneGiB(t *testing.T) {
 	const want = uint64(1 << 30)
 	if startMinimumFreeBytes != want {
 		t.Fatalf("start minimum free bytes=%d want=%d", startMinimumFreeBytes, want)
+	}
+}
+
+func TestPanelWebHandlerDisablesIndexCaching(t *testing.T) {
+	webRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webRoot, "index.html"), []byte("new entrypoint"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	response := httptest.NewRecorder()
+	newPanelWebHandler(webRoot).ServeHTTP(response, request)
+
+	if got := response.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("Cache-Control=%q, want no-cache", got)
+	}
+	if got := response.Body.String(); got != "new entrypoint" {
+		t.Fatalf("body=%q, want new entrypoint", got)
 	}
 }
 

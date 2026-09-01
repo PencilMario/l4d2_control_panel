@@ -68,6 +68,20 @@ type crashAnalysisEnqueuer interface {
 	Enqueue(context.Context, string, bool) error
 }
 
+func newPanelWebHandler(web string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			candidate := filepath.Join(web, filepath.Clean(r.URL.Path))
+			if _, err := os.Stat(candidate); err == nil {
+				http.ServeFile(w, r, candidate)
+				return
+			}
+		}
+		w.Header().Set("Cache-Control", "no-cache")
+		http.ServeFile(w, r, filepath.Join(web, "index.html"))
+	})
+}
+
 func enqueueCrashReportStackwalk(ctx context.Context, worker crashAnalysisEnqueuer, report crashreports.Report) error {
 	if worker == nil {
 		return errors.New("crash analysis worker is not started")
@@ -393,15 +407,7 @@ func main() {
 		web = "web/dist"
 	}
 	mux.Handle("/assets/", http.FileServer(http.Dir(web)))
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			if _, err := os.Stat(filepath.Join(web, filepath.Clean(r.URL.Path))); err == nil {
-				http.ServeFile(w, r, filepath.Join(web, filepath.Clean(r.URL.Path)))
-				return
-			}
-		}
-		http.ServeFile(w, r, filepath.Join(web, "index.html"))
-	})
+	mux.Handle("/", newPanelWebHandler(web))
 	server := &http.Server{Addr: cfg.ListenAddress, Handler: mux, ReadHeaderTimeout: 10_000_000_000}
 	performanceSampler.Start(context.Background())
 	log.Printf("panel listening on %s", cfg.ListenAddress)
